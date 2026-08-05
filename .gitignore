@@ -38,6 +38,8 @@ logs/*.log
 data/*.json
 !data/.gitkeep
 tradebot.db
+*.html
+reports/*.html
 
 # IDE / OS
 .vscode/
