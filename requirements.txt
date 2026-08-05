@@ -5,3 +5,7 @@ schedule>=1.2.0
 pandas>=2.0.0
 numpy>=1.24.0
 yfinance>=0.2.30
+# Testing
+pytest>=8.0.0
+pytest-cov>=5.0.0
+pytest-mock>=3.14.0
