@@ -25,7 +25,6 @@ DEFAULT_WATCHLIST = [
     "STERV.HE",
     "METSA.HE",
     "OUT1V.HE",
-    "NOKIAN.HE",
     # Mid Cap & Growth / Dividend Leaders
     "QTCOM.HE",
     "HARVIA.HE",
@@ -44,6 +43,14 @@ DEFAULT_WATCHLIST = [
     "MSFT",
 ]
 
+# Unlisted Nordnet mutual funds (non-yfinance assets)
+NORDNET_FUNDS = {
+    "NN_NORGE": {"name": "Nordnet Norge Indeks Rahasto", "fallback_price": 30.818},
+    "NN_SVERIGE": {"name": "Nordnet Sverige Index Rahasto", "fallback_price": 77.402},
+    "NN_SUOMI": {"name": "Nordnet Suomi Indeksirahasto", "fallback_price": 10.0},
+    "NN_TANSKA": {"name": "Nordnet Tanska Indeksirahasto", "fallback_price": 10.0},
+}
+
 
 class MarketDataClient:
     """Fetches real open-market equity data and technical indicators using yfinance."""
@@ -55,13 +62,39 @@ class MarketDataClient:
         """Returns the default watchlist of symbols."""
         return DEFAULT_WATCHLIST
 
-    def get_market_data_for_symbols(self, symbols: List[str] = None) -> List[Dict[str, Any]]:
+    def get_market_data_for_symbols(self, symbols: List[str] = None, portfolio_prices: Dict[str, float] = None) -> List[Dict[str, Any]]:
         """Fetches live prices, technical indicators (RSI, SMA, EMA, Bollinger), and fundamentals for given stock tickers."""
         if not symbols:
             symbols = DEFAULT_WATCHLIST
 
+        if not portfolio_prices:
+            portfolio_prices = {}
+
         market_data = []
         for symbol in symbols:
+            # Handle Nordnet non-exchange mutual funds directly without querying yfinance
+            if symbol.startswith("NN_") or symbol in NORDNET_FUNDS:
+                fund_info = NORDNET_FUNDS.get(symbol, {"name": f"Nordnet Rahasto ({symbol})", "fallback_price": 10.0})
+                nav_price = portfolio_prices.get(symbol, fund_info["fallback_price"])
+
+                market_data.append({
+                    "symbol": symbol,
+                    "name": fund_info["name"],
+                    "sector": "Indeksirahasto (Nordnet)",
+                    "current_price": round(nav_price, 2),
+                    "change_24h_pct": 0.0,
+                    "rsi_14": 50.0,
+                    "sma_50": round(nav_price, 2),
+                    "sma_200": round(nav_price, 2),
+                    "ema_20": round(nav_price, 2),
+                    "bollinger": {"upper": round(nav_price * 1.05, 2), "middle": round(nav_price, 2), "lower": round(nav_price * 0.95, 2), "percent_b": 0.5},
+                    "dividend_yield": 0.0,
+                    "pe_ratio": 0.0,
+                    "trend": "NEUTRAL",
+                })
+                logger.info(f"Handled Nordnet mutual fund {symbol} using NAV price {nav_price:.2f} EUR")
+                continue
+
             try:
                 ticker = yf.Ticker(symbol)
                 # Fetch 1 year of daily history for technical analysis
@@ -70,7 +103,7 @@ class MarketDataClient:
                 clean_closes = hist["Close"].dropna() if not hist.empty else []
                 if len(clean_closes) == 0:
                     logger.warning(f"No valid yfinance price data for {symbol}. Using portfolio fallback price.")
-                    fallback_price = 30.818 if symbol == "NN_NORGE" else (77.402 if symbol == "NN_SVERIGE" else 1.0)
+                    fallback_price = portfolio_prices.get(symbol, 1.0)
                     closes = [fallback_price]
                     current_price = fallback_price
                     prev_close = fallback_price

@@ -39,9 +39,13 @@ class WeeklyReporter:
         portfolio_summary: Dict[str, Any],
         ai_evaluations: List[Dict[str, Any]],
         proposal: Dict[str, Any],
-        risk_alerts: List[Dict[str, Any]]
+        risk_alerts: List[Dict[str, Any]],
+        overall_ai_summary: Dict[str, Any] = None
     ) -> Path:
         """Generates both Markdown report and a visual HTML Dashboard in Finnish."""
+        if not overall_ai_summary:
+            overall_ai_summary = {}
+
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
         report_path = self.output_dir / f"tiuku_weekly_report_{timestamp}.md"
 
@@ -55,6 +59,12 @@ class WeeklyReporter:
             f"**Tila:** Neuvonanto & Avoin Markkinadata (`yfinance`)  ",
             f"**Salkun Kokonaisarvo:** {total_equity:,.2f} {currency}  ",
             f"**Käteisvarat:** {cash_balance:,.2f} {currency} ({portfolio_summary.get('cash_weight', 0.0)*100:.1f}%)  ",
+            "\n---",
+            "\n## 🧠 Tiuku AI Strateginen Salkun Yleiskatsaus",
+            f"- **Keskimääräinen Tiuku-kuntoluku:** {overall_ai_summary.get('average_ai_score', 6.0)}/10",
+            f"- **Salkun Kuntoluokitus:** {overall_ai_summary.get('health_rating', 'HYVÄ')}",
+            f"- **Suurin Painotuskohde:** {overall_ai_summary.get('top_holding_name', 'N/A')} ({overall_ai_summary.get('top_holding_weight_pct', 0.0):.1f}%)",
+            f"\n> **Tiukun Strateginen Analyysi:**  \n> {overall_ai_summary.get('summary_text', '')}",
             "\n---",
             "\n## 1. ⚠️ Turvarajat & Riskihuomiot",
         ]
@@ -152,7 +162,7 @@ class WeeklyReporter:
             logger.error(f"Failed to write report file: {e}")
 
         # Also generate HTML Dashboard
-        self.generate_html_dashboard(portfolio_summary, ai_evaluations, proposal, risk_alerts)
+        self.generate_html_dashboard(portfolio_summary, ai_evaluations, proposal, risk_alerts, overall_ai_summary)
 
         return report_path
 
@@ -161,9 +171,13 @@ class WeeklyReporter:
         portfolio_summary: Dict[str, Any],
         ai_evaluations: List[Dict[str, Any]],
         proposal: Dict[str, Any],
-        risk_alerts: List[Dict[str, Any]]
+        risk_alerts: List[Dict[str, Any]],
+        overall_ai_summary: Dict[str, Any] = None
     ) -> Path:
         """Generates a visual, interactive HTML dashboard file in Finnish (tiuku_dashboard.html)."""
+        if not overall_ai_summary:
+            overall_ai_summary = {}
+
         dashboard_path = config.BASE_DIR / "tiuku_dashboard.html"
         reports_dashboard_path = self.output_dir / "tiuku_dashboard.html"
 
@@ -445,6 +459,29 @@ class WeeklyReporter:
                 <div class="kpi-value" style="color: {'#38bdf8' if not risk_alerts else '#f59e0b'};">{len(risk_alerts)} Huomiota</div>
                 <div class="kpi-sub">Faron HODL-lukitus aktiivinen</div>
             </div>
+        </div>
+
+        <!-- Overall AI Portfolio Strategic Assessment -->
+        <div class="section-card" style="border-left: 4px solid var(--accent-purple); background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));">
+            <div class="section-header" style="color: #c084fc;">🧠 Tiuku AI Strateginen Salkun Yleiskatsaus & Terveystarkastus</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 16px;">
+                <div style="background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.4); padding: 10px 18px; border-radius: 10px; display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 600;">Keskimääräinen Tiuku Score:</span>
+                    <span style="font-size: 1.25rem; font-weight: 700; color: #c084fc;">{overall_ai_summary.get('average_ai_score', 6.0)} / 10</span>
+                </div>
+                <div style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); padding: 10px 18px; border-radius: 10px; display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 600;">Suurin Yksittäinen Paino:</span>
+                    <span style="font-size: 1.05rem; font-weight: 700; color: #38bdf8;">{overall_ai_summary.get('top_holding_name', 'N/A')} ({overall_ai_summary.get('top_holding_weight_pct', 0.0):.1f}%)</span>
+                </div>
+                <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); padding: 10px 18px; border-radius: 10px; display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 600;">Salkun Kuntoluokitus:</span>
+                    <span style="font-size: 1.05rem; font-weight: 700; color: #34d399;">{overall_ai_summary.get('health_rating', 'HYVÄ')}</span>
+                </div>
+            </div>
+            <p style="font-size: 0.92rem; color: #e2e8f0; line-height: 1.7; background: rgba(15, 23, 42, 0.6); padding: 16px; border-radius: 10px; border: 1px solid var(--border-color);">
+                💬 <strong>Tiuku AI:n Strateginen Analyysi:</strong><br>
+                {overall_ai_summary.get('summary_text', '')}
+            </p>
         </div>
 
         <!-- Risk Alerts Section -->

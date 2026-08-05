@@ -43,6 +43,9 @@ class WeeklyJobRunner:
         # 4. Audit portfolio risks (Stop Loss, max weight)
         risk_alerts = self.risk_mgr.audit_portfolio_risks(portfolio_summary)
 
+        # 4b. Perform overall high-level portfolio AI strategic assessment
+        overall_ai_summary = self.ai_advisor.generate_overall_portfolio_analysis(portfolio_summary, ai_evaluations, risk_alerts)
+
         # 5. Calculate proposed rebalancing plan
         raw_proposal = self.rebalancer.calculate_rebalance_plan(portfolio_summary, ai_evaluations)
 
@@ -52,12 +55,13 @@ class WeeklyJobRunner:
         raw_proposal["trade_count"] = len(validated_trades)
 
         # 7. Generate weekly markdown report
-        report_path = self.reporter.generate_report(portfolio_summary, ai_evaluations, raw_proposal, risk_alerts)
+        report_path = self.reporter.generate_report(portfolio_summary, ai_evaluations, raw_proposal, risk_alerts, overall_ai_summary)
 
         logger.info(f"Analysis cycle complete. Report saved to: {report_path}")
         return {
             "portfolio": portfolio_summary,
             "ai_evaluations": ai_evaluations,
+            "overall_ai_summary": overall_ai_summary,
             "proposal": raw_proposal,
             "risk_alerts": risk_alerts,
             "report_path": str(report_path),

@@ -48,6 +48,95 @@ class StockAdvisorAI:
 
         return results
 
+    def generate_overall_portfolio_analysis(
+        self,
+        portfolio_summary: Dict[str, Any],
+        ai_evaluations: List[Dict[str, Any]],
+        risk_alerts: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Generates a strategic, high-level AI analysis of the overall portfolio health, risk level, and asset allocation."""
+        holdings = portfolio_summary.get("holdings", {})
+        cash_balance = portfolio_summary.get("cash_balance", 0.0)
+        cash_weight = portfolio_summary.get("cash_weight", 0.0) * 100
+
+        # Calculate portfolio metrics
+        portfolio_scores = [ai.get("score", 5) for ai in ai_evaluations if ai["symbol"] in holdings]
+        avg_score = round(sum(portfolio_scores) / len(portfolio_scores), 1) if portfolio_scores else 6.0
+
+        max_position = max((h.get("weight", 0.0) for h in holdings.values()), default=0.0) * 100
+        top_symbol = max(holdings.items(), key=lambda x: x[1].get("weight", 0.0))[0] if holdings else "N/A"
+        top_name = holdings.get(top_symbol, {}).get("name", top_symbol)
+        hodl_count = sum(1 for h in holdings.values() if h.get("hodl", False))
+
+        if self.client:
+            summary_text = self._call_openai_portfolio_summary(portfolio_summary, ai_evaluations, avg_score, max_position, top_name)
+        else:
+            summary_text = self._rule_based_portfolio_summary(portfolio_summary, avg_score, max_position, top_name, hodl_count, len(risk_alerts))
+
+        health_rating = "ERINOMAINEN" if avg_score >= 7.5 and len(risk_alerts) == 0 else ("HYVÄ" if avg_score >= 6.0 else "KOHTALAINEN")
+
+        return {
+            "average_ai_score": avg_score,
+            "health_rating": health_rating,
+            "top_holding_symbol": top_symbol,
+            "top_holding_name": top_name,
+            "top_holding_weight_pct": round(max_position, 1),
+            "summary_text": summary_text,
+        }
+
+    def _call_openai_portfolio_summary(
+        self,
+        portfolio_summary: Dict[str, Any],
+        ai_evaluations: List[Dict[str, Any]],
+        avg_score: float,
+        max_position_pct: float,
+        top_name: str
+    ) -> str:
+        """Calls OpenAI GPT model for portfolio-level strategic summary."""
+        prompt = f"""Olet Tiuku, kokenut salkunhoitaja-AI-agentti. Tee tiivis, 3-4 virkkeen strateginen suomenkielinen yhteenveto salkun yleistilasta:
+
+Salkun kokonaisarvo: {portfolio_summary.get('total_equity', 0.0):,.2f} EUR
+Käteisosuus: {portfolio_summary.get('cash_weight', 0.0)*100:.1f}% ({portfolio_summary.get('cash_balance', 0.0):,.2f} EUR)
+Omistuksia yhteensä: {len(portfolio_summary.get('holdings', {}))} kpl
+Keskimääräinen Tiuku AI -kuntoluku: {avg_score}/10
+Suurin yksittäinen painotuskohde: {top_name} ({max_position_pct:.1f}%)
+
+Kirjoita selkeä, ammattimainen ja kannustava suomenkielinen yhteenveto salkun hajautuksesta, riski-asemasta ja tarvittavista tasapainotuksista. Älä käytä JSON-muotoilua, vaan pelkkää tekstiä."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "Olet Tiuku, suomenkielinen quant-salkunhoitaja-AI."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"OpenAI overall summary error: {e}")
+            return self._rule_based_portfolio_summary(portfolio_summary, avg_score, max_position_pct, top_name, 1, 0)
+
+    def _rule_based_portfolio_summary(
+        self,
+        portfolio_summary: Dict[str, Any],
+        avg_score: float,
+        max_position_pct: float,
+        top_name: str,
+        hodl_count: int,
+        alert_count: int
+    ) -> str:
+        """Generates a rule-based strategic summary in Finnish."""
+        cash_pct = portfolio_summary.get("cash_weight", 0.0) * 100
+        holdings_count = len(portfolio_summary.get("holdings", {}))
+
+        return (
+            f"Salkku on rakenteeltaan tasapainoinen ja kattaa {holdings_count} eri sijoituskohdetta. "
+            f"Omistusten keskimääräinen Tiuku AI -kuntoluku on {avg_score}/10. Suurin yksittäinen sijoituskohde on "
+            f"{top_name} ({max_position_pct:.1f}% salkusta). Käteisosuus ({cash_pct:.1f}%) tarjoaa "
+            f"hyvän liikkumavaran uudelleentasapainotuksille ja houkutteleville lisäostoille."
+        )
+
     def _call_openai_eval(self, stock: Dict[str, Any], current_portfolio: Dict[str, Any]) -> Dict[str, Any]:
         """Calls OpenAI GPT model for Tiuku stock evaluation."""
         bb = stock.get("bollinger", {})
