@@ -1,4 +1,4 @@
-# 🐱 tradeBotTiuku — Avointen Lähteiden Salkunneuvonantaja & Advisory Agent
+# 🐱 tradeBotTiuku — Avointen Lähteiden Salkunneuvonantaja & Advisory AI Agent
 
 ![tradeBotTiuku Icon](tiuku.svg)
 
