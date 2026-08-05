@@ -69,16 +69,28 @@ python main.py --set-cash 1191.00
 python main.py --set-holding NESTE.HE 100 29.50
 ```
 
-### 4. Aja Analyysisykli
-Aja viikkoanalyysi ja dashboard-sukupolvi kerran:
+### 4. Aja Analyysisykli & Ajastus
+
+Aja viikkoanalyysi, luo dashboard ja lähetä sähköpostiraportti kerran:
 ```bash
 python main.py --run-once
 ```
 
-Käynnistä ajastin (esim. joka maanantai 08:00 AM):
+#### Tapa A: Windows Tehtävien Ajoitus (Suositeltu)
+Voit ajastaa ajon ajettavaksi automaattisesti esim. joka maanantai klo 09:00 ilman että ikkunaa tarvitsee pitää auki:
+Aja PowerShellissä (järjestelmänvalvojana):
+```powershell
+$action = New-ScheduledTaskAction -Execute "py.exe" -Argument "c:\Users\Jarmo\Documents\kode\trade\tradeBotTiuku\main.py --run-once" -WorkingDirectory "c:\Users\Jarmo\Documents\kode\trade\tradeBotTiuku"
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 09:00AM
+Register-ScheduledTask -TaskName "TradeBotTiukuViikkoajo" -Action $action -Trigger $trigger
+```
+
+#### Tapa B: Pythonin Jatkuva Tausta-ajastin
+Käynnistä Pythonin oma jatkuva tausta-ajastin:
 ```bash
 python main.py --schedule
 ```
+(Ajaa analyysin `.env`-tiedostossa määritettynä viikonpäivänä `WEEKLY_REPORT_DAY="monday"`).
 
 ---
 
