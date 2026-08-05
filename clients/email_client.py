@@ -32,7 +32,7 @@ class EmailClient:
 
     def is_configured(self) -> bool:
         """Returns True if minimum required SMTP parameters are configured."""
-        return bool(self.smtp_server and self.username and self.password and self.email_to)
+        return bool(self.smtp_server and self.email_to)
 
     def send_report_email(
         self,
@@ -45,7 +45,7 @@ class EmailClient:
     ) -> bool:
         """Constructs and sends the weekly portfolio email with HTML body and dashboard attachment."""
         if not self.is_configured():
-            logger.warning("SMTP email credentials not fully configured (check SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD, EMAIL_TO). Skipping email sending.")
+            logger.warning("SMTP email configuration incomplete (check SMTP_SERVER, EMAIL_TO). Skipping email sending.")
             return False
 
         currency = portfolio_summary.get("currency", "EUR")
@@ -61,7 +61,7 @@ class EmailClient:
         # Create MIME message
         msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
-        msg["From"] = self.email_from
+        msg["From"] = self.email_from or self.username or "tiuku@local"
         msg["To"] = self.email_to
 
         # Build HTML Email Body
@@ -163,10 +163,21 @@ class EmailClient:
                 server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, timeout=30)
             else:
                 server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
-                server.starttls()
+                if self.smtp_port == 587:
+                    try:
+                        server.starttls()
+                    except Exception as e:
+                        logger.warning(f"STARTTLS warning: {e}")
 
-            server.login(self.username, self.password)
-            server.sendmail(self.email_from, [self.email_to], msg.as_string())
+            # Perform login if valid username & password are supplied
+            pwd_lower = str(self.password).lower()
+            if self.username and self.password and "syötä-tähän" not in pwd_lower and "your-" not in pwd_lower:
+                try:
+                    server.login(self.username, self.password)
+                except Exception as e:
+                    logger.warning(f"SMTP authentication skipped or failed: {e}")
+
+            server.sendmail(self.email_from or self.username, [self.email_to], msg.as_string())
             server.quit()
 
             logger.info(f"✅ Report email successfully sent to {self.email_to}")
