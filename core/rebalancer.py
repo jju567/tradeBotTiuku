@@ -1,0 +1,144 @@
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Any
+import config
+
+logger = logging.getLogger(__name__)
+
+
+class PortfolioRebalancer:
+    """Calculates portfolio rebalancing proposals based on target weights and fee constraints."""
+
+    def __init__(self, min_trade_eur: float = config.MIN_TRADE_EUR):
+        self.min_trade_eur = min_trade_eur
+
+    def calculate_rebalance_plan(
+        self,
+        portfolio_summary: Dict[str, Any],
+        ai_evaluations: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Calculates exact buy/sell trade proposals to rebalance the portfolio towards target weights."""
+        total_equity = portfolio_summary.get("total_equity", 0.0)
+        current_holdings = portfolio_summary.get("holdings", {})
+        cash_balance = portfolio_summary.get("cash_balance", 0.0)
+
+        # Build lookup for AI recommendations
+        ai_dict = {item["symbol"]: item for item in ai_evaluations}
+
+        proposed_trades = []
+        total_estimated_commission = 0.0
+
+        # Target allocation setup
+        target_cash = total_equity * config.TARGET_CASH_PERCENT
+        investable_equity = total_equity - target_cash
+
+        # Evaluate existing holdings for SELL / DOWNWEIGHT recommendations
+        for symbol, holding in current_holdings.items():
+            if holding.get("hodl", False):
+                logger.info(f"Skipping sell proposal for {symbol}: Position is locked under user HODL rule ('{holding.get('note')}')")
+                continue
+
+            curr_val = holding["market_value"]
+            curr_price = holding["current_price"]
+            curr_qty = holding["quantity"]
+            curr_weight = holding.get("weight", 0.0)
+            ai_eval = ai_dict.get(symbol, {})
+            score = ai_eval.get("score", 5)
+            rec = ai_eval.get("recommendation", "HOLD")
+            target_weight = min(ai_eval.get("target_weight", 0.0), config.MAX_POSITION_WEIGHT)
+
+            target_val = investable_equity * target_weight
+            diff_val = target_val - curr_val
+
+            # Generate SELL if AI recommends SELL/STRONG_SELL or position exceeds MAX_POSITION_WEIGHT or overweight trim
+            if (rec in ["SELL", "STRONG_SELL"] or curr_weight > config.MAX_POSITION_WEIGHT or (diff_val < 0 and rec != "HOLD")) and abs(diff_val) >= self.min_trade_eur:
+                sell_val = abs(diff_val)
+                sell_qty = int(sell_val / curr_price)
+                if sell_qty > 0:
+                    trade_val = round(sell_qty * curr_price, 2)
+                    commission = max(config.COMMISSION_MIN_EUR, round(trade_val * config.COMMISSION_PERCENT, 2))
+                    total_estimated_commission += commission
+                    proposed_trades.append({
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "quantity": sell_qty,
+                        "price": curr_price,
+                        "trade_value": trade_val,
+                        "estimated_commission": commission,
+                        "current_weight": curr_weight,
+                        "target_weight": target_weight,
+                        "ai_score": score,
+                        "reason": ai_eval.get("reasoning", "Rebalancing trim"),
+                    })
+
+        # Evaluate BUY / UPWEIGHT recommendations (ONLY if AI score indicates BUY / STRONG_BUY)
+        for ai_eval in ai_evaluations:
+            symbol = ai_eval["symbol"]
+            curr_price = ai_eval["current_price"]
+            rec = ai_eval.get("recommendation", "HOLD")
+            score = ai_eval.get("score", 5)
+
+            # Strict conviction check: Only BUY if AI explicitly recommends BUY or STRONG_BUY
+            if rec not in ["BUY", "STRONG_BUY"]:
+                continue
+
+            target_weight = min(ai_eval.get("target_weight", 0.0), config.MAX_POSITION_WEIGHT)
+
+            holding = current_holdings.get(symbol, {"market_value": 0.0, "quantity": 0, "weight": 0.0})
+            curr_val = holding["market_value"]
+
+            target_val = investable_equity * target_weight
+            diff_val = target_val - curr_val
+
+            if diff_val > 0 and diff_val >= self.min_trade_eur:
+                buy_qty = int(diff_val / curr_price)
+                trade_val = round(buy_qty * curr_price, 2)
+                if buy_qty > 0 and trade_val >= self.min_trade_eur:
+                    commission = max(config.COMMISSION_MIN_EUR, round(trade_val * config.COMMISSION_PERCENT, 2))
+                    total_estimated_commission += commission
+                    proposed_trades.append({
+                        "symbol": symbol,
+                        "action": "BUY",
+                        "quantity": buy_qty,
+                        "price": curr_price,
+                        "trade_value": trade_val,
+                        "estimated_commission": commission,
+                        "current_weight": holding["weight"],
+                        "target_weight": target_weight,
+                        "ai_score": score,
+                        "reason": ai_eval.get("reasoning", "Rebalancing buy"),
+                    })
+
+        proposal = {
+            "proposal_id": f"PROP-{datetime.now().strftime('%Y%m%d-%H%M')}",
+            "created_at": datetime.now().isoformat(),
+            "status": "PENDING_HUMAN_APPROVAL",
+            "total_equity": total_equity,
+            "cash_balance": cash_balance,
+            "proposed_trades": proposed_trades,
+            "trade_count": len(proposed_trades),
+            "total_estimated_commission": round(total_estimated_commission, 2),
+        }
+
+        self.save_proposal(proposal)
+        return proposal
+
+    def save_proposal(self, proposal: Dict[str, Any], filepath: Path = config.REBALANCE_PROPOSALS_FILE):
+        """Saves proposal to file."""
+        proposals = []
+        if filepath.exists():
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    proposals = json.load(f)
+            except Exception:
+                proposals = []
+
+        proposals.append(proposal)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(proposals, f, indent=2, ensure_ascii=False)
+            logger.info(f"Saved rebalance proposal {proposal['proposal_id']} to {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to save proposal: {e}")

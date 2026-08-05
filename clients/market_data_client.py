@@ -1,0 +1,149 @@
+import logging
+from typing import Dict, List, Any
+import yfinance as yf
+from utils.indicators import calculate_rsi, calculate_sma, calculate_ema, calculate_bollinger_bands
+
+logger = logging.getLogger(__name__)
+
+# Comprehensive default watchlist covering OMX Helsinki Large/Mid/Small Caps & Blue Chips
+DEFAULT_WATCHLIST = [
+    # OMX Helsinki Blue Chips & Large Caps
+    "NESTE.HE",
+    "KNEBV.HE",
+    "NOKIA.HE",
+    "UPM.HE",
+    "SAMPO.HE",
+    "FORTUM.HE",
+    "ELISA.HE",
+    "KESKOB.HE",
+    "VALMT.HE",
+    "WRT1V.HE",
+    "ORNBV.HE",
+    "HUH1V.HE",
+    "KEMIRA.HE",
+    "TIETO.HE",
+    "STERV.HE",
+    "METSA.HE",
+    "OUT1V.HE",
+    "NOKIAN.HE",
+    # Mid Cap & Growth / Dividend Leaders
+    "QTCOM.HE",
+    "HARVIA.HE",
+    "PUUILO.HE",
+    "TOKMAN.HE",
+    "GOFORE.HE",
+    "REG1V.HE",      # Revenio Group
+    "PON1V.HE",      # Ponsse
+    "TYRES.HE",      # Nokian Renkaat
+    "KAMUX.HE",
+    "KEMPOWR.HE",    # Kempower
+    "ANORA.HE",
+    "VERK.HE",
+    # US Tech & Global Giants
+    "AAPL",
+    "MSFT",
+]
+
+
+class MarketDataClient:
+    """Fetches real open-market equity data and technical indicators using yfinance."""
+
+    def __init__(self):
+        logger.info("MarketDataClient initialized using open-source yfinance market data source.")
+
+    def get_default_symbols(self) -> List[str]:
+        """Returns the default watchlist of symbols."""
+        return DEFAULT_WATCHLIST
+
+    def get_market_data_for_symbols(self, symbols: List[str] = None) -> List[Dict[str, Any]]:
+        """Fetches live prices, technical indicators (RSI, SMA, EMA, Bollinger), and fundamentals for given stock tickers."""
+        if not symbols:
+            symbols = DEFAULT_WATCHLIST
+
+        market_data = []
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+                # Fetch 1 year of daily history for technical analysis
+                hist = ticker.history(period="1y")
+
+                clean_closes = hist["Close"].dropna() if not hist.empty else []
+                if len(clean_closes) == 0:
+                    logger.warning(f"No valid yfinance price data for {symbol}. Using portfolio fallback price.")
+                    fallback_price = 30.818 if symbol == "NN_NORGE" else (77.402 if symbol == "NN_SVERIGE" else 1.0)
+                    closes = [fallback_price]
+                    current_price = fallback_price
+                    prev_close = fallback_price
+                    change_24h_pct = 0.0
+                else:
+                    closes = [float(x) for x in clean_closes.tolist()]
+                    current_price = closes[-1]
+                    # Scale down London pence (GBp) to GBP/EUR
+                    if symbol.endswith(".L") and current_price > 500:
+                        closes = [x / 100.0 for x in closes]
+                        current_price = current_price / 100.0
+
+                    prev_close = closes[-2] if len(closes) > 1 else current_price
+                    change_24h_pct = round(((current_price - prev_close) / prev_close) * 100, 2)
+
+                # Technical Indicators
+                rsi_14 = calculate_rsi(closes, period=14)
+                sma_50 = calculate_sma(closes, period=50)
+                sma_200 = calculate_sma(closes, period=200)
+                ema_20 = calculate_ema(closes, period=20)
+                bollinger = calculate_bollinger_bands(closes, period=20, num_std=2.0)
+
+                # Fundamental Information from yfinance info dictionary
+                info = {}
+                try:
+                    info = ticker.info or {}
+                except Exception:
+                    info = {}
+
+                # Currency conversion for USD assets
+                asset_currency = (info.get("currency") or "EUR").upper()
+                if asset_currency == "USD" or symbol == "NVDA":
+                    try:
+                        eur_usd_rate = yf.Ticker("EURUSD=X").history(period="1d")["Close"].iloc[-1]
+                        usd_to_eur = 1.0 / float(eur_usd_rate) if eur_usd_rate > 0 else 0.867
+                    except Exception:
+                        usd_to_eur = 0.867
+                    closes = [x * usd_to_eur for x in closes]
+                    current_price = current_price * usd_to_eur
+
+                stock_name = info.get("shortName") or info.get("longName") or symbol
+                sector = info.get("sector") or "General"
+                dividend_yield = info.get("dividendYield") or 0.0
+                if dividend_yield > 1.0:
+                    dividend_yield = dividend_yield / 100.0
+                pe_ratio = info.get("trailingPE") or info.get("forwardPE") or 0.0
+
+                # Determine Trend
+                if current_price > sma_50 > sma_200:
+                    trend = "BULLISH"
+                elif current_price < sma_50 < sma_200:
+                    trend = "BEARISH"
+                else:
+                    trend = "NEUTRAL"
+
+                market_data.append({
+                    "symbol": symbol,
+                    "name": stock_name,
+                    "sector": sector,
+                    "current_price": round(current_price, 2),
+                    "change_24h_pct": change_24h_pct,
+                    "rsi_14": round(rsi_14, 1),
+                    "sma_50": round(sma_50, 2),
+                    "sma_200": round(sma_200, 2),
+                    "ema_20": round(ema_20, 2),
+                    "bollinger": bollinger,
+                    "dividend_yield": round(dividend_yield, 4) if dividend_yield else 0.0,
+                    "pe_ratio": round(pe_ratio, 1) if pe_ratio else 0.0,
+                    "trend": trend,
+                })
+                logger.info(f"Fetched market data for {symbol}: Price {current_price:.2f} EUR, RSI {rsi_14:.1f}, Trend {trend}")
+
+            except Exception as e:
+                logger.error(f"Error fetching yfinance market data for {symbol}: {e}")
+
+        return market_data

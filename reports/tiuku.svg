@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+
+    <!-- Glowing Accent Outer Border -->
+    <linearGradient id="accentGlow" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0.9" />
+    </linearGradient>
+
+    <!-- Tiuku's Tabby Fur Brown Shading -->
+    <linearGradient id="tabbyBrown" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9a6032" />
+      <stop offset="60%" stop-color="#73421e" />
+      <stop offset="100%" stop-color="#4a2810" />
+    </linearGradient>
+
+    <!-- Tiuku's Emerald Eyes -->
+    <radialGradient id="eyeGreen" cx="40%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="70%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#047857" />
+    </radialGradient>
+
+    <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.4" />
+    </filter>
+  </defs>
+
+  <!-- App Icon Background Frame -->
+  <rect width="512" height="512" rx="110" fill="url(#bgGrad)" />
+  <rect x="12" y="12" width="488" height="488" rx="98" fill="none" stroke="url(#accentGlow)" stroke-width="5" />
+
+  <!-- TIUKU CAT PORTRAIT (Tabby Cat with White Chest) -->
+  <g transform="translate(0, 10)" filter="url(#softShadow)">
+    <!-- Cat Body / Loaf Position -->
+    <path d="M120 375 C110 315, 140 255, 210 245 C260 235, 310 245, 350 275 C400 315, 410 375, 400 405 C390 430, 130 430, 120 375 Z" fill="url(#tabbyBrown)" stroke="#3a1e0c" stroke-width="2" />
+    
+    <!-- White Chest & Belly -->
+    <path d="M150 415 C140 365, 170 295, 240 285 C290 275, 360 325, 370 405 C375 420, 145 430, 150 415 Z" fill="#f8fafc" />
+
+    <!-- Left Ear -->
+    <polygon points="150,215 118,125 198,170" fill="url(#tabbyBrown)" stroke="#3a1e0c" stroke-width="2" />
+    <polygon points="155,200 133,140 183,170" fill="#fbcfe8" opacity="0.8" />
+
+    <!-- Right Ear -->
+    <polygon points="362,215 394,125 314,170" fill="url(#tabbyBrown)" stroke="#3a1e0c" stroke-width="2" />
+    <polygon points="357,200 379,140 329,170" fill="#fbcfe8" opacity="0.8" />
+
+    <!-- Head -->
+    <path d="M160 205 C150 155, 362 155, 352 205 C342 265, 170 265, 160 205 Z" fill="url(#tabbyBrown)" stroke="#3a1e0c" stroke-width="2" />
+
+    <!-- White Facial Stripe / Muzzle Base -->
+    <path d="M222 175 L290 175 L272 265 L240 265 Z" fill="#f8fafc" opacity="0.95" />
+
+    <!-- Tabby Stripes on Forehead -->
+    <path d="M238 162 L256 188 M274 162 L256 188 M256 158 L256 185" stroke="#3a1e0c" stroke-width="4.5" stroke-linecap="round" />
+
+    <!-- Left Eye (Emerald Green with Pupil & Glint) -->
+    <ellipse cx="212" cy="210" rx="17" ry="12" fill="url(#eyeGreen)" stroke="#064e3b" stroke-width="1.5" />
+    <ellipse cx="212" cy="210" rx="5" ry="10" fill="#022c22" />
+    <circle cx="207" cy="205" r="4" fill="#ffffff" />
+
+    <!-- Right Eye (Emerald Green with Pupil & Glint) -->
+    <ellipse cx="300" cy="210" rx="17" ry="12" fill="url(#eyeGreen)" stroke="#064e3b" stroke-width="1.5" />
+    <ellipse cx="300" cy="210" rx="5" ry="10" fill="#022c22" />
+    <circle cx="295" cy="205" r="4" fill="#ffffff" />
+
+    <!-- Pink Nose -->
+    <path d="M256 234 L244 246 L268 246 Z" fill="#f472b6" stroke="#db2777" stroke-width="1" />
+    
+    <!-- Mouth -->
+    <path d="M256 246 L256 260 M242 260 C248 268, 264 268, 270 260" stroke="#475569" stroke-width="3" fill="none" stroke-linecap="round" />
+
+    <!-- White Muzzle Cheeks -->
+    <path d="M172 225 C162 255, 202 275, 242 265 Z" fill="#f8fafc" />
+    <path d="M340 225 C350 255, 310 275, 270 265 Z" fill="#f8fafc" />
+
+    <!-- Cute White Whiskers -->
+    <path d="M175 250 L85 235 M170 260 L75 260 M175 270 L90 285" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" opacity="0.9" />
+    <path d="M337 250 L427 235 M342 260 L437 260 M337 270 L422 285" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" opacity="0.9" />
+  </g>
+
+  <!-- Stock Trading Green Growth Badge -->
+  <g transform="translate(370, 385)" filter="url(#softShadow)">
+    <circle cx="45" cy="45" r="35" fill="#0f172a" stroke="#f59e0b" stroke-width="3.5" />
+    <polyline points="25,55 40,40 52,52 65,30" fill="none" stroke="#10b981" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+    <polyline points="53,30 65,30 65,42" fill="none" stroke="#10b981" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <!-- App Branding Text -->
+  <text x="48" y="468" font-family="'Inter', system-ui, sans-serif" font-weight="800" font-size="32" fill="#ffffff" letter-spacing="1">
+    tradeBot<tspan fill="#38bdf8">Tiuku</tspan>
+  </text>
+</svg>
