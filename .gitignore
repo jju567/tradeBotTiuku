@@ -40,6 +40,8 @@ data/*.json
 tradebot.db
 *.html
 reports/*.html
+reports/*.md
+!reports/.gitkeep
 tiuku_portfolio.json
 
 # IDE / OS
