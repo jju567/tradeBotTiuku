@@ -85,22 +85,36 @@ def map_name_to_symbol(name: str, existing_holdings: Dict[str, Any]) -> str:
     return fallback
 
 
+# Keywords expected in Nordnet CSV header rows (Finnish, Swedish, English)
+_HEADER_KEYWORDS = ("nimi", "antal", "määrä", "instrument", "name", "quantity", "gak", "keskikurssi")
+
+
 def read_file_lines(filepath: Path) -> List[str]:
-    """Tries reading file using common Nordnet export encodings (UTF-16LE, UTF-16, UTF-8-BOM, UTF-8, CP1252)."""
+    """Tries reading file using common Nordnet export encodings (UTF-16LE, UTF-16, UTF-8-BOM, UTF-8, CP1252).
+
+    Validates that the decoded content looks like a Nordnet portfolio export by
+    checking for known header keywords in the first two lines.
+    """
     encodings = ["utf-16", "utf-16le", "utf-8-sig", "utf-8", "cp1252"]
     for enc in encodings:
         try:
             with open(filepath, "r", encoding=enc) as f:
                 content = f.read()
-                if content and "\x00" not in content:
-                    lines = [line.strip() for line in content.splitlines() if line.strip()]
-                    if lines and any("nimi" in lines[0].lower() or "antal" in lines[0].lower() or "määrä" in lines[0].lower() for line in lines[:2]):
-                        logger.info(f"Successfully decoded CSV using encoding '{enc}'")
-                        return lines
+            if not content or "\x00" in content:
+                continue
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            if not lines:
+                continue
+            # Check first two lines (header may be on line 1 or 2 in some exports)
+            header_text = " ".join(lines[:2]).lower()
+            if any(kw in header_text for kw in _HEADER_KEYWORDS):
+                logger.info(f"Successfully decoded CSV using encoding '{enc}'")
+                return lines
         except Exception:
             continue
 
-    # Fallback to UTF-8 with replace
+    # Last-resort fallback: UTF-8 with replacement characters
+    logger.warning(f"Could not auto-detect encoding for {filepath}. Falling back to UTF-8 with replacement.")
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         return [line.strip() for line in f if line.strip()]
 
@@ -110,9 +124,15 @@ class NordnetCSVImporter:
 
     @staticmethod
     def import_csv(filepath: Path, existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
-        """
-        Parses Nordnet CSV export file and returns updated holdings dictionary preserving
-        target_weight, hodl, and note fields for existing positions.
+        """Parses Nordnet CSV export file and returns a holdings dict that mirrors the CSV exactly.
+
+        Behaviour:
+        - Positions present in the CSV are added/updated with fresh quantity and avg_price.
+        - Positions that are NOT in the CSV (i.e. sold since last export) are removed.
+        - HODL-locked positions (``hodl: True``) are always preserved regardless of whether
+          they appear in the CSV, so long-term locked positions survive a full re-import.
+        - ``target_weight``, ``hodl``, and ``note`` from existing holdings are carried over
+          for symbols that appear in the CSV.
         """
         if not filepath.exists():
             raise FileNotFoundError(f"Portfolio CSV file not found: {filepath}")
@@ -126,37 +146,62 @@ class NordnetCSVImporter:
 
         reader = csv.DictReader(lines, delimiter=delimiter)
 
-        updated_holdings = dict(existing_holdings)  # Copy existing holdings
+        # Start from HODL-locked positions only — everything else must come from the CSV.
+        # This ensures positions that have been sold in Nordnet are removed on re-import.
+        updated_holdings: Dict[str, Any] = {
+            sym: data
+            for sym, data in existing_holdings.items()
+            if data.get("hodl", False)
+        }
+
+        hodl_preserved = set(updated_holdings.keys())
+        if hodl_preserved:
+            logger.info(f"Preserved {len(hodl_preserved)} HODL-locked position(s) outside CSV scope: {', '.join(hodl_preserved)}")
+
         imported_count = 0
 
         for row in reader:
-            # Normalize field names
+            # Normalize field names (strip whitespace from header keys)
             row_keys = {k.strip(): k for k in row.keys() if k}
-            
-            # Look for stock name, quantity, avg price columns
-            name_key = next((row_keys[k] for k in row_keys if "Nimi" in k or "Instrument" in k or "Name" in k), None)
-            qty_key = next((row_keys[k] for k in row_keys if "Määrä" in k or "Antal" in k or "Quantity" in k), None)
-            price_key = next((row_keys[k] for k in row_keys if "Keskikurssi" in k or "GAK" in k or "Avg" in k), None)
+
+            # Locate name, quantity and avg-price columns (Finnish / Swedish / English headers)
+            name_key = next(
+                (row_keys[k] for k in row_keys if "Nimi" in k or "Instrument" in k or "Name" in k), None
+            )
+            qty_key = next(
+                (row_keys[k] for k in row_keys if "Määrä" in k or "Antal" in k or "Quantity" in k), None
+            )
+            price_key = next(
+                (row_keys[k] for k in row_keys if "Keskikurssi" in k or "GAK" in k or "Avg" in k), None
+            )
 
             if not (name_key and qty_key):
                 continue
 
             raw_name = row[name_key].strip()
             qty = parse_finnish_number(row[qty_key])
-            avg_price = parse_finnish_number(row[price_key]) if price_key and row[price_key] else 0.0
 
             if qty <= 0 or not raw_name:
                 continue
 
+            avg_price = 0.0
+            if price_key and row.get(price_key, "").strip():
+                avg_price = parse_finnish_number(row[price_key])
+            if avg_price == 0.0:
+                logger.warning(
+                    f"avg_price is 0.0 for '{raw_name}' — column '{price_key}' missing or empty. "
+                    "P&L calculations will be inaccurate until manually corrected."
+                )
+
             symbol = map_name_to_symbol(raw_name, existing_holdings)
-            
-            # Preserve target_weight, hodl, note if already configured
+
+            # Carry over user-configured fields from previous state if available
             existing_item = existing_holdings.get(symbol, {})
             target_weight = existing_item.get("target_weight", 0.10)
             hodl_flag = existing_item.get("hodl", False)
             note_val = existing_item.get("note", None)
 
-            holding_data = {
+            holding_data: Dict[str, Any] = {
                 "name": raw_name,
                 "quantity": int(qty) if qty.is_integer() else round(qty, 4),
                 "avg_price": round(avg_price, 4),
@@ -171,5 +216,10 @@ class NordnetCSVImporter:
             updated_holdings[symbol] = holding_data
             imported_count += 1
             logger.info(f"Imported holding {symbol} ({raw_name}): {qty} pcs @ {avg_price:.2f} EUR")
+
+        # Log positions that were removed because they were absent from the CSV
+        removed = set(existing_holdings.keys()) - set(updated_holdings.keys())
+        if removed:
+            logger.info(f"Removed {len(removed)} position(s) not present in CSV (likely sold): {', '.join(removed)}")
 
         return updated_holdings, imported_count

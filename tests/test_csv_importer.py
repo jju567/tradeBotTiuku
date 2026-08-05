@@ -132,6 +132,48 @@ class TestNordnetCSVImporter:
         assert count == 0
         assert "NOKIA.HE" not in holdings
 
+    # ----- Sold position removal (critical bug fix) -------------------------
+
+    def test_removes_sold_positions_not_in_csv(self, tmp_path):
+        """Positions absent from the CSV must be removed (they were sold in Nordnet)."""
+        existing = {
+            "NOKIA.HE": {"quantity": 100, "avg_price": 4.0},
+            "NESTE.HE": {"quantity": 50, "avg_price": 25.0},  # will be sold
+        }
+        content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\n"  # only Nokia
+        filepath = self._write_csv(tmp_path, content)
+        holdings, _ = NordnetCSVImporter.import_csv(filepath, existing)
+        assert "NOKIA.HE" in holdings
+        assert "NESTE.HE" not in holdings  # sold → removed
+
+    def test_hodl_position_preserved_even_when_absent_from_csv(self, tmp_path):
+        """HODL-locked positions must survive import even if they are not in the CSV."""
+        existing = {
+            "NOKIA.HE": {"quantity": 100, "avg_price": 4.0},
+            "NESTE.HE": {"quantity": 50, "avg_price": 25.0, "hodl": True, "note": "Lottolappu"},
+        }
+        content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\n"  # NESTE absent
+        filepath = self._write_csv(tmp_path, content)
+        holdings, _ = NordnetCSVImporter.import_csv(filepath, existing)
+        assert "NESTE.HE" in holdings  # HODL → kept
+        assert holdings["NESTE.HE"].get("hodl") is True
+
+    def test_non_hodl_not_in_csv_is_removed_hodl_is_not(self, tmp_path):
+        """Mixed scenario: sold non-HODL removed, HODL kept, CSV position added."""
+        existing = {
+            "SOLD.HE": {"quantity": 30, "avg_price": 10.0},          # sold, not HODL → remove
+            "LOCKED.HE": {"quantity": 200, "avg_price": 5.0, "hodl": True},  # HODL → keep
+        }
+        content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\n"  # new position in CSV
+        filepath = self._write_csv(tmp_path, content)
+        holdings, count = NordnetCSVImporter.import_csv(filepath, existing)
+        assert "SOLD.HE" not in holdings
+        assert "LOCKED.HE" in holdings
+        assert "NOKIA.HE" in holdings
+        assert count == 1
+
+    # ----- Metadata preservation --------------------------------------------
+
     def test_preserves_hodl_flag_for_existing_holdings(self, tmp_path):
         existing = {"NOKIA.HE": {"quantity": 50, "avg_price": 4.0, "hodl": True, "note": "Long-term"}}
         content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\n"
@@ -152,6 +194,20 @@ class TestNordnetCSVImporter:
         filepath = self._write_csv(tmp_path, content)
         holdings, _ = NordnetCSVImporter.import_csv(filepath, {})
         assert holdings["NOKIA.HE"]["target_weight"] == pytest.approx(0.10)
+
+    # ----- avg_price handling ------------------------------------------------
+
+    def test_avg_price_zero_when_column_missing_and_warns(self, tmp_path, caplog):
+        """Missing price column must set avg_price=0.0 and emit a warning."""
+        import logging
+        content = "Nimi\tMäärä\nNokia\t100\n"  # no price column
+        filepath = self._write_csv(tmp_path, content)
+        with caplog.at_level(logging.WARNING):
+            holdings, _ = NordnetCSVImporter.import_csv(filepath, {})
+        assert holdings["NOKIA.HE"]["avg_price"] == pytest.approx(0.0)
+        assert any("avg_price" in msg for msg in caplog.messages)
+
+    # ----- Multiple rows -----------------------------------------------------
 
     def test_multiple_rows_imported(self, tmp_path):
         content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\nNeste\t50\t25,40\n"
