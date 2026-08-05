@@ -40,6 +40,7 @@ data/*.json
 tradebot.db
 *.html
 reports/*.html
+tiuku_portfolio.json
 
 # IDE / OS
 .vscode/
