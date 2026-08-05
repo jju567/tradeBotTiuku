@@ -6,6 +6,27 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Finnish translation dictionaries for recommendations and trends
+REC_TRANSLATIONS = {
+    "STRONG_BUY": "VAHVA OSTA",
+    "BUY": "OSTA",
+    "HOLD": "PIDÄ",
+    "SELL": "MYY",
+    "STRONG_SELL": "VAHVA MYY",
+}
+
+TREND_TRANSLATIONS = {
+    "BULLISH": "Nouseva",
+    "BEARISH": "Laskeva",
+    "NEUTRAL": "Neutraali",
+}
+
+ACTION_TRANSLATIONS = {
+    "HOLD_LOCKED": "PIDÄ (Lukittu HODL)",
+    "SELL_ALL": "MYY KAIKKI (Stop Loss)",
+    "REDUCE_POSITION": "PIENENNÄ PAINOA",
+}
+
 
 class WeeklyReporter:
     """Generates Tiuku's weekly portfolio analysis & rebalancing advisor reports (Markdown & HTML Dashboard)."""
@@ -20,7 +41,7 @@ class WeeklyReporter:
         proposal: Dict[str, Any],
         risk_alerts: List[Dict[str, Any]]
     ) -> Path:
-        """Generates both Markdown report and a visual HTML Dashboard."""
+        """Generates both Markdown report and a visual HTML Dashboard in Finnish."""
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
         report_path = self.output_dir / f"tiuku_weekly_report_{timestamp}.md"
 
@@ -29,30 +50,31 @@ class WeeklyReporter:
         cash_balance = portfolio_summary.get("cash_balance", 0.0)
 
         lines = [
-            "# 🐱 tradeBotTiuku - Weekly Portfolio Advisory Report",
-            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
-            f"**Mode:** Advisory & Open Market Data (`yfinance`)  ",
-            f"**Total Equity:** {total_equity:,.2f} {currency}  ",
-            f"**Cash Balance:** {cash_balance:,.2f} {currency} ({portfolio_summary.get('cash_weight', 0.0)*100:.1f}%)  ",
+            "# 🐱 tradeBotTiuku — Viikoittainen Salkunneuvonantoraportti",
+            f"**Luotu:** {datetime.now().strftime('%d.%m.%Y klo %H:%M:%S')}  ",
+            f"**Tila:** Neuvonanto & Avoin Markkinadata (`yfinance`)  ",
+            f"**Salkun Kokonaisarvo:** {total_equity:,.2f} {currency}  ",
+            f"**Käteisvarat:** {cash_balance:,.2f} {currency} ({portfolio_summary.get('cash_weight', 0.0)*100:.1f}%)  ",
             "\n---",
-            "\n## 1. ⚠️ Risk Guardrails & Safety Alerts",
+            "\n## 1. ⚠️ Turvarajat & Riskihuomiot",
         ]
 
         if risk_alerts:
             for alert in risk_alerts:
-                lines.append(f"- **[{alert['severity']}] {alert['symbol']}**: {alert['message']} -> *Action: {alert['recommended_action']}*")
+                rec_action = ACTION_TRANSLATIONS.get(alert['recommended_action'], alert['recommended_action'])
+                lines.append(f"- **[{alert['severity']}] {alert['symbol']}**: {alert['message']} -> *Toimenpide: {rec_action}*")
         else:
-            lines.append("✅ No risk breaches detected. Portfolio is balanced within defined risk boundaries.")
+            lines.append("✅ Ei riskirajarrikkomuksia. Salkku on tasapainossa määriteltyjen turvarajojen puitteissa.")
 
         lines.extend([
             "\n---",
-            "\n## 2. 📊 Portfolio Holdings & Valuation",
-            "| Symbol | Quantity | Avg Price | Current Price | Market Value | Weight | Target Weight | PnL (%) | Status |",
+            "\n## 2. 📊 Salkun Omistukset & Arvostus",
+            "| Symboli | Määrä | Keskihinta | Nykykurssi | Markkina-arvo | Nykypaino | Tavoitepaino | Tuotto (%) | Tila |",
             "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
         ])
 
         for sym, h in portfolio_summary.get("holdings", {}).items():
-            status_badge = "🔒 HODL (Lottolappu)" if h.get("hodl", False) else "ACTIVE"
+            status_badge = "🔒 HODL (Lottolappu)" if h.get("hodl", False) else "AKTIIVINEN"
             lines.append(
                 f"| **{sym}** | {h.get('quantity')} | {h.get('avg_price'):.2f} {currency} | "
                 f"{h.get('current_price'):.2f} {currency} | {h.get('market_value'):,.2f} {currency} | "
@@ -61,8 +83,8 @@ class WeeklyReporter:
 
         lines.extend([
             "\n---",
-            "\n## 3. 🤖 Tiuku AI Stock Ratings & Technical Analysis",
-            "| Symbol | Score | Rec | Target Weight | RSI(14) | Bollinger %B | Trend | Reasoning |",
+            "\n## 3. 🤖 Tiuku AI Osakearviot & Tekninen Analyysi",
+            "| Symboli | Pisteet | Suositus | Tavoitepaino | RSI(14) | Bollinger %B | Trendi | Perustelu |",
             "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
         ])
 
@@ -72,6 +94,8 @@ class WeeklyReporter:
             sym = ai["symbol"]
             score = ai.get("score", 5)
             rec = ai.get("recommendation", "HOLD")
+            rec_fi = REC_TRANSLATIONS.get(rec, rec)
+            trend_fi = TREND_TRANSLATIONS.get(ai.get("trend", "NEUTRAL").upper(), ai.get("trend", "NEUTRAL"))
             is_in_portfolio = sym in portfolio_symbols
             is_buy = rec in ["BUY", "STRONG_BUY"]
 
@@ -82,39 +106,40 @@ class WeeklyReporter:
             bb = ai.get("bollinger", {})
             pct_b = bb.get("percent_b", "-")
             lines.append(
-                f"| **{ai['symbol']}** | **{ai['score']}/10** | `{ai['recommendation']}` | "
-                f"{ai.get('target_weight', 0.0)*100:.1f}% | {ai.get('rsi_14')} | {pct_b} | {ai.get('trend')} | {ai['reasoning']} |"
+                f"| **{ai['symbol']}** | **{ai['score']}/10** | `{rec_fi}` | "
+                f"{ai.get('target_weight', 0.0)*100:.1f}% | {ai.get('rsi_14')} | {pct_b} | {trend_fi} | {ai['reasoning']} |"
             )
 
         lines.extend([
             "\n---",
-            "\n## 4. 📝 Nordnet / Brokerage Manual Trading Action Checklist",
-            f"**Proposal ID:** `{proposal.get('proposal_id')}`  ",
-            f"**Nordnet Fee Tier:** Taso {config.NORDNET_FEE_TIER} (min {config.COMMISSION_MIN_EUR:.2f} {currency} / {config.COMMISSION_PERCENT*100:.2f}%)  ",
-            f"**Proposed Trades Count:** {proposal.get('trade_count', 0)}  ",
-            f"**Estimated Total Commissions:** {proposal.get('total_estimated_commission', 0.0):.2f} {currency}  ",
-            "\nFollow these manual execution steps in your broker web interface/app (e.g. Nordnet):",
-            "\n| Step | Action | Symbol | Quantity | Market Price | Est. Trade Value | Est. Commission | Conviction / Reason |",
+            "\n## 4. 📝 Nordnet / Pankki Manuaalisen Kaupankäynnin Muistilista",
+            f"**Ehdotus-ID:** `{proposal.get('proposal_id')}`  ",
+            f"**Nordnet-palkkiotaso:** Taso {config.NORDNET_FEE_TIER} (min {config.COMMISSION_MIN_EUR:.2f} {currency} / {config.COMMISSION_PERCENT*100:.2f}%)  ",
+            f"**Ehdotettujen kauppojen määrä:** {proposal.get('trade_count', 0)}  ",
+            f"**Arvioidut välityspalkkiot yhteensä:** {proposal.get('total_estimated_commission', 0.0):.2f} {currency}  ",
+            "\nSuorita seuraavat kaupat manuaalisesti välittäjäsi verkkopalvelussa tai sovelluksessa (esim. Nordnet):",
+            "\n| Vaihe | Toimenpide | Symboli | Määrä | Markkinahinta | Arvioitu Kauppa-arvo | Arv. Palkkio | Varmuus / Syy |",
             "| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :--- |",
         ])
 
         trades = proposal.get("proposed_trades", [])
         if trades:
             for idx, t in enumerate(trades, 1):
+                action_fi = "MYY" if t['action'] == "SELL" else "OSTA"
                 lines.append(
-                    f"| {idx} | **{t['action']}** | **{t['symbol']}** | {t['quantity']} pcs | "
+                    f"| {idx} | **{action_fi}** | **{t['symbol']}** | {t['quantity']} kpl | "
                     f"{t['price']:.2f} {currency} | {t['trade_value']:,.2f} {currency} | "
-                    f"{t['estimated_commission']:.2f} {currency} | AI Score: {t.get('ai_score', 'N/A')}/10 - {t['reason']} |"
+                    f"{t['estimated_commission']:.2f} {currency} | AI-pisteet: {t.get('ai_score', 'N/A')}/10 - {t['reason']} |"
                 )
         else:
-            lines.append("| - | - | No rebalancing trades needed this cycle. Portfolio is optimal. | - | - | - | - | - |")
+            lines.append("| - | - | Ei kauppaehdotuksia tälle syklille. Salkku on optimaalisessa tasapainossa. | - | - | - | - | - |")
 
         lines.extend([
             "\n---",
-            "\n## 5. 🔒 Advisory & Privacy Disclaimer",
-            "This report is generated locally by tradeBotTiuku using open-source market data (`yfinance`).",
-            "All portfolio data and API keys remain strictly local.",
-            "*No automated order execution is attempted.*",
+            "\n## 5. 🔒 Vastuuvapauslauseke & Tietosuoja",
+            "Tämä raportti on luotu paikallisesti tradeBotTiuku-järjestelmällä hyödyntäen avoimen lähdekoodin markkinadataa (`yfinance`).",
+            "Kaikki salkkutiedot ja API-avaimet säilyvät 100 % paikallisesti omalla laitteellasi.",
+            "*Automaattista kaupankäyntiä ei suoriteta ilman ihmisen vahvistusta.*",
         ])
 
         report_content = "\n".join(lines)
@@ -138,7 +163,7 @@ class WeeklyReporter:
         proposal: Dict[str, Any],
         risk_alerts: List[Dict[str, Any]]
     ) -> Path:
-        """Generates a visual, interactive HTML dashboard file (tiuku_dashboard.html)."""
+        """Generates a visual, interactive HTML dashboard file in Finnish (tiuku_dashboard.html)."""
         dashboard_path = config.BASE_DIR / "tiuku_dashboard.html"
         reports_dashboard_path = self.output_dir / "tiuku_dashboard.html"
 
@@ -160,10 +185,11 @@ class WeeklyReporter:
             pnl_class = "positive" if pnl_pct >= 0 else "negative"
             pnl_sign = "+" if pnl_pct >= 0 else ""
             status_html = '<span class="badge hodl">🔒 HODL (Lottolappu)</span>' if h.get("hodl", False) else '<span class="badge active">Aktiivinen</span>'
+            full_name = h.get("name", sym)
 
             holdings_rows_html += f"""
             <tr>
-                <td><strong>{sym}</strong></td>
+                <td title="{full_name}" class="symbol-cell"><strong>{sym}</strong><br><small style="color: var(--text-secondary); font-size: 0.78rem;">{full_name}</small></td>
                 <td>{h.get('quantity')}</td>
                 <td>{h.get('avg_price'):.2f} {currency}</td>
                 <td>{h.get('current_price'):.2f} {currency}</td>
@@ -187,6 +213,11 @@ class WeeklyReporter:
             sym = ai["symbol"]
             score = ai.get("score", 5)
             rec = ai.get("recommendation", "HOLD")
+            rec_fi = REC_TRANSLATIONS.get(rec, rec)
+            trend_raw = ai.get("trend", "NEUTRAL")
+            trend_fi = TREND_TRANSLATIONS.get(trend_raw.upper(), trend_raw)
+            full_name = ai.get("name", sym)
+            
             is_in_portfolio = sym in portfolio_symbols
             is_buy = rec in ["BUY", "STRONG_BUY"]
 
@@ -202,18 +233,18 @@ class WeeklyReporter:
 
             ai_rows_html += f"""
             <tr>
-                <td><strong>{ai['symbol']}</strong> <br><small>{ai.get('name', '')}</small></td>
+                <td title="{full_name}" class="symbol-cell"><strong>{ai['symbol']}</strong><br><small style="color: var(--text-secondary); font-size: 0.78rem;">{full_name}</small></td>
                 <td>
                     <div class="score-container">
                         <span class="score-val" style="color: {score_color};">{score}/10</span>
                         <div class="score-bar-bg"><div class="score-bar-fill" style="width: {score*10}%; background-color: {score_color};"></div></div>
                     </div>
                 </td>
-                <td><span class="badge rec-{rec_class}">{rec}</span></td>
+                <td><span class="badge rec-{rec_class}">{rec_fi}</span></td>
                 <td>{ai.get('target_weight', 0.0)*100:.1f}%</td>
                 <td>{ai.get('rsi_14')}</td>
                 <td>{pct_b}</td>
-                <td><span class="trend-{ai.get('trend', 'NEUTRAL').lower()}">{ai.get('trend')}</span></td>
+                <td><span class="trend-{trend_raw.lower()}">{trend_fi}</span></td>
                 <td class="reasoning">{ai['reasoning']}</td>
             </tr>
             """
@@ -224,11 +255,12 @@ class WeeklyReporter:
             for idx, t in enumerate(trades, 1):
                 action_class = "sell" if t['action'] == "SELL" else "buy"
                 action_icon = "🔻 MYY" if t['action'] == "SELL" else "🟢 OSTA"
+                full_name = t.get("name", t.get("symbol", ""))
                 trades_rows_html += f"""
                 <tr>
                     <td><strong>{idx}</strong></td>
                     <td><span class="badge rec-{action_class}">{action_icon}</span></td>
-                    <td><strong>{t['symbol']}</strong></td>
+                    <td title="{full_name}" class="symbol-cell"><strong>{t['symbol']}</strong><br><small style="color: var(--text-secondary); font-size: 0.78rem;">{full_name}</small></td>
                     <td>{t['quantity']} kpl</td>
                     <td>{t['price']:.2f} {currency}</td>
                     <td><strong>{t['trade_value']:,.2f} {currency}</strong></td>
@@ -245,11 +277,13 @@ class WeeklyReporter:
             for a in risk_alerts:
                 sev_class = a['severity'].lower()
                 icon = "🔒" if "HODL" in a['type'] else ("⚠️" if a['severity'] == "HIGH" else "ℹ️")
+                rec_action_fi = ACTION_TRANSLATIONS.get(a['recommended_action'], a['recommended_action'])
+                full_name = holdings.get(a['symbol'], {}).get('name', a['symbol'])
                 alerts_html += f"""
                 <div class="alert-card alert-{sev_class}">
-                    <div class="alert-header">{icon} <strong>{a['symbol']}</strong> - {a['type']}</div>
+                    <div class="alert-header">{icon} <strong title="{full_name}">{a['symbol']}</strong> ({full_name}) - {a['type']}</div>
                     <div class="alert-body">{a['message']}</div>
-                    <div class="alert-action">Toimenpideohje: <strong>{a['recommended_action']}</strong></div>
+                    <div class="alert-action">Toimenpideohje: <strong>{rec_action_fi}</strong></div>
                 </div>
                 """
         else:
@@ -380,12 +414,12 @@ class WeeklyReporter:
                 <img src="tiuku.svg" alt="tradeBotTiuku Logo" style="width: 54px; height: 54px; border-radius: 12px; filter: drop-shadow(0 4px 10px rgba(56,189,248,0.35));">
                 <div>
                     <h1>tradeBotTiuku Dashboard</h1>
-                    <p>Avointen Lähteiden Salkunneuvonantaja & Advisory Agent (Päivitetty: {datetime.now().strftime('%d.%m.%Y klo %H:%M')})</p>
+                    <p>Avointen Lähteiden Salkunneuvonantaja & AI-Agentti (Päivitetty: {datetime.now().strftime('%d.%m.%Y klo %H:%M')})</p>
                 </div>
             </div>
             <div class="header-meta">
-                <span class="badge-pill live">● Open Market Data (yfinance)</span>
-                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">Human-in-the-loop • Advisory Only</p>
+                <span class="badge-pill live">● Avoin Markkinadata (yfinance)</span>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">Ihmisen valvoma (Human-in-the-loop) • Vain neuvonanto</p>
             </div>
         </header>
 
@@ -475,13 +509,13 @@ class WeeklyReporter:
 
         <!-- AI Ratings Section -->
         <div class="section-card">
-            <div class="section-header">🤖 Tiuku AI Stock Ratings & Tekninen Analyysi (GPT-4o)</div>
+            <div class="section-header">🤖 Tiuku AI Osakearviot & Tekninen Analyysi (GPT-4o)</div>
             <div style="overflow-x: auto;">
                 <table>
                     <thead>
                         <tr>
                             <th>Osake / ETF</th>
-                            <th>Tiuku Score</th>
+                            <th>Tiuku-pisteet</th>
                             <th>Suositus</th>
                             <th>Tavoitepaino</th>
                             <th>RSI(14)</th>
@@ -498,7 +532,7 @@ class WeeklyReporter:
         </div>
 
         <footer>
-            🐱 tradeBotTiuku — Avointen Lähteiden Salkunneuvonantaja & AI Agent <br>
+            🐱 tradeBotTiuku — Avointen Lähteiden Salkunneuvonantaja & AI-Agentti <br>
             Kaikki salkkutiedot ja API-avaimet säilyvät aina 100% paikallisesti omalla laitteellasi.
         </footer>
     </div>

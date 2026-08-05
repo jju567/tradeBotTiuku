@@ -64,24 +64,48 @@ def _get_int(key: str, default: int) -> int:
 INITIAL_BALANCE = _get_float("INITIAL_BALANCE", 10000.0)
 
 # Nordnet Brokerage Fee Tiers
-# Taso 3 (1-10 kauppaa/kk): min 7.00 EUR / 0.15%
-# Taso 2 (11-50 kauppaa/kk): min 5.00 EUR / 0.10%
-# Taso 1 (>50 kauppaa/kk): min 3.00 EUR / 0.06%
+# Taso 3 (1-10 kauppaa/kk): Kotimaa min 7.00 EUR / Ulkomaat min 15.00 EUR (0.15%)
+# Taso 2 (11-50 kauppaa/kk): Kotimaa min 5.00 EUR / Ulkomaat min 13.00 EUR (0.10%)
+# Taso 1 (>50 kauppaa/kk): Kotimaa min 3.00 EUR / Ulkomaat min 10.00 EUR (0.06%)
 NORDNET_FEE_TIER = _get_int("NORDNET_FEE_TIER", 3)
 
 NORDNET_TIERS = {
-    1: {"min_eur": 3.00, "percent": 0.0006},
-    2: {"min_eur": 5.00, "percent": 0.0010},
-    3: {"min_eur": 7.00, "percent": 0.0015},
+    1: {"min_eur": 3.00, "min_foreign_eur": 10.00, "percent": 0.0006},
+    2: {"min_eur": 5.00, "min_foreign_eur": 13.00, "percent": 0.0010},
+    3: {"min_eur": 7.00, "min_foreign_eur": 15.00, "percent": 0.0015},
 }
 
 _tier_info = NORDNET_TIERS.get(NORDNET_FEE_TIER, NORDNET_TIERS[3])
 COMMISSION_MIN_EUR = _get_float("COMMISSION_MIN_EUR", _tier_info["min_eur"])
+COMMISSION_MIN_FOREIGN_EUR = _get_float("COMMISSION_MIN_FOREIGN_EUR", _tier_info["min_foreign_eur"])
 COMMISSION_PERCENT = _get_float("COMMISSION_PERCENT", _tier_info["percent"])
+
+
+def calculate_commission(symbol: str, trade_value: float) -> float:
+    """Calculates estimated Nordnet commission based on asset market venue (Domestic vs Foreign vs Nordnet Funds)."""
+    if symbol.startswith("NN_"):
+        return 0.0  # Nordnet index funds have 0 EUR brokerage fee
+    
+    if symbol.endswith(".HE"):
+        min_fee = COMMISSION_MIN_EUR  # Domestic OMX Helsinki
+    else:
+        min_fee = COMMISSION_MIN_FOREIGN_EUR  # Foreign exchange (Xetra .DE, LSE .L, US)
+
+    return max(min_fee, round(trade_value * COMMISSION_PERCENT, 2))
+
+
+def get_min_trade_size_for_symbol(symbol: str, max_fee_ratio: float = 0.025) -> float:
+    """Returns minimum recommended trade size in EUR to keep commission below max_fee_ratio (default 2.5%)."""
+    if symbol.startswith("NN_"):
+        return 50.0  # Minimal size for fee-free index funds
+    
+    min_fee = COMMISSION_MIN_EUR if symbol.endswith(".HE") else COMMISSION_MIN_FOREIGN_EUR
+    return max(MIN_TRADE_EUR, round(min_fee / max_fee_ratio, 2))
+
 
 # Safety Rails & Fee Thresholds
 REBALANCE_INTERVAL_DAYS = _get_int("REBALANCE_INTERVAL_DAYS", 7)
-MIN_TRADE_EUR = _get_float("MIN_TRADE_EUR", 200.0)            # Minimum trade size to avoid commission erosion
+MIN_TRADE_EUR = _get_float("MIN_TRADE_EUR", 200.0)            # Minimum baseline trade size
 MAX_POSITION_WEIGHT = _get_float("MAX_POSITION_WEIGHT", 0.20)   # Max 20% weight per stock
 TARGET_CASH_PERCENT = _get_float("TARGET_CASH_PERCENT", 0.05)   # 5% cash buffer
 STOP_LOSS_PERCENT = _get_float("STOP_LOSS_PERCENT", 0.15)       # 15% stop loss threshold

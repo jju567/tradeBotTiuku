@@ -48,20 +48,22 @@ class PortfolioRebalancer:
             score = ai_eval.get("score", 5)
             rec = ai_eval.get("recommendation", "HOLD")
             target_weight = min(ai_eval.get("target_weight", 0.0), config.MAX_POSITION_WEIGHT)
+            min_symbol_trade_eur = config.get_min_trade_size_for_symbol(symbol)
 
             target_val = investable_equity * target_weight
             diff_val = target_val - curr_val
 
             # Generate SELL if AI recommends SELL/STRONG_SELL or position exceeds MAX_POSITION_WEIGHT or overweight trim
-            if (rec in ["SELL", "STRONG_SELL"] or curr_weight > config.MAX_POSITION_WEIGHT or (diff_val < 0 and rec != "HOLD")) and abs(diff_val) >= self.min_trade_eur:
+            if (rec in ["SELL", "STRONG_SELL"] or curr_weight > config.MAX_POSITION_WEIGHT or (diff_val < 0 and rec != "HOLD")) and abs(diff_val) >= min_symbol_trade_eur:
                 sell_val = abs(diff_val)
                 sell_qty = int(sell_val / curr_price)
                 if sell_qty > 0:
                     trade_val = round(sell_qty * curr_price, 2)
-                    commission = max(config.COMMISSION_MIN_EUR, round(trade_val * config.COMMISSION_PERCENT, 2))
+                    commission = config.calculate_commission(symbol, trade_val)
                     total_estimated_commission += commission
                     proposed_trades.append({
                         "symbol": symbol,
+                        "name": holding.get("name", ai_eval.get("name", symbol)),
                         "action": "SELL",
                         "quantity": sell_qty,
                         "price": curr_price,
@@ -85,6 +87,7 @@ class PortfolioRebalancer:
                 continue
 
             target_weight = min(ai_eval.get("target_weight", 0.0), config.MAX_POSITION_WEIGHT)
+            min_symbol_trade_eur = config.get_min_trade_size_for_symbol(symbol)
 
             holding = current_holdings.get(symbol, {"market_value": 0.0, "quantity": 0, "weight": 0.0})
             curr_val = holding["market_value"]
@@ -92,14 +95,15 @@ class PortfolioRebalancer:
             target_val = investable_equity * target_weight
             diff_val = target_val - curr_val
 
-            if diff_val > 0 and diff_val >= self.min_trade_eur:
+            if diff_val > 0 and diff_val >= min_symbol_trade_eur:
                 buy_qty = int(diff_val / curr_price)
                 trade_val = round(buy_qty * curr_price, 2)
-                if buy_qty > 0 and trade_val >= self.min_trade_eur:
-                    commission = max(config.COMMISSION_MIN_EUR, round(trade_val * config.COMMISSION_PERCENT, 2))
+                if buy_qty > 0 and trade_val >= min_symbol_trade_eur:
+                    commission = config.calculate_commission(symbol, trade_val)
                     total_estimated_commission += commission
                     proposed_trades.append({
                         "symbol": symbol,
+                        "name": ai_eval.get("name", holding.get("name", symbol)),
                         "action": "BUY",
                         "quantity": buy_qty,
                         "price": curr_price,

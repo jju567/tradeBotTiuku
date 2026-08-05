@@ -1,8 +1,8 @@
 # 🐱 tradeBotTiuku — Avointen Lähteiden Salkunneuvonantaja & Advisory AI Agent
 
-![tradeBotTiuku Icon](tiuku.svg)
+<img src="tiuku.svg" alt="tradeBotTiuku Icon" width="90" style="border-radius: 12px;">
 
-**tradeBotTiuku** on Python-pohjainen, paikallisesti toimiva salkunseuranta- ja uudelleentasapainotuksen neuvonantaja-agentti. Koska suoraa pankki-API-yhteyttä (kuten Nordnet API) ei ole saatavilla uusille asiakkaille, Tiuku toimii täysin itsenäisenä **avointen lähteiden markkina-älyagenttina (Advisory Agent)**. Järjestelmä laskee salkun arvon, tekee teknisen ja AI-pohjaisen analyysin sekä tuottaa valmiit toimenpide-ehdotukset (Checklist) ja visuaalisen HTML-dashboardin ihmisen hyväksyttäväksi (*Human-in-the-loop*).
+**tradeBotTiuku** on Python-pohjainen, paikallisesti toimiva salkunseuranta- ja uudelleentasapainotuksen neuvonantaja-agentti. Koska suoraa pankki-API-yhteyttä (kuten Nordnet API) ei ole saatavilla uusille asiakkaille, Tiuku toimii täysin itsenäisenä **avointen lähteiden markkina-älyagenttina (Advisory Agent)**. Järjestelmä laskee salkun arvon, tekee teknisen ja AI-pohjaisen analyysin sekä tuottaa valmiit toimenpide-ehdotukset (Checklist) ja visuaalisen suomenkielisen HTML-dashboardin ihmisen hyväksyttäväksi (*Human-in-the-loop*).
 
 ---
 
@@ -10,10 +10,14 @@
 
 - **📁 Tiedostopohjainen Salkunseuranta**: Lukee omistukset, määrät ja hankintahinnat paikallisesta `tiuku_portfolio.json` -tiedostosta.
 - **📈 Avointen Lähteiden Markkinadata (`yfinance`)**: Hakee reaaliaikaiset kurssit ja tekniset indikaattorit (RSI, Bollinger %B, SMA/EMA) ilmaiseksi ilman maksullisia API-avaimia.
-- **🔒 HODL / Lottolappu -Suojapuskuri**: Voit lukita yksittäisiä osakkeita , jotta automaattinen myynti ei koskaan koske niihin.
-- **🛡️ Nordnet Palkkiotasot & Kulusuojaus**: Integroitu Nordnetin palkkiotasot (Taso 3 min 7.00 € / 0.15 %). Suodattaa pois pikkukaupat, joiden välityspalkkiokulut ylittäisivät 2.5 % kauppasummasta.
-- **🎯 Conviction Alignment**: Osto-ohjelmaan pääsevät vain ja ainoastaan osakkeet, joiden tekninen AI-arvio antaa ostosuosituksen (`BUY` / `STRONG_BUY`).
-- **🌐 Visuaalinen HTML Dashboard**: Generoi jokaisen ajokerran yhteydessä selkeän, modernin `tiuku_dashboard.html` -näkymän `tiuku.svg` -ikonilla.
+- **🔒 HODL / Lottolappu -Suojapuskuri**: Voit lukita yksittäisiä osakkeita (esim. Faron), jotta automaattinen myyntiehdotus ei koskaan koske niihin.
+- **🛡️ Nordnet Palkkiotasot & Markkinakohtainen Kulusuojaus**:
+  - **OMX Helsinki (`.HE`)**: Kotimaan Taso 3 minimipalkkio 7,00 € / 0,15 %.
+  - **Ulkomaiset pörssit (Saksa `.DE`, Lontoo `.L`, USA)**: Ulkomaankaupan minimipalkkio 15,00 € / 0,15 %.
+  - **Nordnet-rahastot (`NN_NORGE`, `NN_SVERIGE`)**: 0,00 € välityspalkkio.
+  - Suodattaa automaattisesti pois pikkukaupat, joiden välityspalkkiokulut ylittäisivät 2,5 % kauppasummasta.
+- **🎯 Conviction Alignment**: Osto-ohjelmaan pääsevät vain osakkeet, joiden tekninen AI-arvio antaa selkeän ostosuosituksen (`BUY` / `STRONG_BUY`).
+- **🌐 Visuaalinen Suomenkielinen HTML Dashboard & Tooltipit**: Generoi jokaisen ajokerran yhteydessä `tiuku_dashboard.html` -näkymän. Instrumenttien täydellinen nimi näkyy suoraan sekä hiiren leijutuksella (mouseover), mikä helpottaa toimeksiantojen hakua Nordnetissä.
 
 ---
 
@@ -22,7 +26,7 @@
 ### 1. Riippuvuuksien asennus
 ```bash
 python -m venv .venv
-source .venv/bin/scripts/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -58,7 +62,7 @@ tradeBotTiuku/
 ├── tiuku_dashboard.html     # Visuaalinen selain-dashboard
 ├── tiuku_portfolio.json     # Paikallinen salkun tila
 ├── main.py                  # Pääkäynnistystiedosto
-├── config.py                # Järjestelmäasetukset & Nordnet-palkkiotasot
+├── config.py                # Järjestelmäasetukset & Nordnet-palkkiotasot (kotimaa/ulkomat)
 ├── clients/
 │   ├── market_data_client.py# yfinance-markkinadatayhteys & indikaattorit
 │   └── nordnet_client.py    # Advisory-tilan salkkulaskenta
@@ -67,7 +71,7 @@ tradeBotTiuku/
 │   ├── rebalancer.py        # Uudelleentasapainotus & Conviction-logiikka
 │   └── risk_manager.py      # Stop Loss & Kulusuojaus
 └── reporting/
-    └── weekly_reporter.py   # Markdown & HTML Dashboard -generaattori
+    └── weekly_reporter.py   # Suomenkielinen Markdown & HTML Dashboard -generaattori
 ```
 
 ---
