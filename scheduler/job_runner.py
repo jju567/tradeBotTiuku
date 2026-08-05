@@ -10,6 +10,8 @@ from core.rebalancer import PortfolioRebalancer
 from core.risk_manager import RiskManager
 from reporting.weekly_reporter import WeeklyReporter
 
+from clients.email_client import EmailClient
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,8 +25,10 @@ class WeeklyJobRunner:
         self.rebalancer = PortfolioRebalancer()
         self.risk_mgr = RiskManager()
         self.reporter = WeeklyReporter()
+        self.email_client = EmailClient()
+
     def run_analysis_cycle(self) -> Dict[str, Any]:
-        """Runs full portfolio sync, AI evaluation, rebalancing plan, risk audit, and report generation."""
+        """Runs full portfolio sync, AI evaluation, rebalancing plan, risk audit, report generation, and email dispatch."""
         logger.info("=== Starting Weekly NordnetBot Portfolio Analysis Cycle ===")
 
         # 1. Sync current portfolio state from tiuku_portfolio.json & yfinance
@@ -54,8 +58,20 @@ class WeeklyJobRunner:
         raw_proposal["proposed_trades"] = validated_trades
         raw_proposal["trade_count"] = len(validated_trades)
 
-        # 7. Generate weekly markdown report
+        # 7. Generate weekly markdown report & HTML Dashboard
         report_path = self.reporter.generate_report(portfolio_summary, ai_evaluations, raw_proposal, risk_alerts, overall_ai_summary)
+
+        # 8. Send report via email if enabled or configured
+        if config.ENABLE_EMAIL_REPORTS or self.email_client.is_configured():
+            dashboard_path = config.BASE_DIR / "tiuku_dashboard.html"
+            self.email_client.send_report_email(
+                portfolio_summary=portfolio_summary,
+                proposal=raw_proposal,
+                risk_alerts=risk_alerts,
+                overall_ai_summary=overall_ai_summary,
+                dashboard_path=dashboard_path,
+                report_md_path=report_path,
+            )
 
         logger.info(f"Analysis cycle complete. Report saved to: {report_path}")
         return {

@@ -36,10 +36,18 @@ Kopioi mallitiedosto `.env.example` nimelle `.env`:
 ```bash
 cp .env.example .env
 ```
-Määritä tarvittaessa OpenAI API-avain (jos käytät GPT-4o -analyysiä):
+Määritä tarvittaessa OpenAI API-avain sekä sähköpostiraportoinnin asetukset (`ENABLE_EMAIL_REPORTS`):
 ```env
 OPENAI_API_KEY="your-api-key-here"
 NORDNET_FEE_TIER=3
+
+# Sähköpostiraportointi (SMTP)
+ENABLE_EMAIL_REPORTS="true"
+SMTP_SERVER="smtp.gmail.com"
+SMTP_PORT=587
+SMTP_USERNAME="oma.sahkoposti@gmail.com"
+SMTP_PASSWORD="sovelluskohtainen-salasana"
+EMAIL_TO="vastaanottaja@domain.com"
 ```
 
 ### 3. Salkun Päivittäminen & Nordnet CSV-Sisäänluku

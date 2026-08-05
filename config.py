@@ -103,12 +103,26 @@ def get_min_trade_size_for_symbol(symbol: str, max_fee_ratio: float = 0.025) -> 
     return max(MIN_TRADE_EUR, round(min_fee / max_fee_ratio, 2))
 
 
+def _get_bool(key: str, default: bool = False) -> bool:
+    val = env.get(key, os.environ.get(key, str(default))).lower()
+    return val in ("true", "1", "yes", "on")
+
+
 # Safety Rails & Fee Thresholds
 REBALANCE_INTERVAL_DAYS = _get_int("REBALANCE_INTERVAL_DAYS", 7)
 MIN_TRADE_EUR = _get_float("MIN_TRADE_EUR", 200.0)            # Minimum baseline trade size
 MAX_POSITION_WEIGHT = _get_float("MAX_POSITION_WEIGHT", 0.20)   # Max 20% weight per stock
 TARGET_CASH_PERCENT = _get_float("TARGET_CASH_PERCENT", 0.05)   # 5% cash buffer
 STOP_LOSS_PERCENT = _get_float("STOP_LOSS_PERCENT", 0.15)       # 15% stop loss threshold
+
+# Email & Notification Settings
+ENABLE_EMAIL_REPORTS = _get_bool("ENABLE_EMAIL_REPORTS", False)
+SMTP_SERVER = env.get("SMTP_SERVER", os.environ.get("SMTP_SERVER", "smtp.gmail.com"))
+SMTP_PORT = _get_int("SMTP_PORT", 587)
+SMTP_USERNAME = env.get("SMTP_USERNAME", os.environ.get("SMTP_USERNAME", ""))
+SMTP_PASSWORD = env.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
+EMAIL_TO = env.get("EMAIL_TO", os.environ.get("EMAIL_TO", ""))
+EMAIL_FROM = env.get("EMAIL_FROM", os.environ.get("EMAIL_FROM", SMTP_USERNAME))
 
 # Automation & Schedule
 WEEKLY_REPORT_DAY = env.get("WEEKLY_REPORT_DAY", "monday").lower()
