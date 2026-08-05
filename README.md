@@ -10,7 +10,7 @@
 
 - **📁 Tiedostopohjainen Salkunseuranta**: Lukee omistukset, määrät ja hankintahinnat paikallisesta `tiuku_portfolio.json` -tiedostosta.
 - **📈 Avointen Lähteiden Markkinadata (`yfinance`)**: Hakee reaaliaikaiset kurssit ja tekniset indikaattorit (RSI, Bollinger %B, SMA/EMA) ilmaiseksi ilman maksullisia API-avaimia.
-- **🔒 HODL / Lottolappu -Suojapuskuri**: Voit lukita yksittäisiä osakkeita (esim. `FARON.HE`), jotta automaattinen myynti ei koskaan koske niihin.
+- **🔒 HODL / Lottolappu -Suojapuskuri**: Voit lukita yksittäisiä osakkeita , jotta automaattinen myynti ei koskaan koske niihin.
 - **🛡️ Nordnet Palkkiotasot & Kulusuojaus**: Integroitu Nordnetin palkkiotasot (Taso 3 min 7.00 € / 0.15 %). Suodattaa pois pikkukaupat, joiden välityspalkkiokulut ylittäisivät 2.5 % kauppasummasta.
 - **🎯 Conviction Alignment**: Osto-ohjelmaan pääsevät vain ja ainoastaan osakkeet, joiden tekninen AI-arvio antaa ostosuosituksen (`BUY` / `STRONG_BUY`).
 - **🌐 Visuaalinen HTML Dashboard**: Generoi jokaisen ajokerran yhteydessä selkeän, modernin `tiuku_dashboard.html` -näkymän `tiuku.svg` -ikonilla.
