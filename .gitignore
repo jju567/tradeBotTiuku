@@ -33,9 +33,9 @@ data/nordnet_ed25519*
 *.key
 
 # Logs & Temporary Data
-logs/*.log
+logs/*
 !logs/.gitkeep
-data/*.json
+data/*
 !data/.gitkeep
 tradebot.db
 *.html

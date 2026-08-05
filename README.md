@@ -8,6 +8,7 @@
 
 ## 🌟 Tärkeimmät Ominaisuudet
 
+- **📥 Nordnet CSV-Salkuntuonti**: Tuo omistukset, kappalemäärät ja keskihinnat automaattisesti Nordnetin viemästä CSV-/sivutaulukkotiedostosta (`--import-csv`).
 - **📁 Tiedostopohjainen Salkunseuranta**: Lukee omistukset, määrät ja hankintahinnat paikallisesta `tiuku_portfolio.json` -tiedostosta.
 - **📈 Avointen Lähteiden Markkinadata (`yfinance`)**: Hakee reaaliaikaiset kurssit ja tekniset indikaattorit (RSI, Bollinger %B, SMA/EMA) ilmaiseksi ilman maksullisia API-avaimia.
 - **🔒 HODL / Lottolappu -Suojapuskuri**: Voit lukita yksittäisiä osakkeita (esim. Faron), jotta automaattinen myyntiehdotus ei koskaan koske niihin.
@@ -41,7 +42,26 @@ OPENAI_API_KEY="your-api-key-here"
 NORDNET_FEE_TIER=3
 ```
 
-### 3. Aja Analyysisykli
+### 3. Salkun Päivittäminen & Nordnet CSV-Sisäänluku
+
+Tuo omistukset, määrät ja hankintahinnat suoraan Nordnetin viemästä CSV-/taulukkotiedostosta:
+```bash
+python main.py --import-csv "data/Osaketaulukko salkkunro 14583629 5.8.2026.csv"
+```
+
+Muita hyödyllisiä komentoja salkun hallintaan:
+```bash
+# Näytä nykyinen salkun tila
+python main.py --show-portfolio
+
+# Päivitä käteissaldo (EUR)
+python main.py --set-cash 1191.00
+
+# Lisää tai päivitä yksittäinen omistus käsin
+python main.py --set-holding NESTE.HE 100 29.50
+```
+
+### 4. Aja Analyysisykli
 Aja viikkoanalyysi ja dashboard-sukupolvi kerran:
 ```bash
 python main.py --run-once
@@ -70,8 +90,10 @@ tradeBotTiuku/
 │   ├── ai_advisor.py        # 1-10 Pisteytys & Tekninen AI-analyysi
 │   ├── rebalancer.py        # Uudelleentasapainotus & Conviction-logiikka
 │   └── risk_manager.py      # Stop Loss & Kulusuojaus
-└── reporting/
-    └── weekly_reporter.py   # Suomenkielinen Markdown & HTML Dashboard -generaattori
+├── reporting/
+│   └── weekly_reporter.py   # Suomenkielinen Markdown & HTML Dashboard -generaattori
+└── utils/
+    └── csv_importer.py      # Nordnet CSV/tab -salkuntuontimoduuli
 ```
 
 ---

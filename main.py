@@ -20,16 +20,32 @@ from core.portfolio import PortfolioManager
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(description="tradeBotTiuku - Open Source Portfolio Advisor & Advisory Agent")
     parser.add_argument("--run-once", action="store_true", help="Run a single Tiuku analysis cycle and generate report")
     parser.add_argument("--schedule", action="store_true", help="Start background weekly analysis schedule")
     parser.add_argument("--show-portfolio", action="store_true", help="Display current local portfolio holdings")
     parser.add_argument("--set-cash", type=float, metavar="EUR", help="Set current cash balance in EUR")
     parser.add_argument("--set-holding", nargs=3, metavar=("SYMBOL", "QTY", "AVG_PRICE"), help="Add or update a stock holding (e.g. NESTE.HE 100 25.40)")
+    parser.add_argument("--import-csv", type=str, metavar="FILEPATH", help="Import portfolio holdings from a Nordnet CSV/tab export file")
 
     args = parser.parse_args()
 
     portfolio_mgr = PortfolioManager()
+
+    if args.import_csv:
+        filepath = Path(args.import_csv)
+        try:
+            holdings, count = portfolio_mgr.import_from_csv(filepath)
+            print(f"✅ Tuotiin onnistuneesti {count} omistusta tiedostosta {filepath.name} tiedostoon tiuku_portfolio.json")
+        except Exception as e:
+            print(f"❌ Virhe tuotaessa CSV-tiedostoa: {e}")
+        return
 
     if args.set_cash is not None:
         portfolio_mgr.set_cash_balance(args.set_cash)

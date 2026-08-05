@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 import config
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,16 @@ class PortfolioManager:
             logger.info(f"Updated holding {symbol}: {quantity} pcs @ {avg_price:.2f} EUR (target weight: {target_weight*100:.1f}%)")
 
         self.save_state()
+
+    def import_from_csv(self, csv_filepath: Path) -> Tuple[Dict[str, Any], int]:
+        """Imports holdings from a Nordnet CSV export file."""
+        from utils.csv_importer import NordnetCSVImporter
+        existing = self.portfolio_state.get("holdings", {})
+        updated_holdings, count = NordnetCSVImporter.import_csv(csv_filepath, existing)
+        self.portfolio_state["holdings"] = updated_holdings
+        self.save_state()
+        logger.info(f"Successfully imported {count} holdings from {csv_filepath}")
+        return updated_holdings, count
 
     def sync_valuation(self, nordnet_data: Dict[str, Any]) -> Dict[str, Any]:
         """Merges live price valuation with local portfolio holdings."""
