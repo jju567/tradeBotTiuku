@@ -10,6 +10,7 @@ from core.portfolio import PortfolioManager
 from core.ai_advisor import StockAdvisorAI
 from core.risk_manager import RiskManager
 from clients.email_client import EmailClient
+from reporting.weekly_reporter import WeeklyReporter
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class MarketMonitor:
         self.ai_advisor = StockAdvisorAI()
         self.risk_mgr = RiskManager()
         self.email_client = EmailClient()
+        self.reporter = WeeklyReporter()
         self.cooldown_file = config.MONITOR_COOLDOWN_FILE
 
     def load_cooldowns(self) -> Dict[str, float]:
@@ -79,19 +81,22 @@ class MarketMonitor:
             now_ts=now_ts,
         )
 
-        if not active_triggers:
-            logger.info("✅ Market check clear: 0 triggers activated (0 LLM tokens consumed).")
-            return {
-                "status": "OK",
-                "triggers_found": 0,
-                "triggers": [],
-                "ai_wakeup": False,
-                "tokens_used": 0,
-            }
-
-        logger.warning(f"🚨 Market monitor detected {len(active_triggers)} active trigger(s)!")
-        for trg in active_triggers:
-            logger.warning(f"   -> [{trg['type']}] {trg['message']}")
+        # 3b. Calculate ETF dip scores for tracked ETFs (Zero-Token pure Python calculation)
+        etf_evaluations = []
+        try:
+            etf_items = self.nordnet_client.market_client.get_etf_items()
+            market_dict = {m["symbol"]: m for m in market_data if "symbol" in m}
+            for etf_meta in etf_items:
+                sym = etf_meta.get("symbol")
+                m_item = market_dict.get(sym)
+                if m_item:
+                    score_res = self.nordnet_client.market_client.calculate_etf_dip_score(m_item, etf_meta)
+                    score_res["rsi_14"] = m_item.get("rsi_14", 50.0)
+                    score_res["sma_50"] = m_item.get("sma_50", 0.0)
+                    score_res["current_price"] = m_item.get("current_price", 0.0)
+                    etf_evaluations.append(score_res)
+        except Exception as e:
+            logger.warning(f"Could not calculate ETF dip scores during monitor check: {e}")
 
         # 4. Filter triggers requiring AI wake-up
         ai_wakeup_required = any(trg.get("requires_ai_wakeup", False) for trg in active_triggers)
@@ -108,20 +113,30 @@ class MarketMonitor:
             except Exception as e:
                 logger.error(f"Failed during AI wake-up evaluation: {e}")
 
-        # 5. Send urgent email notification
-        if config.ENABLE_EMAIL_REPORTS or self.email_client.is_configured():
+        # 5. Send urgent email notification if triggers fired
+        if active_triggers and (config.ENABLE_EMAIL_REPORTS or self.email_client.is_configured()):
             self.email_client.send_urgent_alert_email(
                 triggers=active_triggers,
                 portfolio_summary=portfolio_summary,
                 ai_evaluations=ai_evaluations,
             )
 
-        # 6. Update cooldown tracker for fired triggers
+        # 7. Update cooldown tracker for fired triggers
         for trg in active_triggers:
             trg_key = trg.get("trigger_key")
             if trg_key:
                 cooldowns[trg_key] = now_ts
         self.save_cooldowns(cooldowns)
+
+        if not active_triggers:
+            logger.info("✅ Market check clear: 0 triggers activated (0 LLM tokens consumed).")
+            return {
+                "status": "OK",
+                "triggers_found": 0,
+                "triggers": [],
+                "ai_wakeup": False,
+                "tokens_used": 0,
+            }
 
         return {
             "status": "ALERT_TRIGGERED",
