@@ -27,9 +27,23 @@
 ## 🚀 Asennus ja Käyttö
 
 ### 1. Riippuvuuksien asennus
+
+**Linux / Ubuntu / Debian:**
+Jos `python3 -m venv` antaa virheen puuttuvasta `ensurepip`- tai `python3-venv`-pakettimoduulista, asenna se ensin järjestelmän paketinhallinnalla (`sudo`):
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+sudo apt update
+sudo apt install -y python3-venv python3-full
+```
+
+Luo ja aktivoi virtuaaliympäristö sekä asenna riippuvuudet:
+```bash
+# Luo virtuaaliympäristö
+python3 -m venv .venv
+
+# Aktivoi virtuaaliympäristö
+source .venv/bin/activate  # Windows (PowerShell): .venv\Scripts\Activate.ps1
+
+# Asenna riippuvuudet (.venv aktivoituna)
 pip install -r requirements.txt
 ```
 
