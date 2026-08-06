@@ -165,7 +165,7 @@ class WeeklyReporter:
             logger.error(f"Failed to write report file: {e}")
 
         # Also generate HTML Dashboard
-        self.generate_html_dashboard(portfolio_summary, ai_evaluations, proposal, risk_alerts, overall_ai_summary)
+        self.generate_html_dashboard(portfolio_summary, ai_evaluations, proposal, risk_alerts, overall_ai_summary, etf_evaluations)
 
         return report_path
 
@@ -175,11 +175,14 @@ class WeeklyReporter:
         ai_evaluations: List[Dict[str, Any]],
         proposal: Dict[str, Any],
         risk_alerts: List[Dict[str, Any]],
-        overall_ai_summary: Dict[str, Any] = None
+        overall_ai_summary: Dict[str, Any] = None,
+        etf_evaluations: List[Dict[str, Any]] = None
     ) -> Path:
         """Generates a visual, interactive HTML dashboard file in Finnish (tiuku_dashboard.html)."""
         if not overall_ai_summary:
             overall_ai_summary = {}
+        if etf_evaluations is None:
+            etf_evaluations = []
 
         dashboard_path = config.BASE_DIR / "tiuku_dashboard.html"
         reports_dashboard_path = self.output_dir / "tiuku_dashboard.html"
