@@ -1,6 +1,8 @@
+import json
 import logging
 from typing import Dict, List, Any
 import yfinance as yf
+import config
 from utils.indicators import calculate_rsi, calculate_sma, calculate_ema, calculate_bollinger_bands
 
 logger = logging.getLogger(__name__)
@@ -57,10 +59,89 @@ class MarketDataClient:
 
     def __init__(self):
         logger.info("MarketDataClient initialized using open-source yfinance market data source.")
+        self.etf_watchlist = self.load_etf_watchlist()
+
+    def load_etf_watchlist(self) -> Dict[str, Any]:
+        """Loads ETF watchlist configuration from json file."""
+        if config.ETF_WATCHLIST_PATH.exists():
+            try:
+                with open(config.ETF_WATCHLIST_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading ETF watchlist JSON: {e}")
+        return {"categories": []}
+
+    def get_etf_items(self) -> List[Dict[str, Any]]:
+        """Flattens ETF categories into a list of all ETF metadata dicts."""
+        items = []
+        for cat in self.etf_watchlist.get("categories", []):
+            for item in cat.get("items", []):
+                items.append(item)
+        return items
+
+    def get_etf_symbols(self) -> List[str]:
+        """Returns list of ticker symbols for all tracked ETFs."""
+        return [item["symbol"] for item in self.get_etf_items() if "symbol" in item]
 
     def get_default_symbols(self) -> List[str]:
-        """Returns the default watchlist of symbols."""
-        return DEFAULT_WATCHLIST
+        """Returns combined watchlist of stock symbols and tracked ETF symbols."""
+        etf_symbols = self.get_etf_symbols()
+        combined = list(dict.fromkeys(DEFAULT_WATCHLIST + etf_symbols))
+        return combined
+
+    def calculate_etf_dip_score(self, market_item: Dict[str, Any], etf_meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculates a Buy-the-Dip score (1-10) tailored specifically for index ETFs."""
+        rsi = market_item.get("rsi_14", 50.0)
+        price = market_item.get("current_price", 0.0)
+        sma_50 = market_item.get("sma_50", price)
+        sma_200 = market_item.get("sma_200", price)
+        
+        target_rsi = etf_meta.get("target_rsi_dip", 40.0)
+        sma_dip_pct = etf_meta.get("sma_dip_below_pct", 2.0)
+
+        score = 5.0
+        reasons = []
+
+        # 1. RSI Dip Condition
+        if rsi <= target_rsi:
+            score += 2.5
+            reasons.append(f"RSI {rsi:.1f} on dippin raja-arvon (≤ {target_rsi}) alapuolella")
+        elif rsi <= target_rsi + 5.0:
+            score += 1.0
+            reasons.append(f"RSI {rsi:.1f} lähestyy dippirajoja (≤ {target_rsi + 5.0})")
+
+        # 2. Price below 50-day moving average
+        sma_threshold_price = sma_50 * (1.0 - (sma_dip_pct / 100.0))
+        if price <= sma_threshold_price:
+            score += 2.0
+            reasons.append(f"Hinta {price:.2f} EUR on selvästi SMA50 ({sma_50:.2f} EUR) alapuolella (>-{sma_dip_pct}%)")
+        elif price < sma_50:
+            score += 1.0
+            reasons.append(f"Hinta {price:.2f} EUR alle 50d keskiarvon ({sma_50:.2f} EUR)")
+
+        # 3. Long-term trend support (Price > SMA200 means buying a dip in an uptrend)
+        if price >= sma_200 and sma_200 > 0:
+            score += 1.0
+            reasons.append(f"Pitkän aikavälin nouseva trendi säilynyt (Hinta ≥ SMA200 {sma_200:.2f} EUR)")
+
+        final_score = min(10.0, max(1.0, round(score, 1)))
+        
+        recommendation = "ODOTA / NORMAALI KUUKAUSISÄÄSTÖ"
+        if final_score >= 8.0:
+            recommendation = "ERINOMAINEN LISÄYSPAIKKA (BUY THE DIP)"
+        elif final_score >= 6.5:
+            recommendation = "HYVÄ LISÄYSPAIKKA KUUKAUSISÄÄSTÖLLE"
+
+        return {
+            "symbol": market_item.get("symbol"),
+            "name": etf_meta.get("name", market_item.get("name")),
+            "category": etf_meta.get("category", "ETF"),
+            "score": final_score,
+            "recommendation": recommendation,
+            "reasons": reasons,
+            "notes": etf_meta.get("notes", ""),
+            "ter_percent": etf_meta.get("ter_percent", 0.0)
+        }
 
     def get_market_data_for_symbols(self, symbols: List[str] = None, portfolio_prices: Dict[str, float] = None) -> List[Dict[str, Any]]:
         """Fetches live prices, technical indicators (RSI, SMA, EMA, Bollinger), and fundamentals for given stock tickers."""

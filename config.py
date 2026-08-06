@@ -28,6 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / env.get("DATA_DIR", "data")
 LOG_DIR = BASE_DIR / env.get("LOG_DIR", "logs")
 REPORT_OUTPUT_DIR = BASE_DIR / env.get("REPORT_OUTPUT_DIR", "reports")
+ETF_WATCHLIST_PATH = DATA_DIR / "etf_watchlist.json"
 
 # Ensure required directories exist
 for directory in [DATA_DIR, LOG_DIR, REPORT_OUTPUT_DIR]:

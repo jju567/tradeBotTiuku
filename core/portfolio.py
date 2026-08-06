@@ -55,11 +55,26 @@ class PortfolioManager:
         except Exception as e:
             logger.error(f"Failed to save portfolio state: {e}")
 
-    def set_cash_balance(self, cash_amount: float):
+    def set_cash_balance(self, cash_amount: float) -> None:
         """Updates the cash balance in EUR."""
         self.portfolio_state["cash_balance"] = round(cash_amount, 2)
         self.save_state()
         logger.info(f"Updated cash balance to {cash_amount:.2f} EUR")
+
+    def set_equity_override(self, total_equity: float) -> None:
+        """Sets a known total equity override from Nordnet.
+
+        When set, this value is used as the portfolio total for weight calculations
+        and rebalancing instead of the yfinance-derived sum. Useful when yfinance
+        prices diverge from the real Nordnet account value.
+
+        Args:
+            total_equity: Known total portfolio value in EUR from Nordnet.
+        """
+        self.portfolio_state["total_equity_override"] = round(total_equity, 2)
+        self.save_state()
+        logger.info(f"Set total_equity_override to {total_equity:,.2f} EUR")
+
 
     def set_holding(self, symbol: str, quantity: int, avg_price: float, target_weight: float = 0.10):
         """Adds or updates a stock holding in the portfolio."""

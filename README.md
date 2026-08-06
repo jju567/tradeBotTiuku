@@ -8,6 +8,7 @@
 
 ## 🌟 Tärkeimmät Ominaisuudet
 
+- **📊 ETF-Seurantalista & Dippi-Indikaattorit (`etf_watchlist.json`)**: Erillinen luokiteltu seurantalista (Maailma-indeksit, USA, Eurooppa/Pohjoismaat, Osinko/Value, Teemat & Sektorit, Korkorahastot). Tiuku laskee ETF-rahastoille indeksisijoittamiseen räätälöidyt **Buy the Dip** -signaalit (RSI ≤ 40, hinta alle 50d keskiarvon) kuukausisäästön kohdentamiseksi.
 - **📥 Nordnet CSV-Salkuntuonti**: Tuo omistukset, kappalemäärät ja keskihinnat automaattisesti Nordnetin viemästä CSV-/sivutaulukkotiedostosta (`--import-csv`).
 - **📁 Tiedostopohjainen Salkunseuranta**: Lukee omistukset, määrät ja hankintahinnat paikallisesta `tiuku_portfolio.json` -tiedostosta.
 - **📈 Avointen Lähteiden Markkinadata (`yfinance`)**: Hakee reaaliaikaiset kurssit ja tekniset indikaattorit (RSI, Bollinger %B, SMA/EMA) ilmaiseksi ilman maksullisia API-avaimia.
@@ -91,6 +92,28 @@ Käynnistä Pythonin oma jatkuva tausta-ajastin:
 python main.py --schedule
 ```
 (Ajaa analyysin `.env`-tiedostossa määritettynä viikonpäivänä `WEEKLY_REPORT_DAY="monday"`).
+
+---
+
+## 📊 ETF-Seurantalista & Kuukausisäästön Dippianalyysi
+
+Tiuku osaa seurata ja analysoida laajoja indeksirahastoja (ETF) erillisen [etf_watchlist.json](file:///c:/Users/Jarmo/Documents/kode/trade/tradeBotTiuku/data/etf_watchlist.json) -tiedoston kautta.
+
+### Seurattavat Kategoriat:
+- **Maailma-indeksit (Core):** `EUNL.DE` (IWDA), `VWCE.DE`, `SPPW.DE`, `IS3N.DE`
+- **USA & Pohjois-Amerikka:** `SXR8.DE` (S&P 500 Acc), `VUSA.DE` (S&P 500 Dist), `EQQQ.DE` (Nasdaq-100)
+- **Eurooppa & Pohjoismaat:** `IMEU.DE`, `XACT-NORDIC.ST`, `EXV1.DE`
+- **Osinko- ja Arvosijoittaminen:** `VHYL.DE`, `WDIV.DE` (IGWD), `IDVY.DE`
+- **Teema- ja Sektorirahastot:** `IITV.DE` (US Tech), `IQQH.DE` / `INRG.L` (Clean Energy), `RBOT.DE` (Robotics/AI), `ISPY.DE` (Healthcare)
+- **Korkorahastot:** `IB01.L` (US Short Treasury), `SEGA.DE` (Euro Corporate Bonds)
+
+### Miten Dippianalyysi Toimii?
+Koska indeksirahastot eivät heilahda rajusti kuin yksittäiset krypto- tai kasvuosakkeet, Tiuku arvioi niitä arvostustasojen, dippien (*Buy the Dip*) ja kuukausisäästön kohdentamisen kannalta:
+- **RSI-Dippi:** Jos indeksi ottaa dipin (RSI ≤ 40), pisteytys nousee välittömästi.
+- **Keskiarvodippi (SMA50):** Jos hinta tippuu 50 päivän keskiarvon alapuolelle, Tiuku tunnistaa ostopaikan.
+- **Nouseva Trendi (SMA200):** Jos pitkän aikavälin nouseva trendi on voimassa, dippiostoehdotus saa korkean arvosanan (8/10–9/10): *"Hyvä lisäyspaikka kuukausisäästölle"*.
+
+Uusia ETF-rahastoja voi lisätä suoraan mukauttamalla [etf_watchlist.json](file:///c:/Users/Jarmo/Documents/kode/trade/tradeBotTiuku/data/etf_watchlist.json) -tiedostoa.
 
 ---
 

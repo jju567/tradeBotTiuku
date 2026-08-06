@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--set-cash", type=float, metavar="EUR", help="Set current cash balance in EUR")
     parser.add_argument("--set-holding", nargs=3, metavar=("SYMBOL", "QTY", "AVG_PRICE"), help="Add or update a stock holding (e.g. NESTE.HE 100 25.40)")
     parser.add_argument("--import-csv", type=str, metavar="FILEPATH", help="Import portfolio holdings from a Nordnet CSV/tab export file")
+    parser.add_argument("--set-equity", type=float, metavar="EUR", help="Set known total equity from Nordnet (overrides yfinance-computed total for weights)")
 
     args = parser.parse_args()
 
@@ -45,6 +46,12 @@ def main():
             print(f"✅ Tuotiin onnistuneesti {count} omistusta tiedostosta {filepath.name} tiedostoon tiuku_portfolio.json")
         except Exception as e:
             print(f"❌ Virhe tuotaessa CSV-tiedostoa: {e}")
+        return
+
+    if args.set_equity is not None:
+        portfolio_mgr.set_equity_override(args.set_equity)
+        print(f"✅ Total equity override set to {args.set_equity:,.2f} EUR in tiuku_portfolio.json")
+        print("   (Paino- ja tasapainoituslaskelmat käyttävät tätä arvoa yfinancen sijaan)")
         return
 
     if args.set_cash is not None:

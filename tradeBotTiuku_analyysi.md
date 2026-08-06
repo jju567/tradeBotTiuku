@@ -33,7 +33,8 @@ main.py (CLI Entry Point)
             │
             ├── NordnetClient        (clients/nordnet_client.py)
             │       └── MarketDataClient (clients/market_data_client.py)
-            │               └── yfinance → RSI, SMA, EMA, Bollinger
+            │               ├── data/etf_watchlist.json (luokitellut ETF:t & dippirajat)
+            │               └── yfinance → RSI, SMA, EMA, Bollinger, ETF Buy-the-Dip -score
             │
             ├── StockAdvisorAI       (core/ai_advisor.py)
             │       ├── OpenAI GPT-4o (ensisijainen)

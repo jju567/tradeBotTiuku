@@ -14,7 +14,13 @@ class NordnetClient:
         logger.info("NordnetClient operating in Advisory Mode using open-source yfinance market data.")
 
     def get_portfolio_holdings(self, tiuku_holdings: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Calculates current portfolio holdings and valuations based on live yfinance market prices."""
+        """Calculates current portfolio holdings and valuations based on live yfinance market prices.
+
+        If ``total_equity_override`` is set in tiuku_portfolio.json (via ``--set-equity``),
+        that value is used as the portfolio total for weight calculations instead of the
+        yfinance-derived sum. This keeps portfolio weights accurate when yfinance prices
+        diverge from the real Nordnet account value.
+        """
         if not tiuku_holdings:
             tiuku_holdings = {
                 "currency": config.CURRENCY,
@@ -60,9 +66,21 @@ class NordnetClient:
             }
 
         cash_balance = tiuku_holdings.get("cash_balance", 0.0)
-        total_equity = round(total_stock_value + cash_balance, 2)
+        yfinance_total = round(total_stock_value + cash_balance, 2)
 
-        # Calculate actual weights
+        # Use manually set Nordnet total equity if available (overrides yfinance-computed sum)
+        equity_override = tiuku_holdings.get("total_equity_override")
+        if equity_override and equity_override > 0:
+            total_equity = round(float(equity_override), 2)
+            logger.info(
+                f"Using total_equity_override {total_equity:,.2f} EUR "
+                f"(yfinance computed: {yfinance_total:,.2f} EUR, "
+                f"diff: {total_equity - yfinance_total:+,.2f} EUR)"
+            )
+        else:
+            total_equity = yfinance_total
+
+        # Calculate actual weights against the authoritative total equity
         for symbol, h in holdings_data.items():
             h["weight"] = round(h["market_value"] / total_equity, 4) if total_equity > 0 else 0.0
 
@@ -77,6 +95,7 @@ class NordnetClient:
             "total_equity": total_equity,
             "holdings": holdings_data,
         }
+
 
     def get_market_data(self, symbols: List[str] = None) -> List[Dict[str, Any]]:
         """Fetches market data using open-source yfinance."""
