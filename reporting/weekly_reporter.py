@@ -73,9 +73,13 @@ class WeeklyReporter:
         ]
 
         if risk_alerts:
+            holdings = portfolio_summary.get("holdings", {})
             for alert in risk_alerts:
                 rec_action = ACTION_TRANSLATIONS.get(alert['recommended_action'], alert['recommended_action'])
-                lines.append(f"- **[{alert['severity']}] {alert['symbol']}**: {alert['message']} -> *Toimenpide: {rec_action}*")
+                sym = alert.get('symbol', '')
+                name = alert.get('name') or holdings.get(sym, {}).get('name') or sym
+                disp = alert.get('display_name') or (f"{name} ({sym})" if name and name != sym else sym)
+                lines.append(f"- **[{alert['severity']}] {disp}**: {alert['message']} -> *Toimenpide: {rec_action}*")
         else:
             lines.append("✅ Ei riskirajarrikkomuksia. Salkku on tasapainossa määriteltyjen turvarajojen puitteissa.")
 
@@ -298,10 +302,11 @@ class WeeklyReporter:
                 sev_class = a['severity'].lower()
                 icon = "🔒" if "HODL" in a['type'] else ("⚠️" if a['severity'] == "HIGH" else "ℹ️")
                 rec_action_fi = ACTION_TRANSLATIONS.get(a['recommended_action'], a['recommended_action'])
-                full_name = holdings.get(a['symbol'], {}).get('name', a['symbol'])
+                full_name = a.get('name') or holdings.get(a['symbol'], {}).get('name') or a['symbol']
+                disp = a.get('display_name') or (f"{full_name} ({a['symbol']})" if full_name and full_name != a['symbol'] else a['symbol'])
                 alerts_html += f"""
                 <div class="alert-card alert-{sev_class}">
-                    <div class="alert-header">{icon} <strong title="{full_name}">{a['symbol']}</strong> ({full_name}) - {a['type']}</div>
+                    <div class="alert-header">{icon} <strong>{disp}</strong> - {a['type']}</div>
                     <div class="alert-body">{a['message']}</div>
                     <div class="alert-action">Toimenpideohje: <strong>{rec_action_fi}</strong></div>
                 </div>

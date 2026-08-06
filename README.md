@@ -231,3 +231,6 @@ tradeBotTiuku/
 - **Tietosuoja & API-avaimet**: Salkkutiedot ja API-avaimet säilytetään omalla laitteellasi.
 - **Tekoälykutsut**: Tekoälyanalyysit (AI Advisor) hyödyntävät ulkoisia kielimallirajapintoja (esim. OpenAI/Gemini/Anthropic API), joille lähetetään analysoitavien osakkeiden tunnistetiedot ja tunnusluvut turvallisesti HTTPS-rajapintojen yli.
 - **Human-in-the-loop**: *Ei automaattista toimeksiantojen suoritusta* — kaikki kaupat suoritetaan aina ihmisen toimesta.
+- **Ympäristöt & Turvallisuus**:
+  - `C:\`: Testi- ja kehitys-ympäristö.
+  - `Z:\`: Tuotantoympäristö. **Z:-asemaa ei saa koskaan suoraan ylikirjoittaa automaatiolla.**

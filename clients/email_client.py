@@ -80,10 +80,22 @@ class EmailClient:
         else:
             trades_list_html = "<li><em>Ei kauppaehdotuksia tälle syklille. Salkku on optimaalisessa tasapainossa.</em></li>"
 
+        ACTION_TRANSLATIONS = {
+            "SELL_ALL": "MYY KAIKKI",
+            "TAKE_PROFIT_TRIM": "MYY OSITTAIN (TAKE-PROFIT)",
+            "REDUCE_POSITION": "PIENENNÄ PAINOA",
+            "HOLD_LOCKED": "PIDÄ LUKITTUNA (HODL)",
+            "BUY_MORE": "LISÄÄ OSTOJA",
+        }
         alerts_list_html = ""
         if risk_alerts:
+            holdings = portfolio_summary.get("holdings", {})
             for a in risk_alerts:
-                alerts_list_html += f"<li>⚠️ <strong>{a['symbol']}</strong>: {a['message']} (Toimenpide: {a['recommended_action']})</li>"
+                sym = a.get("symbol", "")
+                name = a.get("name") or holdings.get(sym, {}).get("name") or sym
+                disp = a.get("display_name") or (f"{name} ({sym})" if name and name != sym else sym)
+                rec_fi = ACTION_TRANSLATIONS.get(a.get("recommended_action"), a.get("recommended_action"))
+                alerts_list_html += f"<li>⚠️ <strong>{disp}</strong>: {a['message']} (Toimenpide: {rec_fi})</li>"
         else:
             alerts_list_html = "<li>✅ Ei riskirajarrikkomuksia. Salkku on tasapainossa.</li>"
 

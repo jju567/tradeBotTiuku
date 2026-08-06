@@ -29,6 +29,9 @@ class RiskManager:
         risk_alerts = []
 
         for symbol, holding in holdings.items():
+            name = holding.get("name") or symbol
+            display_name = f"{name} ({symbol})" if name and name != symbol else symbol
+
             unrealized_pnl_pct = holding.get("unrealized_pnl_pct", 0.0) / 100.0
             weight = holding.get("weight", 0.0)
 
@@ -40,17 +43,21 @@ class RiskManager:
                 if is_hodl:
                     risk_alerts.append({
                         "symbol": symbol,
+                        "name": name,
+                        "display_name": display_name,
                         "type": "HODL_LOCK_PROTECTION",
                         "severity": "INFO",
-                        "message": f"Position dropped by {unrealized_pnl_pct*100:.1f}%, but SELL is bypassed due to HODL rule ('{note}').",
+                        "message": f"{display_name} dropped by {unrealized_pnl_pct*100:.1f}%, but SELL is bypassed due to HODL rule ('{note}').",
                         "recommended_action": "HOLD_LOCKED",
                     })
                 else:
                     risk_alerts.append({
                         "symbol": symbol,
+                        "name": name,
+                        "display_name": display_name,
                         "type": "STOP_LOSS_BREACH",
                         "severity": "HIGH",
-                        "message": f"Position dropped by {unrealized_pnl_pct*100:.1f}%, exceeding stop-loss threshold ({self.stop_loss_pct*100:.0f}%).",
+                        "message": f"{display_name} dropped by {unrealized_pnl_pct*100:.1f}%, exceeding stop-loss threshold ({self.stop_loss_pct*100:.0f}%).",
                         "recommended_action": "SELL_ALL",
                     })
 
@@ -58,9 +65,11 @@ class RiskManager:
             elif unrealized_pnl_pct >= self.take_profit_pct:
                 risk_alerts.append({
                     "symbol": symbol,
+                    "name": name,
+                    "display_name": display_name,
                     "type": "TAKE_PROFIT_TARGET",
                     "severity": "MEDIUM",
-                    "message": f"Position gained {unrealized_pnl_pct*100:.1f}%, reaching take-profit target ({self.take_profit_pct*100:.0f}%).",
+                    "message": f"{display_name} gained {unrealized_pnl_pct*100:.1f}%, reaching take-profit target ({self.take_profit_pct*100:.0f}%).",
                     "recommended_action": "TAKE_PROFIT_TRIM",
                 })
 
@@ -68,9 +77,11 @@ class RiskManager:
             if weight > self.max_position_weight:
                 risk_alerts.append({
                     "symbol": symbol,
+                    "name": name,
+                    "display_name": display_name,
                     "type": "OVERCONCENTRATION",
                     "severity": "MEDIUM",
-                    "message": f"Position weight ({weight*100:.1f}%) exceeds max single stock limit ({self.max_position_weight*100:.0f}%).",
+                    "message": f"{display_name} weight ({weight*100:.1f}%) exceeds max single stock limit ({self.max_position_weight*100:.0f}%).",
                     "recommended_action": "REDUCE_POSITION",
                 })
 
