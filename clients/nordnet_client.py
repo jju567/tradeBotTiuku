@@ -53,6 +53,7 @@ class NordnetClient:
 
             holdings_data[symbol] = {
                 "symbol": symbol,
+                "name": data.get("name", symbol),
                 "quantity": qty,
                 "avg_price": avg_price,
                 "current_price": current_price,

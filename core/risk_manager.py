@@ -101,9 +101,14 @@ class RiskManager:
 
         # 1. Check portfolio holdings for Stop-Loss and Take-Profit breaches
         for symbol, holding in holdings.items():
-            unrealized_pnl_pct = holding.get("unrealized_pnl_pct", 0.0) / 100.0
             is_hodl = holding.get("hodl", False)
-            current_val = holding.get("market_value", 0.0)
+            if is_hodl:
+                # Bypass HODL / locked positions from stop-loss / take-profit alerts
+                continue
+
+            unrealized_pnl_pct = holding.get("unrealized_pnl_pct", 0.0) / 100.0
+            name = holding.get("name") or symbol
+            display_name = f"{name} ({symbol})" if name and name != symbol else symbol
 
             # Check Stop-Loss
             if unrealized_pnl_pct <= -self.stop_loss_pct:
@@ -112,14 +117,16 @@ class RiskManager:
                 if (now_ts - last_alert_time) >= cooldown_sec:
                     active_triggers.append({
                         "symbol": symbol,
+                        "name": name,
+                        "display_name": display_name,
                         "type": "STOP_LOSS_BREACH",
-                        "severity": "INFO" if is_hodl else "HIGH",
+                        "severity": "HIGH",
                         "pnl_pct": unrealized_pnl_pct * 100.0,
                         "threshold_pct": -self.stop_loss_pct * 100.0,
-                        "is_hodl": is_hodl,
-                        "message": f"{symbol} dropped {unrealized_pnl_pct*100:.2f}% (Stop-Loss limit: {-self.stop_loss_pct*100:.1f}%)",
+                        "is_hodl": False,
+                        "message": f"{display_name} dropped {unrealized_pnl_pct*100:.2f}% (Stop-Loss limit: {-self.stop_loss_pct*100:.1f}%)",
                         "trigger_key": trigger_key,
-                        "requires_ai_wakeup": not is_hodl,  # Only wake up AI for active trade execution
+                        "requires_ai_wakeup": True,
                     })
 
             # Check Take-Profit
@@ -129,31 +136,41 @@ class RiskManager:
                 if (now_ts - last_alert_time) >= cooldown_sec:
                     active_triggers.append({
                         "symbol": symbol,
+                        "name": name,
+                        "display_name": display_name,
                         "type": "TAKE_PROFIT_TARGET",
                         "severity": "HIGH",
                         "pnl_pct": unrealized_pnl_pct * 100.0,
                         "threshold_pct": self.take_profit_pct * 100.0,
-                        "is_hodl": is_hodl,
-                        "message": f"{symbol} gained +{unrealized_pnl_pct*100:.2f}% (Take-Profit target: +{self.take_profit_pct*100:.1f}%)",
+                        "is_hodl": False,
+                        "message": f"{display_name} gained +{unrealized_pnl_pct*100:.2f}% (Take-Profit target: +{self.take_profit_pct*100:.1f}%)",
                         "trigger_key": trigger_key,
                         "requires_ai_wakeup": True,
                     })
 
         # 2. Check intraday market volatility (spikes / crashes) for tracked symbols
         for symbol, m_item in market_dict.items():
+            if symbol in holdings and holdings[symbol].get("hodl", False):
+                # Skip HODL positions from market volatility alerts
+                continue
+
             change_pct = m_item.get("change_pct", 0.0) / 100.0 if "change_pct" in m_item else 0.0
             if abs(change_pct) >= self.volatility_threshold:
                 trigger_key = f"{symbol}:VOLATILITY_SWING"
                 last_alert_time = cooldown_tracker.get(trigger_key, 0.0)
                 if (now_ts - last_alert_time) >= cooldown_sec:
+                    name = holdings.get(symbol, {}).get("name") or m_item.get("name") or symbol
+                    display_name = f"{name} ({symbol})" if name and name != symbol else symbol
                     direction = "jumped" if change_pct > 0 else "dropped"
                     active_triggers.append({
                         "symbol": symbol,
+                        "name": name,
+                        "display_name": display_name,
                         "type": "VOLATILITY_SWING",
                         "severity": "MEDIUM",
                         "change_pct": change_pct * 100.0,
                         "threshold_pct": self.volatility_threshold * 100.0,
-                        "message": f"{symbol} {direction} {change_pct*100:+.2f}% today (Volatility threshold: {self.volatility_threshold*100:.1f}%)",
+                        "message": f"{display_name} {direction} {change_pct*100:+.2f}% today (Volatility threshold: {self.volatility_threshold*100:.1f}%)",
                         "trigger_key": trigger_key,
                         "requires_ai_wakeup": symbol in holdings,
                     })

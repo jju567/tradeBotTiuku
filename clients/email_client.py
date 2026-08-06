@@ -200,8 +200,13 @@ class EmailClient:
         currency = portfolio_summary.get("currency", "EUR")
         date_str = datetime.now().strftime("%d.%m.%Y klo %H:%M")
         
-        symbols_str = ", ".join(list(dict.fromkeys([t.get("symbol") for t in triggers if "symbol" in t])))
-        subject = f"🚨 [HÄLYTYS] tradeBotTiuku — Suuria muuttujia markkinalla: {symbols_str} ({date_str})"
+        triggered_names = []
+        for t in triggers:
+            n = t.get("name") or t.get("symbol")
+            if n:
+                triggered_names.append(n)
+        names_str = ", ".join(list(dict.fromkeys(triggered_names)))
+        subject = f"📊 [tradeBotTiuku] Hintahälytys: {names_str} ({date_str})"
 
         msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
@@ -211,13 +216,17 @@ class EmailClient:
         triggers_html = ""
         for idx, trg in enumerate(triggers, 1):
             t_type = trg.get("type", "MARKET_ALERT")
-            badge_color = "#ef4444" if "STOP_LOSS" in t_type else ("#10b981" if "TAKE_PROFIT" in t_type else "#f59e0b")
+            badge_color = "#e11d48" if "STOP_LOSS" in t_type else ("#16a34a" if "TAKE_PROFIT" in t_type else "#d97706")
             type_label = "STOP-LOSS" if "STOP_LOSS" in t_type else ("TAKE-PROFIT" if "TAKE_PROFIT" in t_type else "VOLATILITEETTI")
+
+            sym = trg.get("symbol", "")
+            name = trg.get("name", "")
+            display_title = trg.get("display_name") or (f"{name} ({sym})" if name and name != sym else sym)
 
             triggers_html += f"""
             <div style="background: #ffffff; border-left: 4px solid {badge_color}; border: 1px solid #e2e8f0; border-left-width: 5px; padding: 14px; margin-bottom: 12px; border-radius: 6px;">
                 <span style="background: {badge_color}; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8rem;">{type_label}</span>
-                <strong style="font-size: 1.1rem; margin-left: 8px;">{trg.get('symbol')}</strong>
+                <strong style="font-size: 1.05rem; margin-left: 8px; color: #0f172a;">{display_title}</strong>
                 <p style="margin: 6px 0 0 0; color: #334155;">{trg.get('message')}</p>
             </div>
             """
@@ -225,8 +234,12 @@ class EmailClient:
         ai_eval_html = ""
         if ai_evaluations:
             ai_eval_html = "<h3 style='color: #0f172a; margin-top: 20px;'>🧠 AI Advisor -herätyspisteet</h3><ul>"
+            holdings = portfolio_summary.get("holdings", {})
             for ev in ai_evaluations:
-                ai_eval_html += f"<li><strong>{ev.get('symbol')}</strong>: AI-pisteet {ev.get('ai_score', 'N/A')}/10 — {ev.get('recommendation', 'N/A')} ({ev.get('reasoning', '')})</li>"
+                ev_sym = ev.get('symbol', '')
+                ev_name = holdings.get(ev_sym, {}).get("name") or ev_sym
+                ev_disp = f"{ev_name} ({ev_sym})" if ev_name and ev_name != ev_sym else ev_sym
+                ai_eval_html += f"<li><strong>{ev_disp}</strong>: AI-pisteet {ev.get('ai_score', 'N/A')}/10 — {ev.get('recommendation', 'N/A')} ({ev.get('reasoning', '')})</li>"
             ai_eval_html += "</ul>"
 
         body_html = f"""
@@ -234,9 +247,9 @@ class EmailClient:
         <html>
         <head><meta charset="utf-8"></head>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 650px; margin: 0 auto; padding: 20px;">
-            <div style="background: #7f1d1d; color: #f8fafc; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                <h2 style="color: #fca5a5; margin: 0 0 8px 0;">🚨 HÄTÄ / POIKKEUSHÄLYTYS</h2>
-                <p style="margin: 0; font-size: 0.9rem; color: #fecdd3;">Aika: {date_str} — Nolla-token Taustavahti aktivoitui</p>
+            <div style="background: #1e293b; color: #f8fafc; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                <h2 style="color: #38bdf8; margin: 0 0 8px 0;">🔔 MARKKINAVAHDI HINTAHÄLYTYS</h2>
+                <p style="margin: 0; font-size: 0.9rem; color: #94a3b8;">Aika: {date_str} — Markkinavahti havaitsi hintamuutoksia</p>
             </div>
 
             <h3 style="color: #0f172a;">Aktivoidut Liipaisimet:</h3>
@@ -245,7 +258,7 @@ class EmailClient:
             {ai_eval_html}
 
             <div style="background: #f8fafc; border: 1px solid #cbd5e1; padding: 14px; border-radius: 6px; margin-top: 20px; font-size: 0.88rem; color: #475569;">
-                ℹ️ <em>Tämä ilmoitus lähetettiin, koska markkinoilla tapahtui merkittävä muutos. Voit tarkastella salkkusi tilannetta tarkemmin tiuku_dashboard.html -sivulta.</em>
+                ℹ️ <em>Tämä ilmoitus lähetettiin hinnanmuutoksen johdosta. Voit tarkastella salkkusi tilannetta tiuku_dashboard.html -sivulta.</em>
             </div>
         </body>
         </html>

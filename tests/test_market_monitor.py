@@ -72,11 +72,8 @@ def test_risk_manager_sltp_triggers_hodl_protection():
 
     triggers = risk_mgr.check_sltp_triggers(portfolio_summary, market_data)
 
-    assert len(triggers) == 2  # 1 HODL Stop loss alert + 1 Volatility swing alert
-    hodl_trg = [t for t in triggers if t["type"] == "STOP_LOSS_BREACH"][0]
-    assert hodl_trg["symbol"] == "BTC-EUR"
-    assert hodl_trg["is_hodl"] is True
-    assert hodl_trg["requires_ai_wakeup"] is False  # HODL position bypasses AI trading wake-up
+    # HODL positions are completely bypassed from stop-loss and volatility alerts
+    assert len(triggers) == 0
 
 
 def test_risk_manager_sltp_triggers_cooldown():
