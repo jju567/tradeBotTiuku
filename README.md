@@ -121,6 +121,60 @@ python main.py --schedule
 ```
 (Ajaa viikkoanalyysin `.env`-tiedostossa määritettynä viikonpäivänä `WEEKLY_REPORT_DAY="monday"` ja markkinavahdin `MONITOR_INTERVAL_MINUTES` välein).
 
+#### Tapa C: Linux systemd Daemon (Suositeltu Linux-palvelimelle / Ubuntu)
+
+Jos ajat botin Linux-palvelimella (esim. Ubuntu), voit määrittää sen pyörimään taustapalveluna (systemd daemon), joka käynnistyy automaattisesti myös palvelimen uudelleenkäynnistyksen yhteydessä.
+
+1. Luo uusi palvelutiedosto:
+```bash
+sudo nano /etc/systemd/system/tradebotTiuku.service
+```
+
+2. Lisää seuraava konfiguraatio (vaihda `ubuntu` ja polut tarvittaessa omiisi):
+```ini
+[Unit]
+Description=tradeBotTiuku Background Service & Market Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tradeBotTiuku
+ExecStart=/home/ubuntu/tradeBotTiuku/.venv/bin/python main.py --schedule
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. Ota palvelu käyttöön ja käynnistä se:
+```bash
+# Lataa systemd-konfiguraatiot uudelleen
+sudo systemctl daemon-reload
+
+# Ota palvelu käyttöön automaattikäynnistyksessä
+sudo systemctl enable tradebotTiuku
+
+# Käynnistä palvelu nyt
+sudo systemctl start tradebotTiuku
+```
+
+4. Hallinta ja lokien seuranta:
+```bash
+# Tarkista palvelun tila
+sudo systemctl status tradebotTiuku
+
+# Katso reaaliaikaisia lokeja
+sudo journalctl -u tradebotTiuku -f
+
+# Pysäytä tai käynnistä uudelleen
+sudo systemctl stop tradebotTiuku
+sudo systemctl restart tradebotTiuku
+```
+
+
 
 ---
 
