@@ -18,13 +18,17 @@ class StockAdvisorAI:
             try:
                 from openai import OpenAI
                 self.client = OpenAI(api_key=self.api_key)
-                logger.info(f"Tiuku StockAdvisorAI initialized with model {self.model}")
+                logger.info(f"🤖 OpenAI AIAdvisor initialized successfully (Model: {self.model})")
             except Exception as e:
-                logger.warning(f"Could not initialize OpenAI client: {e}. Using rule-based Tiuku engine.")
+                logger.warning(f" Could not initialize OpenAI client: {e}. Falling back to rule-based Tiuku engine.")
+        else:
+            logger.info("ℹ️ OPENAI_API_KEY missing. Using rule-based Tiuku quantitative engine.")
 
     def evaluate_equities(self, market_data: List[Dict[str, Any]], current_portfolio: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Evaluates equities and assigns an AI Score (1-10), target weight, and reasoning for each stock."""
         results = []
+        mode_str = f"OpenAI {self.model}" if self.client else "Rule-based Engine"
+        logger.info(f"Starting equity evaluation for {len(market_data)} symbols using {mode_str}...")
 
         for stock in market_data:
             if self.client:
