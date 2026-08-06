@@ -21,17 +21,9 @@ class NordnetClient:
         yfinance-derived sum. This keeps portfolio weights accurate when yfinance prices
         diverge from the real Nordnet account value.
         """
-        if not tiuku_holdings:
-            tiuku_holdings = {
-                "currency": config.CURRENCY,
-                "cash_balance": 2500.0,
-                "holdings": {
-                    "NESTE.HE": {"quantity": 100, "avg_price": 28.50},
-                    "KNEBV.HE": {"quantity": 50, "avg_price": 44.00},
-                    "NOKIA.HE": {"quantity": 1000, "avg_price": 3.60},
-                    "SAMPO.HE": {"quantity": 80, "avg_price": 39.00},
-                }
-            }
+        if not tiuku_holdings or not tiuku_holdings.get("holdings"):
+            from core.portfolio import PortfolioManager
+            tiuku_holdings = PortfolioManager().load_state()
 
         symbols = list(tiuku_holdings.get("holdings", {}).keys())
         market_list = self.market_client.get_market_data_for_symbols(symbols)

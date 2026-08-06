@@ -38,10 +38,9 @@ class PortfolioManager:
             "currency": config.CURRENCY,
             "cash_balance": 2500.0,
             "holdings": {
-                "NESTE.HE": {"quantity": 100, "avg_price": 28.50, "target_weight": 0.10},
-                "KNEBV.HE": {"quantity": 50, "avg_price": 44.00, "target_weight": 0.10},
-                "NOKIA.HE": {"quantity": 1000, "avg_price": 3.60, "target_weight": 0.10},
-                "SAMPO.HE": {"quantity": 80, "avg_price": 39.00, "target_weight": 0.10},
+                "NESTE.HE": {"name": "Neste", "quantity": 39, "avg_price": 29.11, "target_weight": 0.10},
+                "NOKIA.HE": {"name": "Nokia", "quantity": 147, "avg_price": 8.74, "target_weight": 0.10},
+                "QDVE.DE": {"name": "iShares S&P 500 IT Sector UCITS ETF", "quantity": 15, "avg_price": 32.01, "target_weight": 0.20},
             }
         }
         self.save_state()
