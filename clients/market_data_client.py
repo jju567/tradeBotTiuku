@@ -255,7 +255,7 @@ class MarketDataClient:
                     "pe_ratio": round(pe_ratio, 1) if pe_ratio else 0.0,
                     "trend": trend,
                 })
-                logger.info(f"Fetched market data for {symbol}: Price {current_price:.2f} EUR, RSI {rsi_14:.1f}, Trend {trend}")
+                logger.debug(f"Fetched market data for {symbol}: Price {current_price:.2f} EUR, RSI {rsi_14:.1f}, Trend {trend}")
 
             except Exception as e:
                 logger.error(f"Error fetching yfinance market data for {symbol}: {e}")
