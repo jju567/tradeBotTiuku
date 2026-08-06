@@ -40,11 +40,14 @@ class WeeklyReporter:
         ai_evaluations: List[Dict[str, Any]],
         proposal: Dict[str, Any],
         risk_alerts: List[Dict[str, Any]],
-        overall_ai_summary: Dict[str, Any] = None
+        overall_ai_summary: Dict[str, Any] = None,
+        etf_evaluations: List[Dict[str, Any]] = None
     ) -> Path:
         """Generates both Markdown report and a visual HTML Dashboard in Finnish."""
         if not overall_ai_summary:
             overall_ai_summary = {}
+        if etf_evaluations is None:
+            etf_evaluations = []
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
         report_path = self.output_dir / f"tiuku_weekly_report_{timestamp}.md"
@@ -303,6 +306,38 @@ class WeeklyReporter:
         else:
             alerts_html = '<div class="alert-card alert-success">✅ Ei riskirajarrikkomuksia. Salkku on tasapainossa.</div>'
 
+        # Build ETF Watchlist Rows HTML
+        etf_rows_html = ""
+        if etf_evaluations:
+            for etf in etf_evaluations:
+                score = etf.get("score", 5.0)
+                score_color = "#34d399" if score >= 8.0 else ("#38bdf8" if score >= 6.5 else "#94a3b8")
+                rec_text = etf.get("recommendation", "ODOTA")
+                reasons_text = "; ".join(etf.get("reasons", [])) if etf.get("reasons") else etf.get("notes", "")
+                full_name = etf.get("name", etf.get("symbol", ""))
+                ter = etf.get("ter_percent", 0.0)
+                
+                etf_rows_html += f"""
+                <tr>
+                    <td title="{full_name}" class="symbol-cell"><strong>{etf['symbol']}</strong></td>
+                    <td><small style="color: var(--text-primary); font-weight: 500;">{full_name}</small></td>
+                    <td><span class="badge active">{etf.get('category', 'ETF').upper()}</span></td>
+                    <td>
+                        <div class="score-container">
+                            <span class="score-val" style="color: {score_color};">{score}/10</span>
+                            <div class="score-bar-bg"><div class="score-bar-fill" style="width: {score*10}%; background-color: {score_color};"></div></div>
+                        </div>
+                    </td>
+                    <td><span class="badge" style="background: rgba(56, 189, 248, 0.15); color: {score_color}; border: 1px solid {score_color};">{rec_text}</span></td>
+                    <td>{etf.get('rsi_14', 50.0):.1f}</td>
+                    <td>{etf.get('sma_50', 0.0):.2f} {currency}</td>
+                    <td>{ter:.2f}%</td>
+                    <td class="reasoning">{reasons_text}</td>
+                </tr>
+                """
+        else:
+            etf_rows_html = "<tr><td colspan='9'>ETF-seurantalista ei saatavilla.</td></tr>"
+
         html_content = f"""<!DOCTYPE html>
 <html lang="fi">
 <head>
@@ -539,6 +574,34 @@ class WeeklyReporter:
                     </thead>
                     <tbody>
                         {holdings_rows_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ETF Watchlist & Buy the Dip Section -->
+        <div class="section-card" style="border-left: 4px solid var(--accent-cyan);">
+            <div class="section-header">📈 ETF-Seurantalista & Kuukausisäästön Dippianalyysi (Buy the Dip)</div>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+                Seurattavat globaalit indeksirahastot luokiteltuna teemoittain. Tiuku tunnistaa ostopaikat (RSI ≤ 40, hinta &lt; SMA50) kuukausisäästön kohdentamiseen.
+            </p>
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symboli</th>
+                            <th>Nimi</th>
+                            <th>Kategoria</th>
+                            <th>Dippipisteet</th>
+                            <th>Suositus</th>
+                            <th>RSI(14)</th>
+                            <th>SMA(50)</th>
+                            <th>TER %</th>
+                            <th>Huomiot & Syy</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {etf_rows_html}
                     </tbody>
                 </table>
             </div>

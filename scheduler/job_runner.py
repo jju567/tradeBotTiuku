@@ -44,6 +44,20 @@ class WeeklyJobRunner:
         # 3. Perform AI equity evaluation & scoring (1-10)
         ai_evaluations = self.ai_advisor.evaluate_equities(market_data, portfolio_summary)
 
+        # 3b. Perform ETF dip scoring for tracked ETFs
+        etf_evaluations = []
+        etf_items = self.nordnet_client.market_client.get_etf_items()
+        market_dict = {m["symbol"]: m for m in market_data}
+        for etf_meta in etf_items:
+            sym = etf_meta.get("symbol")
+            m_item = market_dict.get(sym)
+            if m_item:
+                score_res = self.nordnet_client.market_client.calculate_etf_dip_score(m_item, etf_meta)
+                score_res["rsi_14"] = m_item.get("rsi_14", 50.0)
+                score_res["sma_50"] = m_item.get("sma_50", 0.0)
+                score_res["current_price"] = m_item.get("current_price", 0.0)
+                etf_evaluations.append(score_res)
+
         # 4. Audit portfolio risks (Stop Loss, max weight)
         risk_alerts = self.risk_mgr.audit_portfolio_risks(portfolio_summary)
 
@@ -59,7 +73,14 @@ class WeeklyJobRunner:
         raw_proposal["trade_count"] = len(validated_trades)
 
         # 7. Generate weekly markdown report & HTML Dashboard
-        report_path = self.reporter.generate_report(portfolio_summary, ai_evaluations, raw_proposal, risk_alerts, overall_ai_summary)
+        report_path = self.reporter.generate_report(
+            portfolio_summary,
+            ai_evaluations,
+            raw_proposal,
+            risk_alerts,
+            overall_ai_summary,
+            etf_evaluations=etf_evaluations
+        )
 
         # 8. Send report via email if enabled or configured
         if config.ENABLE_EMAIL_REPORTS or self.email_client.is_configured():
