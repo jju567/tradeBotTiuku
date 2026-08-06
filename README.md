@@ -168,6 +168,8 @@ sudo systemctl status tradebotTiuku
 
 # Katso reaaliaikaisia lokeja
 sudo journalctl -u tradebotTiuku -f
+# tai täydellisellä palvelunimellä:
+sudo journalctl -u tradebotTiuku.service -f
 
 # Pysäytä tai käynnistä uudelleen
 sudo systemctl stop tradebotTiuku
