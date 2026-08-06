@@ -185,3 +185,98 @@ class EmailClient:
         except Exception as e:
             logger.error(f"❌ Failed to send report email via SMTP: {e}")
             return False
+
+    def send_urgent_alert_email(
+        self,
+        triggers: list,
+        portfolio_summary: Dict[str, Any],
+        ai_evaluations: Optional[list] = None,
+    ) -> bool:
+        """Sends an urgent real-time alert email when Stop-Loss, Take-Profit or Volatility triggers breach thresholds."""
+        if not self.is_configured():
+            logger.warning("SMTP email configuration incomplete. Skipping urgent alert email sending.")
+            return False
+
+        currency = portfolio_summary.get("currency", "EUR")
+        date_str = datetime.now().strftime("%d.%m.%Y klo %H:%M")
+        
+        symbols_str = ", ".join(list(dict.fromkeys([t.get("symbol") for t in triggers if "symbol" in t])))
+        subject = f"🚨 [HÄLYTYS] tradeBotTiuku — Suuria muuttujia markkinalla: {symbols_str} ({date_str})"
+
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = subject
+        msg["From"] = self.email_from or self.username or "tiuku@local"
+        msg["To"] = self.email_to
+
+        triggers_html = ""
+        for idx, trg in enumerate(triggers, 1):
+            t_type = trg.get("type", "MARKET_ALERT")
+            badge_color = "#ef4444" if "STOP_LOSS" in t_type else ("#10b981" if "TAKE_PROFIT" in t_type else "#f59e0b")
+            type_label = "STOP-LOSS" if "STOP_LOSS" in t_type else ("TAKE-PROFIT" if "TAKE_PROFIT" in t_type else "VOLATILITEETTI")
+
+            triggers_html += f"""
+            <div style="background: #ffffff; border-left: 4px solid {badge_color}; border: 1px solid #e2e8f0; border-left-width: 5px; padding: 14px; margin-bottom: 12px; border-radius: 6px;">
+                <span style="background: {badge_color}; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8rem;">{type_label}</span>
+                <strong style="font-size: 1.1rem; margin-left: 8px;">{trg.get('symbol')}</strong>
+                <p style="margin: 6px 0 0 0; color: #334155;">{trg.get('message')}</p>
+            </div>
+            """
+
+        ai_eval_html = ""
+        if ai_evaluations:
+            ai_eval_html = "<h3 style='color: #0f172a; margin-top: 20px;'>🧠 AI Advisor -herätyspisteet</h3><ul>"
+            for ev in ai_evaluations:
+                ai_eval_html += f"<li><strong>{ev.get('symbol')}</strong>: AI-pisteet {ev.get('ai_score', 'N/A')}/10 — {ev.get('recommendation', 'N/A')} ({ev.get('reasoning', '')})</li>"
+            ai_eval_html += "</ul>"
+
+        body_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 650px; margin: 0 auto; padding: 20px;">
+            <div style="background: #7f1d1d; color: #f8fafc; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                <h2 style="color: #fca5a5; margin: 0 0 8px 0;">🚨 HÄTÄ / POIKKEUSHÄLYTYS</h2>
+                <p style="margin: 0; font-size: 0.9rem; color: #fecdd3;">Aika: {date_str} — Nolla-token Taustavahti aktivoitui</p>
+            </div>
+
+            <h3 style="color: #0f172a;">Aktivoidut Liipaisimet:</h3>
+            {triggers_html}
+
+            {ai_eval_html}
+
+            <div style="background: #f8fafc; border: 1px solid #cbd5e1; padding: 14px; border-radius: 6px; margin-top: 20px; font-size: 0.88rem; color: #475569;">
+                ℹ️ <em>Tämä ilmoitus lähetettiin, koska markkinoilla tapahtui merkittävä muutos. Voit tarkastella salkkusi tilannetta tarkemmin tiuku_dashboard.html -sivulta.</em>
+            </div>
+        </body>
+        </html>
+        """
+
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+        try:
+            logger.info(f"Connecting to SMTP server {self.smtp_server}:{self.smtp_port} for urgent alert...")
+            if self.smtp_port == 465:
+                server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, timeout=30)
+            else:
+                server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
+                if self.smtp_port == 587:
+                    try:
+                        server.starttls()
+                    except Exception as e:
+                        logger.warning(f"STARTTLS warning: {e}")
+
+            pwd_lower = str(self.password).lower()
+            if self.username and self.password and "syötä-tähän" not in pwd_lower and "your-" not in pwd_lower:
+                try:
+                    server.login(self.username, self.password)
+                except Exception as e:
+                    logger.warning(f"SMTP login failed: {e}")
+
+            server.sendmail(self.email_from or self.username, [self.email_to], msg.as_string())
+            server.quit()
+            logger.info(f"🚨 Urgent alert email successfully sent to {self.email_to}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to send urgent alert email: {e}")
+            return False
+

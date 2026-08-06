@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Dict, List, Any
 import config
 
@@ -6,15 +7,19 @@ logger = logging.getLogger(__name__)
 
 
 class RiskManager:
-    """Enforces safety guardrails, stop-loss triggers, position size caps, and human-in-the-loop validation."""
+    """Enforces safety guardrails, stop-loss / take-profit triggers, position size caps, and human-in-the-loop validation."""
 
     def __init__(
         self,
         stop_loss_pct: float = config.STOP_LOSS_PERCENT,
+        take_profit_pct: float = config.TAKE_PROFIT_PERCENT,
+        volatility_threshold: float = config.MARKET_VOLATILITY_THRESHOLD,
         max_position_weight: float = config.MAX_POSITION_WEIGHT,
         min_trade_eur: float = config.MIN_TRADE_EUR,
     ):
         self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.volatility_threshold = volatility_threshold
         self.max_position_weight = max_position_weight
         self.min_trade_eur = min_trade_eur
 
@@ -49,7 +54,17 @@ class RiskManager:
                         "recommended_action": "SELL_ALL",
                     })
 
-            # 2. Overconcentration Audit
+            # 2. Take Profit Audit
+            elif unrealized_pnl_pct >= self.take_profit_pct:
+                risk_alerts.append({
+                    "symbol": symbol,
+                    "type": "TAKE_PROFIT_TARGET",
+                    "severity": "MEDIUM",
+                    "message": f"Position gained {unrealized_pnl_pct*100:.1f}%, reaching take-profit target ({self.take_profit_pct*100:.0f}%).",
+                    "recommended_action": "TAKE_PROFIT_TRIM",
+                })
+
+            # 3. Overconcentration Audit
             if weight > self.max_position_weight:
                 risk_alerts.append({
                     "symbol": symbol,
@@ -60,6 +75,90 @@ class RiskManager:
                 })
 
         return risk_alerts
+
+    def check_sltp_triggers(
+        self,
+        portfolio_summary: Dict[str, Any],
+        market_data: List[Dict[str, Any]],
+        cooldown_tracker: Dict[str, float] = None,
+        cooldown_hours: float = config.ALERT_COOLDOWN_HOURS,
+        now_ts: float = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Pure Python / Zero-Token check for Stop-Loss, Take-Profit, and market volatility triggers.
+        Returns active triggers that require waking up AI analysis or dispatching urgent alerts.
+        """
+        if cooldown_tracker is None:
+            cooldown_tracker = {}
+        if now_ts is None:
+            now_ts = time.time()
+
+        cooldown_sec = cooldown_hours * 3600.0
+        holdings = portfolio_summary.get("holdings", {})
+        market_dict = {item["symbol"]: item for item in market_data if "symbol" in item}
+
+        active_triggers = []
+
+        # 1. Check portfolio holdings for Stop-Loss and Take-Profit breaches
+        for symbol, holding in holdings.items():
+            unrealized_pnl_pct = holding.get("unrealized_pnl_pct", 0.0) / 100.0
+            is_hodl = holding.get("hodl", False)
+            current_val = holding.get("market_value", 0.0)
+
+            # Check Stop-Loss
+            if unrealized_pnl_pct <= -self.stop_loss_pct:
+                trigger_key = f"{symbol}:STOP_LOSS_BREACH"
+                last_alert_time = cooldown_tracker.get(trigger_key, 0.0)
+                if (now_ts - last_alert_time) >= cooldown_sec:
+                    active_triggers.append({
+                        "symbol": symbol,
+                        "type": "STOP_LOSS_BREACH",
+                        "severity": "INFO" if is_hodl else "HIGH",
+                        "pnl_pct": unrealized_pnl_pct * 100.0,
+                        "threshold_pct": -self.stop_loss_pct * 100.0,
+                        "is_hodl": is_hodl,
+                        "message": f"{symbol} dropped {unrealized_pnl_pct*100:.2f}% (Stop-Loss limit: {-self.stop_loss_pct*100:.1f}%)",
+                        "trigger_key": trigger_key,
+                        "requires_ai_wakeup": not is_hodl,  # Only wake up AI for active trade execution
+                    })
+
+            # Check Take-Profit
+            elif unrealized_pnl_pct >= self.take_profit_pct:
+                trigger_key = f"{symbol}:TAKE_PROFIT_TARGET"
+                last_alert_time = cooldown_tracker.get(trigger_key, 0.0)
+                if (now_ts - last_alert_time) >= cooldown_sec:
+                    active_triggers.append({
+                        "symbol": symbol,
+                        "type": "TAKE_PROFIT_TARGET",
+                        "severity": "HIGH",
+                        "pnl_pct": unrealized_pnl_pct * 100.0,
+                        "threshold_pct": self.take_profit_pct * 100.0,
+                        "is_hodl": is_hodl,
+                        "message": f"{symbol} gained +{unrealized_pnl_pct*100:.2f}% (Take-Profit target: +{self.take_profit_pct*100:.1f}%)",
+                        "trigger_key": trigger_key,
+                        "requires_ai_wakeup": True,
+                    })
+
+        # 2. Check intraday market volatility (spikes / crashes) for tracked symbols
+        for symbol, m_item in market_dict.items():
+            change_pct = m_item.get("change_pct", 0.0) / 100.0 if "change_pct" in m_item else 0.0
+            if abs(change_pct) >= self.volatility_threshold:
+                trigger_key = f"{symbol}:VOLATILITY_SWING"
+                last_alert_time = cooldown_tracker.get(trigger_key, 0.0)
+                if (now_ts - last_alert_time) >= cooldown_sec:
+                    direction = "jumped" if change_pct > 0 else "dropped"
+                    active_triggers.append({
+                        "symbol": symbol,
+                        "type": "VOLATILITY_SWING",
+                        "severity": "MEDIUM",
+                        "change_pct": change_pct * 100.0,
+                        "threshold_pct": self.volatility_threshold * 100.0,
+                        "message": f"{symbol} {direction} {change_pct*100:+.2f}% today (Volatility threshold: {self.volatility_threshold*100:.1f}%)",
+                        "trigger_key": trigger_key,
+                        "requires_ai_wakeup": symbol in holdings,
+                    })
+
+        return active_triggers
 
     def validate_proposed_trades(self, proposed_trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Validates proposed trades against fee thresholds and safety guardrails."""
@@ -82,3 +181,4 @@ class RiskManager:
             validated_trades.append(trade)
 
         return validated_trades
+

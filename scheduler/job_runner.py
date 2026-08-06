@@ -12,6 +12,8 @@ from reporting.weekly_reporter import WeeklyReporter
 
 from clients.email_client import EmailClient
 
+from scheduler.market_monitor import MarketMonitor
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +28,7 @@ class WeeklyJobRunner:
         self.risk_mgr = RiskManager()
         self.reporter = WeeklyReporter()
         self.email_client = EmailClient()
+        self.market_monitor = MarketMonitor()
 
     def run_analysis_cycle(self) -> Dict[str, Any]:
         """Runs full portfolio sync, AI evaluation, rebalancing plan, risk audit, report generation, and email dispatch."""
@@ -105,16 +108,22 @@ class WeeklyJobRunner:
         }
 
     def start_scheduler(self):
-        """Starts background weekly schedule loop."""
+        """Starts background weekly schedule loop and zero-token market monitor."""
         logger.info(f"Scheduling weekly job runner every {config.WEEKLY_REPORT_DAY.capitalize()}...")
         
         # Schedule weekly on configured day at 08:00 AM
         getattr(schedule.every(), config.WEEKLY_REPORT_DAY).at("08:00").do(self.run_analysis_cycle)
 
-        # Also fallback interval timer
+        # Fallback interval timer
         schedule.every(config.REBALANCE_INTERVAL_DAYS).days.do(self.run_analysis_cycle)
+
+        # Schedule zero-token market monitor
+        if config.ENABLE_MARKET_MONITOR:
+            logger.info(f"Scheduling zero-token Market Monitor every {config.MONITOR_INTERVAL_MINUTES} minutes...")
+            schedule.every(config.MONITOR_INTERVAL_MINUTES).minutes.do(self.market_monitor.check_market)
 
         logger.info("Scheduler started. Running loop...")
         while True:
             schedule.run_pending()
-            time.sleep(60)
+            time.sleep(10)
+

@@ -12,11 +12,12 @@ def test_etf_watchlist_loading():
     symbols = client.get_etf_symbols()
     assert "EUNL.DE" in symbols
     assert "VWCE.DE" in symbols
-    assert "IMEU.DE" in symbols
-    assert "XACT-NORDIC.ST" in symbols
-    assert "VHYL.DE" in symbols
+    assert "EXSA.DE" in symbols
+    assert "VHYL.L" in symbols
     assert "IQQH.DE" in symbols
-    assert "IITV.DE" in symbols
+    assert "QDVE.DE" in symbols
+
+
 
 
 def test_etf_dip_score_calculation():

@@ -268,3 +268,12 @@ tradeBotTiuku/
 - Testit jotka riippuvat toisistaan tai globaalista tilasta
 - Wildcard-importit (`from x import *`)
 - Magiset numerot ilman nimettyä vakiota tai parametria
+
+---
+
+## 📚 Dokumentaatiovaatimukset (README yms.)
+
+1. **Uudet ominaisuudet TÄYTYY aina dokumentoida:** Kun lisäät uusia ominaisuuksia, taustaprosesseja, rajapintoja tai CLI-lippuja, päivitä niiden kuvaus ja käyttöohjeet projektin `README.md`-tiedostoon.
+2. **Konfiguraatio-muutokset:** Kaikki uudet `.env`-muuttujat ja `config.py`-vakiot täytyy kuvata ja lisätä `.env.example`-tiedostoon sekä `README.md`-tiedoston konfiguraatio-osioon.
+3. **Koodikommentit ja Docstringit:** Pidä yllä ajantasaiset Google-tyyliset docstringit luokille ja funktioille.
+

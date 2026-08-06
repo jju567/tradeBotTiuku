@@ -115,6 +115,11 @@ MIN_TRADE_EUR = _get_float("MIN_TRADE_EUR", 200.0)            # Minimum baseline
 MAX_POSITION_WEIGHT = _get_float("MAX_POSITION_WEIGHT", 0.20)   # Max 20% weight per stock
 TARGET_CASH_PERCENT = _get_float("TARGET_CASH_PERCENT", 0.05)   # 5% cash buffer
 STOP_LOSS_PERCENT = _get_float("STOP_LOSS_PERCENT", 0.15)       # 15% stop loss threshold
+TAKE_PROFIT_PERCENT = _get_float("TAKE_PROFIT_PERCENT", 0.20)   # 20% take profit threshold
+MARKET_VOLATILITY_THRESHOLD = _get_float("MARKET_VOLATILITY_THRESHOLD", 0.04) # 4% intraday swing threshold
+MONITOR_INTERVAL_MINUTES = _get_int("MONITOR_INTERVAL_MINUTES", 15) # 15 min poll interval
+ALERT_COOLDOWN_HOURS = _get_float("ALERT_COOLDOWN_HOURS", 4.0)  # 4 hours cooldown between repeat alerts
+ENABLE_MARKET_MONITOR = _get_bool("ENABLE_MARKET_MONITOR", True)
 
 # Email & Notification Settings
 ENABLE_EMAIL_REPORTS = _get_bool("ENABLE_EMAIL_REPORTS", False)
@@ -133,5 +138,7 @@ TIUKU_PORTFOLIO_FILE = BASE_DIR / "tiuku_portfolio.json"
 HOLDINGS_FILE = DATA_DIR / "holdings.json"
 PORTFOLIO_HISTORY_FILE = DATA_DIR / "portfolio_history.json"
 REBALANCE_PROPOSALS_FILE = DATA_DIR / "rebalance_proposals.json"
+MONITOR_COOLDOWN_FILE = DATA_DIR / "monitor_cooldowns.json"
 APP_LOG_FILE = LOG_DIR / "app.log"
 TRADE_LOG_FILE = LOG_DIR / "trades.log"
+

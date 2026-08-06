@@ -18,6 +18,7 @@
   - **Ulkomaiset pörssit (Saksa `.DE`, Lontoo `.L`, USA)**: Ulkomaankaupan minimipalkkio 15,00 € / 0,15 %.
   - **Nordnet-rahastot (`NN_NORGE`, `NN_SVERIGE`)**: 0,00 € välityspalkkio.
   - Suodattaa automaattisesti pois pikkukaupat, joiden välityspalkkiokulut ylittäisivät 2,5 % kauppasummasta.
+- **⚡ Nolla-Token Markkinavahti & Stop-Loss / Take-Profit (`MarketMonitor`)**: Kevyt taustaprosessi, joka valvoo osakkeiden ja ETF-rahastojen hintoja (esim. 15 min välein) **0 LLM-tokenin kulutuksella**. AI Advisor herätetään ja hätähälytyssähköposti lähetetään vain silloin, kun Stop-Loss (-15 %), Take-Profit (+20 %) tai suuri intraday-volatiliteettimuutos (4 %) rikkoutuu.
 - **🎯 Conviction Alignment**: Osto-ohjelmaan pääsevät vain osakkeet, joiden tekninen AI-arvio antaa selkeän ostosuosituksen (`BUY` / `STRONG_BUY`).
 - **🌐 Visuaalinen Suomenkielinen HTML Dashboard & Tooltipit**: Generoi jokaisen ajokerran yhteydessä `tiuku_dashboard.html` -näkymän. Instrumenttien täydellinen nimi näkyy suoraan sekä hiiren leijutuksella (mouseover), mikä helpottaa toimeksiantojen hakua Nordnetissä.
 
@@ -37,10 +38,18 @@ Kopioi mallitiedosto `.env.example` nimelle `.env`:
 ```bash
 cp .env.example .env
 ```
-Määritä tarvittaessa OpenAI API-avain sekä sähköpostiraportoinnin asetukset (`ENABLE_EMAIL_REPORTS`):
+Määritä tarvittaessa OpenAI API-avain, turvarajat sekä sähköpostiraportoinnin asetukset (`ENABLE_EMAIL_REPORTS`):
 ```env
 OPENAI_API_KEY="your-api-key-here"
 NORDNET_FEE_TIER=3
+
+# Turvarajat & Nolla-token Markkinavahti
+STOP_LOSS_PERCENT=0.15          # 15 % Stop-Loss kynnysarvo
+TAKE_PROFIT_PERCENT=0.20        # 20 % Take-Profit kynnysarvo
+MARKET_VOLATILITY_THRESHOLD=0.04# 4 % Intraday-heilahtelukynnys
+MONITOR_INTERVAL_MINUTES=15     # Markkinavahdin tarkistusväli minuutteina
+ALERT_COOLDOWN_HOURS=4.0        # Cooldown toistuville hälytyksille
+ENABLE_MARKET_MONITOR=true
 
 # Sähköpostiraportointi (SMTP)
 ENABLE_EMAIL_REPORTS="true"
@@ -77,6 +86,11 @@ Aja viikkoanalyysi, luo dashboard ja lähetä sähköpostiraportti kerran:
 python main.py --run-once
 ```
 
+Aja nolla-token markkinavahdin pika-tarkistus kerran:
+```bash
+python -m scheduler.market_monitor --once
+```
+
 #### Tapa A: Windows Tehtävien Ajoitus (Suositeltu)
 Voit ajastaa ajon ajettavaksi automaattisesti esim. joka maanantai klo 09:00 ilman että ikkunaa tarvitsee pitää auki:
 Aja PowerShellissä (järjestelmänvalvojana):
@@ -86,12 +100,13 @@ $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 09:00AM
 Register-ScheduledTask -TaskName "TradeBotTiukuViikkoajo" -Action $action -Trigger $trigger
 ```
 
-#### Tapa B: Pythonin Jatkuva Tausta-ajastin
-Käynnistä Pythonin oma jatkuva tausta-ajastin:
+#### Tapa B: Pythonin Jatkuva Tausta-ajastin & Markkinavahti
+Käynnistä Pythonin oma jatkuva tausta-ajastin (ajaa viikkoanalyysin ja 15 min välein nolla-token markkinavahdin):
 ```bash
 python main.py --schedule
 ```
-(Ajaa analyysin `.env`-tiedostossa määritettynä viikonpäivänä `WEEKLY_REPORT_DAY="monday"`).
+(Ajaa viikkoanalyysin `.env`-tiedostossa määritettynä viikonpäivänä `WEEKLY_REPORT_DAY="monday"` ja markkinavahdin `MONITOR_INTERVAL_MINUTES` välein).
+
 
 ---
 
