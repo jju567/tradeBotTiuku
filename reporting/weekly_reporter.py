@@ -150,8 +150,8 @@ class WeeklyReporter:
         lines.extend([
             "\n---",
             "\n## 5. 🔒 Vastuuvapauslauseke & Tietosuoja",
-            "Tämä raportti on luotu paikallisesti tradeBotTiuku-järjestelmällä hyödyntäen avoimen lähdekoodin markkinadataa (`yfinance`).",
-            "Kaikki salkkutiedot ja API-avaimet säilyvät 100 % paikallisesti omalla laitteellasi.",
+            "Tämä raportti on luotu tradeBotTiuku-järjestelmällä hyödyntäen avoimen lähdekoodin markkinadataa (`yfinance`) ja tekoälyanalyysejä (AI Advisor).",
+            "Salkkutiedot ja API-avaimet säilytetään omalla laitteellasi. Tekoälyarviot hyödyntävät ulkoisia LLM-rajapintoja (esim. OpenAI/Gemini/Anthropic API).",
             "*Automaattista kaupankäyntiä ei suoriteta ilman ihmisen vahvistusta.*",
         ])
 
@@ -636,7 +636,7 @@ class WeeklyReporter:
 
         <footer>
             🐱 tradeBotTiuku — Avointen Lähteiden Salkunneuvonantaja & AI-Agentti <br>
-            Kaikki salkkutiedot ja API-avaimet säilyvät aina 100% paikallisesti omalla laitteellasi.
+            Salkkutiedot ja API-avaimet säilytetään omalla laitteellasi. Tekoälyarviot hyödyntävät ulkoisia LLM-rajapintoja.
         </footer>
     </div>
 </body>

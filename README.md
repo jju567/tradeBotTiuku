@@ -228,5 +228,6 @@ tradeBotTiuku/
 
 ## 🔒 Tietosuoja & Disclaimer
 
-- Järjestelmä toimii 100 % paikallisesti omalla laitteellasi.
-- *Ei automaattista toimeksiantojen suoritusta* — kaikki kaupat suoritetaan ihmisen toimesta (Human-in-the-loop).
+- **Tietosuoja & API-avaimet**: Salkkutiedot ja API-avaimet säilytetään omalla laitteellasi.
+- **Tekoälykutsut**: Tekoälyanalyysit (AI Advisor) hyödyntävät ulkoisia kielimallirajapintoja (esim. OpenAI/Gemini/Anthropic API), joille lähetetään analysoitavien osakkeiden tunnistetiedot ja tunnusluvut turvallisesti HTTPS-rajapintojen yli.
+- **Human-in-the-loop**: *Ei automaattista toimeksiantojen suoritusta* — kaikki kaupat suoritetaan aina ihmisen toimesta.
