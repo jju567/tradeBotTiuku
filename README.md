@@ -18,7 +18,11 @@
   - **Ulkomaiset pörssit (Saksa `.DE`, Lontoo `.L`, USA)**: Ulkomaankaupan minimipalkkio 15,00 € / 0,15 %.
   - **Nordnet-rahastot (`NN_NORGE`, `NN_SVERIGE`)**: 0,00 € välityspalkkio.
   - Suodattaa automaattisesti pois pikkukaupat, joiden välityspalkkiokulut ylittäisivät 2,5 % kauppasummasta.
-- **⚡ Nolla-Token Markkinavahti & Stop-Loss / Take-Profit (`MarketMonitor`)**: Kevyt taustaprosessi, joka valvoo osakkeiden ja ETF-rahastojen hintoja (esim. 15 min välein) **0 LLM-tokenin kulutuksella**. AI Advisor herätetään ja hätähälytyssähköposti lähetetään vain silloin, kun Stop-Loss (-15 %), Take-Profit (+20 %) tai suuri intraday-volatiliteettimuutos (4 %) rikkoutuu.
+- **🎯 Mukautettavat Sijoitusstrategiaprofiilit (`SWING_TRADING`, `LONG_TERM`, `HYBRID`)**: Määritä salkku- tai instrumenttikohtainen sijoitushorisontti.
+  - **`SWING_TRADING` (Nopeat voiton keräykset)**: Aktiivinen voittotavoite (+10 %), tiukka Stop-Loss (-8 %), nopeat osittaiset voittojen kotiutukset teknisten yliostettavuussignaalien (RSI > 68) perusteella.
+  - **`LONG_TERM` (Pitkäaikainen sijoittaminen)**: Pitkä osta ja pidä -tavoite (+50 % TP), fundamental-laatu, osinkotuotto ja dip-ostot. Tekoäly ei suosittele turhia myyntejä tilapäisen overbought-tilan vuoksi.
+  - **`HYBRID` (Sekamuotoinen, Oletus)**: Yhdistelmä, jossa esim. ETF:ät ovat `LONG_TERM`-tilassa ja osakkeet `SWING_TRADING`-tilassa.
+- **⚡ Nolla-Token Markkinavahti & PnL-Hystereesi (`MarketMonitor`)**: Kevyt taustaprosessi, joka valvoo salkun hintoja 15 min välein **0 LLM-tokenin kulutuksella**. Hälytysjärjestelmässä on älykäs **PnL-hystereesi** ja 24h cooldown, joka estää samasta staattisesta tuottotasosta toistuvien sähköpostien lähettämisen (uusi hälytys lähetetään vasta kun tuotto muuttuu vähintään ±5.0 % -yksikköä).
 - **🎯 Conviction Alignment**: Osto-ohjelmaan pääsevät vain osakkeet, joiden tekninen AI-arvio antaa selkeän ostosuosituksen (`BUY` / `STRONG_BUY`).
 - **🌐 Visuaalinen Suomenkielinen HTML Dashboard & Tooltipit**: Generoi jokaisen ajokerran yhteydessä `tiuku_dashboard.html` -näkymän. Instrumenttien täydellinen nimi näkyy suoraan sekä hiiren leijutuksella (mouseover), mikä helpottaa toimeksiantojen hakua Nordnetissä.
 
@@ -57,12 +61,15 @@ Määritä tarvittaessa OpenAI API-avain, turvarajat sekä sähköpostiraportoin
 OPENAI_API_KEY="your-api-key-here"
 NORDNET_FEE_TIER=3
 
+# Sijoitusstrategia (HYBRID, SWING_TRADING, LONG_TERM)
+INVESTMENT_STRATEGY="HYBRID"
+
 # Turvarajat & Nolla-token Markkinavahti
-STOP_LOSS_PERCENT=0.15          # 15 % Stop-Loss kynnysarvo
-TAKE_PROFIT_PERCENT=0.20        # 20 % Take-Profit kynnysarvo
+STOP_LOSS_PERCENT=0.15          # Fallback Stop-Loss kynnysarvo
+TAKE_PROFIT_PERCENT=0.20        # Fallback Take-Profit kynnysarvo
 MARKET_VOLATILITY_THRESHOLD=0.04# 4 % Intraday-heilahtelukynnys
 MONITOR_INTERVAL_MINUTES=15     # Markkinavahdin tarkistusväli minuutteina
-ALERT_COOLDOWN_HOURS=4.0        # Cooldown toistuville hälytyksille
+ALERT_COOLDOWN_HOURS=24.0       # Cooldown toistuville hälytyksille (24h)
 ENABLE_MARKET_MONITOR=true
 
 # Sähköpostiraportointi (SMTP)

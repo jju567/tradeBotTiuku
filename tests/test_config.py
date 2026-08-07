@@ -51,3 +51,25 @@ class TestGetMinTradeSizeForSymbol:
         domestic = config.get_min_trade_size_for_symbol("NOKIA.HE")
         foreign = config.get_min_trade_size_for_symbol("AAPL")
         assert foreign >= domestic
+
+
+class TestHoldingStrategyHelpers:
+    def test_hodl_position_returns_long_term_strategy(self):
+        holding = {"hodl": True}
+        assert config.get_holding_strategy(holding) == "LONG_TERM"
+
+    def test_explicit_holding_strategy_overrides_global(self):
+        holding = {"strategy": "SWING_TRADING"}
+        assert config.get_holding_strategy(holding, global_strategy="LONG_TERM") == "SWING_TRADING"
+
+    def test_fallback_to_global_strategy(self):
+        holding = {}
+        assert config.get_holding_strategy(holding, global_strategy="LONG_TERM") == "LONG_TERM"
+
+    def test_strategy_params_retrieval(self):
+        holding = {"strategy": "SWING_TRADING"}
+        params = config.get_holding_strategy_params(holding)
+        assert "take_profit_pct" in params
+        assert "stop_loss_pct" in params
+        assert params["take_profit_pct"] == pytest.approx(0.10)
+

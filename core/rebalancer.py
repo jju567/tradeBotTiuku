@@ -53,6 +53,9 @@ class PortfolioRebalancer:
             target_val = investable_equity * target_weight
             diff_val = target_val - curr_val
 
+            global_strat = portfolio_summary.get("global_strategy") or config.INVESTMENT_STRATEGY
+            strat = config.get_holding_strategy(holding, global_strat)
+
             # Generate SELL if AI recommends SELL/STRONG_SELL or position exceeds MAX_POSITION_WEIGHT or overweight trim
             if (rec in ["SELL", "STRONG_SELL"] or curr_weight > config.MAX_POSITION_WEIGHT or (diff_val < 0 and rec != "HOLD")) and abs(diff_val) >= min_symbol_trade_eur:
                 sell_val = abs(diff_val)
@@ -72,6 +75,7 @@ class PortfolioRebalancer:
                         "current_weight": curr_weight,
                         "target_weight": target_weight,
                         "ai_score": score,
+                        "strategy": strat,
                         "reason": ai_eval.get("reasoning", "Rebalancing trim"),
                     })
 

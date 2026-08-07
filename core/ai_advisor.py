@@ -144,11 +144,20 @@ Kirjoita selkeä, ammattimainen ja kannustava suomenkielinen yhteenveto salkun h
     def _call_openai_eval(self, stock: Dict[str, Any], current_portfolio: Dict[str, Any]) -> Dict[str, Any]:
         """Calls OpenAI GPT model for Tiuku stock evaluation."""
         bb = stock.get("bollinger", {})
+        global_strat = current_portfolio.get("global_strategy") or config.INVESTMENT_STRATEGY
+        strat_key = config.get_holding_strategy(stock, global_strat)
+        strat_info = config.STRATEGY_PROFILES.get(strat_key, config.STRATEGY_PROFILES["HYBRID"])
+
         prompt = f"""You are 'Tiuku', an expert stock market advisor AI for weekly portfolio rebalancing.
-Evaluate the following equity based on technical momentum, Bollinger Bands, moving averages, and dividend yield:
+Evaluate the following equity based on technical momentum, Bollinger Bands, moving averages, dividend yield, and active investment strategy:
 
 Stock Symbol: {stock.get('symbol')} ({stock.get('name')})
 Sector: {stock.get('sector')}
+Active Investment Strategy Profile: {strat_info['name']}
+Strategy Description: {strat_info['ai_description']}
+Target Take-Profit Limit: +{strat_info['take_profit_pct']*100:.0f}%
+Target Stop-Loss Limit: -{strat_info['stop_loss_pct']*100:.0f}%
+
 Current Price: {stock.get('current_price')} EUR (24h change: {stock.get('change_24h_pct')}%)
 RSI (14): {stock.get('rsi_14')}
 Bollinger Bands: Middle={bb.get('middle')}, Upper={bb.get('upper')}, Lower={bb.get('lower')}, %B={bb.get('percent_b')}
@@ -157,10 +166,12 @@ Dividend Yield: {stock.get('dividend_yield', 0.0)*100:.2f}%
 P/E Ratio: {stock.get('pe_ratio')}
 
 TIUKU EVALUATION RULES:
-1. Penalize overbought stocks (RSI > 70 or price near/above Upper Bollinger Band %B > 0.9). Recommend trimming/selling.
-2. Reward oversold quality stocks (RSI < 38 or price near/below Lower Bollinger Band %B < 0.1). Recommend buying.
-3. Favor stocks with stable dividend yield and strong long-term trend (SMA50 > SMA200).
-4. Brokerage fees mean low-frequency rebalancing; avoid tiny adjustments. Maximum stock weight limit is {config.MAX_POSITION_WEIGHT*100:.0f}%.
+1. Respect the Active Investment Strategy Profile ({strat_key}):
+   - SWING_TRADING: Recommend quick profit locking when RSI > 68 or take-profit target is reached.
+   - LONG_TERM: Ignore temporary overbought indicators for high quality compounders. Hold through cycles unless trend breaks.
+2. Penalize severe overbought momentum (RSI > 75 or %B > 0.95) under active trading strategies.
+3. Reward oversold quality stocks (RSI < 38 or price near/below Lower Bollinger Band %B < 0.1). Recommend buying.
+4. Maximum stock weight limit is {config.MAX_POSITION_WEIGHT*100:.0f}%.
 
 Respond ONLY with valid JSON with keys:
 - "score": integer 1 to 10
@@ -185,15 +196,17 @@ Respond ONLY with valid JSON with keys:
             return json.loads(content)
         except Exception as e:
             logger.error(f"OpenAI API evaluation error for {stock.get('symbol')}: {e}")
-            return self._rule_based_tiuku_eval(stock)
+            return self._rule_based_tiuku_eval(stock, global_strat)
 
-    def _rule_based_tiuku_eval(self, stock: Dict[str, Any]) -> Dict[str, Any]:
-        """Rule-based Tiuku engine for scoring stocks (1-10) using RSI, Bollinger Bands, and trend."""
+    def _rule_based_tiuku_eval(self, stock: Dict[str, Any], global_strategy: str = None) -> Dict[str, Any]:
+        """Rule-based Tiuku engine for scoring stocks (1-10) using RSI, Bollinger Bands, trend, and strategy profile."""
         rsi = stock.get("rsi_14", 50.0)
         div = stock.get("dividend_yield", 0.0)
         trend = stock.get("trend", "NEUTRAL")
         bb = stock.get("bollinger", {})
         pct_b = bb.get("percent_b", 0.5)
+
+        strat_key = config.get_holding_strategy(stock, global_strategy)
 
         score = 5
 
@@ -201,13 +214,13 @@ Respond ONLY with valid JSON with keys:
         if rsi < 35:
             score += 2
         elif rsi > 68:
-            score -= 2
+            score -= 1 if strat_key == "LONG_TERM" else 2
 
         # Bollinger Bands Evaluation (%B)
         if pct_b <= 0.15:
             score += 2  # Attractive dip near lower band
         elif pct_b >= 0.85:
-            score -= 2  # Extended near upper band
+            score -= 1 if strat_key == "LONG_TERM" else 2
 
         # Dividend & Trend
         if div >= 0.04:
@@ -237,7 +250,7 @@ Respond ONLY with valid JSON with keys:
             weight = 0.05
 
         reasoning = (
-            f"Tiuku score {score}/10 based on RSI ({rsi}), Bollinger %B ({pct_b}), "
+            f"Tiuku score {score}/10 [{strat_key}] based on RSI ({rsi}), Bollinger %B ({pct_b}), "
             f"Dividend ({div*100:.1f}%), and Trend ({trend})."
         )
         return {"score": score, "recommendation": rec, "target_weight": weight, "reasoning": reasoning}

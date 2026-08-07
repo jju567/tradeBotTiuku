@@ -121,11 +121,13 @@ class MarketMonitor:
                 ai_evaluations=ai_evaluations,
             )
 
-        # 7. Update cooldown tracker for fired triggers
         for trg in active_triggers:
             trg_key = trg.get("trigger_key")
             if trg_key:
-                cooldowns[trg_key] = now_ts
+                cooldowns[trg_key] = {
+                    "timestamp": now_ts,
+                    "pnl_pct": trg.get("pnl_pct", 0.0),
+                }
         self.save_cooldowns(cooldowns)
 
         if not active_triggers:

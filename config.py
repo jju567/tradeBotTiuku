@@ -109,6 +109,30 @@ def _get_bool(key: str, default: bool = False) -> bool:
     return val in ("true", "1", "yes", "on")
 
 
+# Investment Strategy Settings
+INVESTMENT_STRATEGY = env.get("INVESTMENT_STRATEGY", "HYBRID").upper()
+
+STRATEGY_PROFILES = {
+    "SWING_TRADING": {
+        "name": "Swing Trading (Nopeat voiton keräykset)",
+        "take_profit_pct": _get_float("SWING_TRADING_TP", 0.10),
+        "stop_loss_pct": _get_float("SWING_TRADING_SL", 0.08),
+        "ai_description": "Aktiivinen swing-trading. Tavoitteena nopeat 8-15% voiton kotiutukset ja tiukka riskienhallinta.",
+    },
+    "LONG_TERM": {
+        "name": "Long-Term Investing (Pitkäaikainen sijoittaminen)",
+        "take_profit_pct": _get_float("LONG_TERM_TP", 0.50),
+        "stop_loss_pct": _get_float("LONG_TERM_SL", 0.25),
+        "ai_description": "Pitkäaikainen osta ja pidä -sijoittaminen. Tavoitteena korkoa korolle -kasvu ja fundamenttilaatu.",
+    },
+    "HYBRID": {
+        "name": "Hybrid Strategy (Sekamuotoinen)",
+        "take_profit_pct": _get_float("HYBRID_TP", 0.20),
+        "stop_loss_pct": _get_float("HYBRID_SL", 0.15),
+        "ai_description": "Tasapainotettu yhdistelmästrategia, jossa ETF:ät pidetään pitkässä salkussa ja osakkeissa hyödynnetään swing-mahdollisuuksia.",
+    },
+}
+
 # Safety Rails & Fee Thresholds
 REBALANCE_INTERVAL_DAYS = _get_int("REBALANCE_INTERVAL_DAYS", 7)
 MIN_TRADE_EUR = _get_float("MIN_TRADE_EUR", 200.0)            # Minimum baseline trade size
@@ -118,8 +142,31 @@ STOP_LOSS_PERCENT = _get_float("STOP_LOSS_PERCENT", 0.15)       # 15% stop loss 
 TAKE_PROFIT_PERCENT = _get_float("TAKE_PROFIT_PERCENT", 0.20)   # 20% take profit threshold
 MARKET_VOLATILITY_THRESHOLD = _get_float("MARKET_VOLATILITY_THRESHOLD", 0.04) # 4% intraday swing threshold
 MONITOR_INTERVAL_MINUTES = _get_int("MONITOR_INTERVAL_MINUTES", 15) # 15 min poll interval
-ALERT_COOLDOWN_HOURS = _get_float("ALERT_COOLDOWN_HOURS", 4.0)  # 4 hours cooldown between repeat alerts
+ALERT_COOLDOWN_HOURS = _get_float("ALERT_COOLDOWN_HOURS", 24.0)  # 24 hours cooldown between repeat alerts
 ENABLE_MARKET_MONITOR = _get_bool("ENABLE_MARKET_MONITOR", True)
+
+
+def get_holding_strategy(holding_meta: dict, global_strategy: str = None) -> str:
+    """Determines active strategy profile for a specific holding."""
+    if holding_meta.get("hodl", False):
+        return "LONG_TERM"
+    
+    holding_strat = holding_meta.get("strategy")
+    if holding_strat and holding_strat.upper() in STRATEGY_PROFILES:
+        return holding_strat.upper()
+    
+    eff_global = (global_strategy or INVESTMENT_STRATEGY).upper()
+    if eff_global in STRATEGY_PROFILES:
+        return eff_global
+    
+    return "HYBRID"
+
+
+def get_holding_strategy_params(holding_meta: dict, global_strategy: str = None) -> dict:
+    """Returns exact strategy profile parameters for a specific holding."""
+    strat = get_holding_strategy(holding_meta, global_strategy)
+    return STRATEGY_PROFILES.get(strat, STRATEGY_PROFILES["HYBRID"])
+
 
 # Email & Notification Settings
 ENABLE_EMAIL_REPORTS = _get_bool("ENABLE_EMAIL_REPORTS", False)

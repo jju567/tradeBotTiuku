@@ -26,6 +26,7 @@ class RiskManager:
     def audit_portfolio_risks(self, portfolio_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Audits current portfolio for risk violations (e.g. Stop Loss breaches, overconcentration)."""
         holdings = portfolio_summary.get("holdings", {})
+        global_strat = portfolio_summary.get("global_strategy") or config.INVESTMENT_STRATEGY
         risk_alerts = []
 
         for symbol, holding in holdings.items():
@@ -38,8 +39,12 @@ class RiskManager:
             is_hodl = holding.get("hodl", False)
             note = holding.get("note", "HODL / Locked position")
 
+            strat_params = config.get_holding_strategy_params(holding, global_strat)
+            eff_sl = strat_params.get("stop_loss_pct", self.stop_loss_pct)
+            eff_tp = strat_params.get("take_profit_pct", self.take_profit_pct)
+
             # 1. Stop Loss Audit
-            if unrealized_pnl_pct <= -self.stop_loss_pct:
+            if unrealized_pnl_pct <= -eff_sl:
                 if is_hodl:
                     risk_alerts.append({
                         "symbol": symbol,
@@ -57,19 +62,19 @@ class RiskManager:
                         "display_name": display_name,
                         "type": "STOP_LOSS_BREACH",
                         "severity": "HIGH",
-                        "message": f"{display_name} dropped by {unrealized_pnl_pct*100:.1f}%, exceeding stop-loss threshold ({self.stop_loss_pct*100:.0f}%).",
+                        "message": f"{display_name} dropped by {unrealized_pnl_pct*100:.1f}%, exceeding stop-loss threshold ({eff_sl*100:.0f}%).",
                         "recommended_action": "SELL_ALL",
                     })
 
             # 2. Take Profit Audit
-            elif unrealized_pnl_pct >= self.take_profit_pct:
+            elif unrealized_pnl_pct >= eff_tp:
                 risk_alerts.append({
                     "symbol": symbol,
                     "name": name,
                     "display_name": display_name,
                     "type": "TAKE_PROFIT_TARGET",
                     "severity": "MEDIUM",
-                    "message": f"{display_name} gained {unrealized_pnl_pct*100:.1f}%, reaching take-profit target ({self.take_profit_pct*100:.0f}%).",
+                    "message": f"{display_name} gained {unrealized_pnl_pct*100:.1f}%, reaching take-profit target ({eff_tp*100:.0f}%).",
                     "recommended_action": "TAKE_PROFIT_TRIM",
                 })
 
@@ -106,6 +111,7 @@ class RiskManager:
 
         cooldown_sec = cooldown_hours * 3600.0
         holdings = portfolio_summary.get("holdings", {})
+        global_strat = portfolio_summary.get("global_strategy") or config.INVESTMENT_STRATEGY
         market_dict = {item["symbol"]: item for item in market_data if "symbol" in item}
 
         active_triggers = []
@@ -121,40 +127,63 @@ class RiskManager:
             name = holding.get("name") or symbol
             display_name = f"{name} ({symbol})" if name and name != symbol else symbol
 
+            current_pnl_pct = unrealized_pnl_pct * 100.0
+            strat_params = config.get_holding_strategy_params(holding, global_strat)
+            eff_sl = strat_params.get("stop_loss_pct", self.stop_loss_pct)
+            eff_tp = strat_params.get("take_profit_pct", self.take_profit_pct)
+
             # Check Stop-Loss
-            if unrealized_pnl_pct <= -self.stop_loss_pct:
+            if unrealized_pnl_pct <= -eff_sl:
                 trigger_key = f"{symbol}:STOP_LOSS_BREACH"
-                last_alert_time = cooldown_tracker.get(trigger_key, 0.0)
-                if (now_ts - last_alert_time) >= cooldown_sec:
+                entry = cooldown_tracker.get(trigger_key, 0.0)
+                if isinstance(entry, dict):
+                    last_alert_time = float(entry.get("timestamp", 0.0))
+                    last_pnl = entry.get("pnl_pct")
+                else:
+                    last_alert_time = float(entry) if entry else 0.0
+                    last_pnl = None
+                time_passed = (now_ts - last_alert_time) >= cooldown_sec
+                pnl_moved = last_pnl is None or abs(current_pnl_pct - float(last_pnl)) >= 5.0
+
+                if time_passed and pnl_moved:
                     active_triggers.append({
                         "symbol": symbol,
                         "name": name,
                         "display_name": display_name,
                         "type": "STOP_LOSS_BREACH",
                         "severity": "HIGH",
-                        "pnl_pct": unrealized_pnl_pct * 100.0,
-                        "threshold_pct": -self.stop_loss_pct * 100.0,
+                        "pnl_pct": current_pnl_pct,
+                        "threshold_pct": -eff_sl * 100.0,
                         "is_hodl": False,
-                        "message": f"{display_name} dropped {unrealized_pnl_pct*100:.2f}% (Stop-Loss limit: {-self.stop_loss_pct*100:.1f}%)",
+                        "message": f"{display_name} dropped {current_pnl_pct:.2f}% (Stop-Loss limit: {-eff_sl*100:.1f}%)",
                         "trigger_key": trigger_key,
                         "requires_ai_wakeup": True,
                     })
 
             # Check Take-Profit
-            elif unrealized_pnl_pct >= self.take_profit_pct:
+            elif unrealized_pnl_pct >= eff_tp:
                 trigger_key = f"{symbol}:TAKE_PROFIT_TARGET"
-                last_alert_time = cooldown_tracker.get(trigger_key, 0.0)
-                if (now_ts - last_alert_time) >= cooldown_sec:
+                entry = cooldown_tracker.get(trigger_key, 0.0)
+                if isinstance(entry, dict):
+                    last_alert_time = float(entry.get("timestamp", 0.0))
+                    last_pnl = entry.get("pnl_pct")
+                else:
+                    last_alert_time = float(entry) if entry else 0.0
+                    last_pnl = None
+                time_passed = (now_ts - last_alert_time) >= cooldown_sec
+                pnl_moved = last_pnl is None or abs(current_pnl_pct - float(last_pnl)) >= 5.0
+
+                if time_passed and pnl_moved:
                     active_triggers.append({
                         "symbol": symbol,
                         "name": name,
                         "display_name": display_name,
                         "type": "TAKE_PROFIT_TARGET",
                         "severity": "HIGH",
-                        "pnl_pct": unrealized_pnl_pct * 100.0,
-                        "threshold_pct": self.take_profit_pct * 100.0,
+                        "pnl_pct": current_pnl_pct,
+                        "threshold_pct": eff_tp * 100.0,
                         "is_hodl": False,
-                        "message": f"{display_name} gained +{unrealized_pnl_pct*100:.2f}% (Take-Profit target: +{self.take_profit_pct*100:.1f}%)",
+                        "message": f"{display_name} gained +{current_pnl_pct:.2f}% (Take-Profit target: +{eff_tp*100:.1f}%)",
                         "trigger_key": trigger_key,
                         "requires_ai_wakeup": True,
                     })

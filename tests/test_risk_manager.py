@@ -167,3 +167,34 @@ class TestValidateProposedTrades:
         result = self.rm.validate_proposed_trades(trades)
         assert len(result) == 1
         assert result[0]["symbol"] == "GOOD.HE"
+
+
+# ---------------------------------------------------------------------------
+# check_sltp_triggers & Hysteresis
+# ---------------------------------------------------------------------------
+
+
+class TestCheckSltpTriggers:
+    def setup_method(self):
+        self.rm = RiskManager(take_profit_pct=0.20, stop_loss_pct=0.15)
+
+    def test_hodl_position_bypasses_triggers(self):
+        portfolio = {"holdings": {"QDVE.DE": make_holding("QDVE.DE", unrealized_pnl_pct=35.0, hodl=True)}}
+        triggers = self.rm.check_sltp_triggers(portfolio, [], {}, cooldown_hours=24.0, now_ts=1000.0)
+        assert triggers == []
+
+    def test_repetitive_static_pnl_filtered_out(self):
+        portfolio = {"holdings": {"STOCK.HE": make_holding("STOCK.HE", unrealized_pnl_pct=25.0, hodl=False)}}
+        cooldowns = {"STOCK.HE:TAKE_PROFIT_TARGET": {"timestamp": 1000.0, "pnl_pct": 24.8}}
+        # 48 hours passed (cooldown expired), but PnL moved only +0.2% (< 5.0%)
+        triggers = self.rm.check_sltp_triggers(portfolio, [], cooldowns, cooldown_hours=24.0, now_ts=1000.0 + 48 * 3600)
+        assert triggers == []
+
+    def test_significant_pnl_jump_fires_alert(self):
+        portfolio = {"holdings": {"STOCK.HE": make_holding("STOCK.HE", unrealized_pnl_pct=32.0, hodl=False)}}
+        cooldowns = {"STOCK.HE:TAKE_PROFIT_TARGET": {"timestamp": 1000.0, "pnl_pct": 24.8}}
+        # 48 hours passed and PnL jumped from 24.8% to 32.0% (>= 5.0% change)
+        triggers = self.rm.check_sltp_triggers(portfolio, [], cooldowns, cooldown_hours=24.0, now_ts=1000.0 + 48 * 3600)
+        assert len(triggers) == 1
+        assert triggers[0]["type"] == "TAKE_PROFIT_TARGET"
+
