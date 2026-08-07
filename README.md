@@ -233,6 +233,19 @@ tradeBotTiuku/
 
 ---
 
+## ⚡ Sisarprojekti: tradeBotEetu — Automaattinen AI-Kryptokauppabotti *(Suljettu Lähdekoodi)*
+
+Siinä missä **tradeBotTiuku** on avoimen lähdekoodin advisory-agentti osakkeille ja ETF-rahastoille, sen sisarprojekti **`tradeBotEetu`** on suljetun koodin, täysin automaattinen korkeataajuinen AI-kryptokauppabotti (Bitvavo / Binance).
+
+### 🤖 Eetun Keskeiset Innovaatiot:
+- **🏛️ The War Room Multi-Agent Simulaatiomoottori**: Nelivaiheinen päätöksentekomoottori (*The Architect*, *The Swarm Debate*, *The Master Judge*, *Reality Bridge*), jossa kolme erikoistunutta AI-agenttia (*Permabull*, *Doomsday Bear*, *Data Quant*) väittelevät dynaamisilla luotettavuuspainoilla ja ankkuroivat päätökset reaalidataan (ATR, OBI, Volyymi, FNG).
+- **🥊 5 Haastajabotin AI-Turnaus & Deathmatch**: Tunnin välein pyörivä evoluutiokarsinta, jossa tekoälystrategiat kilpailevat ja vain paras Champion-variantti valitaan toteuttamaan oikeat kaupat.
+- **📈 Automaattinen Backtesting & Retro-oppiminen**: Viikoittainen 90 päivän historiallinen simulointiputki (Binance 1h kynttilädata), jonka tulokset injektoidaan suoraan tekoälyprompteihin (`master_prompt_template.txt`) ja strategiapainoihin.
+- **⏱️ Dynamic AI Polling Interval**: Tekoäly päättää itse nukkumisajan (10–180 min) markkinavolatilitetin ja tilanteen mukaan.
+- **🛡️ Älykäs Maker/Taker Order Strategy & Sektorihajautus**: Hyödyntää rauhallisessa markkinassa rajahintatoimeksiantoja (Maker, matalammat kulut) ja suorittaa Stop-Loss -hätätilanteet välittömästi markkinahintaan (Taker), varmistaen max 35 % sektorikohtaisen hajautuksen.
+
+---
+
 ## 🔒 Tietosuoja & Disclaimer
 
 - **Tietosuoja & API-avaimet**: Salkkutiedot ja API-avaimet säilytetään omalla laitteellasi.
