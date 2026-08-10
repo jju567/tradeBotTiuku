@@ -38,10 +38,13 @@ class RiskManager:
 
             is_hodl = holding.get("hodl", False)
             note = holding.get("note", "HODL / Locked position")
-
-            strat_params = config.get_holding_strategy_params(holding, global_strat)
-            eff_sl = strat_params.get("stop_loss_pct", self.stop_loss_pct)
-            eff_tp = strat_params.get("take_profit_pct", self.take_profit_pct)
+            if holding.get("strategy") or holding.get("hodl") or portfolio_summary.get("global_strategy"):
+                strat_params = config.get_holding_strategy_params(holding, global_strat)
+                eff_sl = strat_params.get("stop_loss_pct", self.stop_loss_pct)
+                eff_tp = strat_params.get("take_profit_pct", self.take_profit_pct)
+            else:
+                eff_sl = self.stop_loss_pct
+                eff_tp = self.take_profit_pct
 
             # 1. Stop Loss Audit
             if unrealized_pnl_pct <= -eff_sl:
@@ -128,9 +131,13 @@ class RiskManager:
             display_name = f"{name} ({symbol})" if name and name != symbol else symbol
 
             current_pnl_pct = unrealized_pnl_pct * 100.0
-            strat_params = config.get_holding_strategy_params(holding, global_strat)
-            eff_sl = strat_params.get("stop_loss_pct", self.stop_loss_pct)
-            eff_tp = strat_params.get("take_profit_pct", self.take_profit_pct)
+            if holding.get("strategy") or holding.get("hodl") or portfolio_summary.get("global_strategy"):
+                strat_params = config.get_holding_strategy_params(holding, global_strat)
+                eff_sl = strat_params.get("stop_loss_pct", self.stop_loss_pct)
+                eff_tp = strat_params.get("take_profit_pct", self.take_profit_pct)
+            else:
+                eff_sl = self.stop_loss_pct
+                eff_tp = self.take_profit_pct
 
             # Check Stop-Loss
             if unrealized_pnl_pct <= -eff_sl:
