@@ -199,3 +199,52 @@ class TestCalculateRebalancePlan:
         ai_evals = [make_ai_eval("NOKIA.HE", recommendation="BUY", target_weight=0.10, current_price=3.60)]
         result = self.rebalancer.calculate_rebalance_plan(portfolio, ai_evals)
         assert result["total_estimated_commission"] >= 0.0
+
+    def test_buy_trades_constrained_by_available_cash(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.REBALANCE_PROPOSALS_FILE", tmp_path / "proposals.json")
+        monkeypatch.setattr("config.TARGET_CASH_PERCENT", 0.05)
+        monkeypatch.setattr("config.MAX_POSITION_WEIGHT", 0.20)
+        monkeypatch.setattr("config.MIN_TRADE_EUR", 200.0)
+
+        # Total portfolio equity 18,370 EUR, but cash balance is only 4,000 EUR
+        # Target cash (5%) = 918.5 EUR, so available buy cash = ~3,081.5 EUR
+        portfolio = make_portfolio(total_equity=18370.0, cash_balance=4000.0, holdings={})
+        
+        # 5 candidates asking ~1,837 EUR each (total ~9,185 EUR if unconstrained)
+        ai_evals = [
+            make_ai_eval("SAMPO.HE", score=9, recommendation="STRONG_BUY", target_weight=0.10, current_price=9.72),
+            make_ai_eval("OUT1V.HE", score=8, recommendation="BUY", target_weight=0.10, current_price=5.66),
+            make_ai_eval("PUUILO.HE", score=8, recommendation="BUY", target_weight=0.10, current_price=17.16),
+            make_ai_eval("TYRES.HE", score=7, recommendation="BUY", target_weight=0.10, current_price=15.35),
+            make_ai_eval("AAPL", score=7, recommendation="BUY", target_weight=0.10, current_price=263.99),
+        ]
+
+        result = self.rebalancer.calculate_rebalance_plan(portfolio, ai_evals)
+        buy_trades = [t for t in result["proposed_trades"] if t["action"] == "BUY"]
+        
+        total_buy_cost = sum(t["trade_value"] + t["estimated_commission"] for t in buy_trades)
+        assert total_buy_cost <= result["available_buy_cash"]
+        assert result["available_buy_cash"] <= 4000.0
+
+    def test_buy_trades_prioritized_by_ai_score(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.REBALANCE_PROPOSALS_FILE", tmp_path / "proposals.json")
+        monkeypatch.setattr("config.TARGET_CASH_PERCENT", 0.0)
+        monkeypatch.setattr("config.MAX_POSITION_WEIGHT", 0.20)
+        monkeypatch.setattr("config.MIN_TRADE_EUR", 200.0)
+
+        # Cash balance is 2,000 EUR
+        portfolio = make_portfolio(total_equity=20000.0, cash_balance=2000.0, holdings={})
+        
+        # SAMPO score 9 vs TYRES score 6
+        ai_evals = [
+            make_ai_eval("TYRES.HE", score=6, recommendation="BUY", target_weight=0.10, current_price=15.0),
+            make_ai_eval("SAMPO.HE", score=9, recommendation="STRONG_BUY", target_weight=0.10, current_price=10.0),
+        ]
+
+        result = self.rebalancer.calculate_rebalance_plan(portfolio, ai_evals)
+        buy_trades = [t for t in result["proposed_trades"] if t["action"] == "BUY"]
+        
+        # SAMPO.HE (highest score) should be prioritized and allocated first
+        assert len(buy_trades) >= 1
+        assert buy_trades[0]["symbol"] == "SAMPO.HE"
+

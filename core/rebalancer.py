@@ -79,7 +79,13 @@ class PortfolioRebalancer:
                         "reason": ai_eval.get("reasoning", "Rebalancing trim"),
                     })
 
-        # Evaluate BUY / UPWEIGHT recommendations (ONLY if AI score indicates BUY / STRONG_BUY)
+        # Calculate net cash available for BUY trades (cash_balance + cash from SELLs - target cash reserve)
+        cash_gained_from_sells = sum(t["trade_value"] - t["estimated_commission"] for t in proposed_trades if t["action"] == "SELL")
+        total_available_cash = cash_balance + cash_gained_from_sells
+        available_buy_cash = max(0.0, total_available_cash - target_cash)
+
+        # Collect BUY / UPWEIGHT candidates (ONLY if AI score indicates BUY or STRONG_BUY)
+        buy_candidates = []
         for ai_eval in ai_evaluations:
             symbol = ai_eval["symbol"]
             curr_price = ai_eval["current_price"]
@@ -100,11 +106,60 @@ class PortfolioRebalancer:
             diff_val = target_val - curr_val
 
             if diff_val > 0 and diff_val >= min_symbol_trade_eur:
-                buy_qty = int(diff_val / curr_price)
+                buy_candidates.append({
+                    "ai_eval": ai_eval,
+                    "symbol": symbol,
+                    "curr_price": curr_price,
+                    "rec": rec,
+                    "score": score,
+                    "target_weight": target_weight,
+                    "min_symbol_trade_eur": min_symbol_trade_eur,
+                    "holding": holding,
+                    "desired_val": diff_val,
+                })
+
+        # Prioritize BUY candidates by AI score (desc), conviction level (STRONG_BUY > BUY), and desired value (desc)
+        rec_priority = {"STRONG_BUY": 2, "BUY": 1}
+        buy_candidates.sort(
+            key=lambda c: (c["score"], rec_priority.get(c["rec"], 0), c["desired_val"]),
+            reverse=True
+        )
+
+        remaining_cash = available_buy_cash
+
+        for cand in buy_candidates:
+            if remaining_cash < cand["min_symbol_trade_eur"]:
+                logger.info(
+                    f"Skipping BUY proposal for {cand['symbol']}: Remaining available cash ({remaining_cash:.2f} EUR) "
+                    f"is less than minimum trade size ({cand['min_symbol_trade_eur']:.2f} EUR)"
+                )
+                continue
+
+            symbol = cand["symbol"]
+            curr_price = cand["curr_price"]
+            desired_val = cand["desired_val"]
+            ai_eval = cand["ai_eval"]
+            holding = cand["holding"]
+
+            # Cap max spend to available remaining cash budget
+            max_spend = min(desired_val, remaining_cash)
+            buy_qty = int(max_spend / curr_price)
+
+            # Ensure trade_value + estimated commission fits within remaining_cash
+            while buy_qty > 0:
                 trade_val = round(buy_qty * curr_price, 2)
-                if buy_qty > 0 and trade_val >= min_symbol_trade_eur:
+                commission = config.calculate_commission(symbol, trade_val)
+                if (trade_val + commission) <= remaining_cash:
+                    break
+                buy_qty -= 1
+
+            if buy_qty > 0:
+                trade_val = round(buy_qty * curr_price, 2)
+                if trade_val >= cand["min_symbol_trade_eur"]:
                     commission = config.calculate_commission(symbol, trade_val)
                     total_estimated_commission += commission
+                    remaining_cash -= (trade_val + commission)
+
                     proposed_trades.append({
                         "symbol": symbol,
                         "name": ai_eval.get("name", holding.get("name", symbol)),
@@ -113,11 +168,14 @@ class PortfolioRebalancer:
                         "price": curr_price,
                         "trade_value": trade_val,
                         "estimated_commission": commission,
-                        "current_weight": holding["weight"],
-                        "target_weight": target_weight,
-                        "ai_score": score,
+                        "current_weight": holding.get("weight", 0.0),
+                        "target_weight": cand["target_weight"],
+                        "ai_score": cand["score"],
                         "reason": ai_eval.get("reasoning", "Rebalancing buy"),
                     })
+
+        total_proposed_buy_val = sum(t["trade_value"] for t in proposed_trades if t["action"] == "BUY")
+        total_proposed_sell_val = sum(t["trade_value"] for t in proposed_trades if t["action"] == "SELL")
 
         proposal = {
             "proposal_id": f"PROP-{datetime.now().strftime('%Y%m%d-%H%M')}",
@@ -125,6 +183,10 @@ class PortfolioRebalancer:
             "status": "PENDING_HUMAN_APPROVAL",
             "total_equity": total_equity,
             "cash_balance": cash_balance,
+            "available_buy_cash": round(available_buy_cash, 2),
+            "remaining_cash_after_proposal": round(remaining_cash, 2),
+            "total_proposed_buy_val": round(total_proposed_buy_val, 2),
+            "total_proposed_sell_val": round(total_proposed_sell_val, 2),
             "proposed_trades": proposed_trades,
             "trade_count": len(proposed_trades),
             "total_estimated_commission": round(total_estimated_commission, 2),

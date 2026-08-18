@@ -127,6 +127,9 @@ class EmailClient:
 
             <div style="background: #fff; border: 1px solid #e2e8f0; padding: 18px; border-radius: 8px; margin-bottom: 20px;">
                 <h3 style="margin-top: 0; color: #0f172a;">📝 Ehdotetut Toimenpiteet (Checklist)</h3>
+                <p style="font-size: 0.85rem; color: #64748b; margin-top: -5px; margin-bottom: 12px;">
+                    <em>Käytettävissä oleva ostokäteinen: <strong>{proposal.get('available_buy_cash', cash_balance):,.2f} {currency}</strong>. Kaikki ostoehdotukset on sovitettu käteisvaroihisi — voit toteuttaa tämän kokonaisuuden sellaisenaan.</em>
+                </p>
                 <ol style="padding-left: 20px; margin: 0;">
                     {trades_list_html}
                 </ol>

@@ -127,13 +127,18 @@ class WeeklyReporter:
                 f"{ai.get('target_weight', 0.0)*100:.1f}% | {ai.get('rsi_14')} | {pct_b} | {trend_fi} | {ai['reasoning']} |"
             )
 
+        avail_buy_cash = proposal.get("available_buy_cash", cash_balance)
+        tot_buy_val = proposal.get("total_proposed_buy_val", sum(t['trade_value'] for t in proposal.get('proposed_trades', []) if t['action'] == "BUY"))
         lines.extend([
             "\n---",
             "\n## 4. 📝 Nordnet / Pankki Manuaalisen Kaupankäynnin Muistilista",
             f"**Ehdotus-ID:** `{proposal.get('proposal_id')}`  ",
             f"**Nordnet-palkkiotaso:** Taso {config.NORDNET_FEE_TIER} (min {config.COMMISSION_MIN_EUR:.2f} {currency} / {config.COMMISSION_PERCENT*100:.2f}%)  ",
+            f"**Käytettävissä oleva ostokäteinen:** {avail_buy_cash:,.2f} {currency}  ",
+            f"**Ehdotettujen ostojen kokonaisarvo:** {tot_buy_val:,.2f} {currency}  ",
             f"**Ehdotettujen kauppojen määrä:** {proposal.get('trade_count', 0)}  ",
             f"**Arvioidut välityspalkkiot yhteensä:** {proposal.get('total_estimated_commission', 0.0):.2f} {currency}  ",
+            "\n*✅ Kaikki ostoehdotukset on suhteutettu käteisvaroihisi sopivaksi kokonaisuudeksi, jonka voit toteuttaa sellaisenaan ilman lisärahoitusta.*",
             "\nSuorita seuraavat kaupat manuaalisesti välittäjäsi verkkopalvelussa tai sovelluksessa (esim. Nordnet):",
             "\n| Vaihe | Toimenpide | Symboli | Määrä | Markkinahinta | Arvioitu Kauppa-arvo | Arv. Palkkio | Varmuus / Syy |",
             "| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :--- |",
@@ -539,7 +544,7 @@ class WeeklyReporter:
         <div class="section-card">
             <div class="section-header">📝 Nordnet / Pankki Manuaalisen Kaupankäynnin Muistilista</div>
             <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
-                Voit suorittaa seuraavat ehdotetut kaupat manuaalisesti verkkopankissasi tai Nordnet-sovelluksessa. Kaupat on valikoitu kulutehokkaasti (minimi kauppakoko 200 €).
+                Voit suorittaa seuraavat ehdotetut kaupat manuaalisesti verkkopankissasi tai Nordnet-sovelluksessa. Kaupat on sovitettu tilisi käytettävissä olevaan ostokäteiseen ({proposal.get('available_buy_cash', cash_balance):,.2f} {currency}) — voit toteuttaa kokonaisuuden sellaisenaan ilman lisärahoitusta.
             </p>
             <div style="overflow-x: auto;">
                 <table>
