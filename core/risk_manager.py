@@ -69,20 +69,21 @@ class RiskManager:
                         "recommended_action": "SELL_ALL",
                     })
 
-            # 2. Take Profit Audit
+            # 2. Take Profit Audit (Bypassed for HODL / locked positions)
             elif unrealized_pnl_pct >= eff_tp:
-                risk_alerts.append({
-                    "symbol": symbol,
-                    "name": name,
-                    "display_name": display_name,
-                    "type": "TAKE_PROFIT_TARGET",
-                    "severity": "MEDIUM",
-                    "message": f"{display_name} gained {unrealized_pnl_pct*100:.1f}%, reaching take-profit target ({eff_tp*100:.0f}%).",
-                    "recommended_action": "TAKE_PROFIT_TRIM",
-                })
+                if not is_hodl:
+                    risk_alerts.append({
+                        "symbol": symbol,
+                        "name": name,
+                        "display_name": display_name,
+                        "type": "TAKE_PROFIT_TARGET",
+                        "severity": "MEDIUM",
+                        "message": f"{display_name} gained {unrealized_pnl_pct*100:.1f}%, reaching take-profit target ({eff_tp*100:.0f}%).",
+                        "recommended_action": "TAKE_PROFIT_TRIM",
+                    })
 
-            # 3. Overconcentration Audit
-            if weight > self.max_position_weight:
+            # 3. Overconcentration Audit (Bypassed for HODL / locked positions)
+            if weight > self.max_position_weight and not is_hodl:
                 risk_alerts.append({
                     "symbol": symbol,
                     "name": name,

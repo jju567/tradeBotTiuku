@@ -71,6 +71,20 @@ class TestAuditPortfolioRisksStopLoss:
         assert alerts[0]["type"] == "HODL_LOCK_PROTECTION"
         assert alerts[0]["severity"] == "INFO"
 
+    def test_hodl_bypasses_take_profit_alert(self):
+        """HODL positions like QDVE.DE (+39.9%) should completely bypass Take-Profit alerts."""
+        portfolio = {"holdings": {"QDVE.DE": make_holding("QDVE.DE", unrealized_pnl_pct=39.9, hodl=True)}}
+        alerts = self.rm.audit_portfolio_risks(portfolio)
+        tp_alerts = [a for a in alerts if a["type"] == "TAKE_PROFIT_TARGET"]
+        assert tp_alerts == []
+
+    def test_hodl_bypasses_overconcentration_alert(self):
+        """HODL positions should not raise Overconcentration trim alerts."""
+        portfolio = {"holdings": {"QDVE.DE": make_holding("QDVE.DE", weight=0.35, hodl=True)}}
+        alerts = self.rm.audit_portfolio_risks(portfolio)
+        oc_alerts = [a for a in alerts if a["type"] == "OVERCONCENTRATION"]
+        assert oc_alerts == []
+
     def test_exactly_at_threshold_triggers_alert(self):
         """At exactly -15% PnL an alert should be raised."""
         portfolio = {"holdings": {"TEST.HE": make_holding(unrealized_pnl_pct=-15.0)}}
