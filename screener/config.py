@@ -1,0 +1,89 @@
+"""
+Configuration settings for Nasdaq OMX Helsinki stock screener.
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Dict, Optional
+import os
+
+
+@dataclass
+class ScreenerConfig:
+    # Storage settings
+    db_path: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent / "data" / "screener_state.db")
+    
+    # RSS Feed Endpoints for Nasdaq OMX Helsinki & First North
+    rss_feeds: List[str] = field(default_factory=lambda: [
+        # GlobeNewswire Helsinki exchange releases & Finland Wire
+        "https://www.globenewswire.com/RssFeed/exchange/HEX/feedTitle/GlobeNewswire%20-%20Exchange%20HEX",
+        "https://www.globenewswire.com/RssFeed/country/FI/feedTitle/GlobeNewswire%20-%20News%20from%20Finland",
+        # Cision Wire Finland (MAR releases & company news)
+        "https://news.cision.com/fi/rss/all",
+        # Nasdaq CDS Public RSS Feeds (Helsinki Main Market & First North)
+        "https://newsclient.omxgroup.com/cds-public/view/rss/HEX/releases.rss",
+        "https://newsclient.omxgroup.com/cds-public/view/rss/FNFI/releases.rss",
+        "https://newsclient.omxgroup.com/cds-public/view/rss/HEX/company-news.rss",
+    ])
+    
+    # Request & Networking settings
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (TiukuTradeBot/1.0; +https://github.com)"
+    )
+    request_timeout_seconds: int = 15
+    max_concurrent_requests: int = 5
+    rate_limit_delay_seconds: float = 1.0  # Politeness delay between batch requests
+    max_retries: int = 3
+    retry_backoff_factor: float = 1.5
+    
+    # PDF & Content Parsing settings
+    max_pdf_size_bytes: int = 15 * 1024 * 1024  # 15 MB limit per report
+    max_text_characters: int = 100_000          # Cap text payload to avoid excessive memory / tokens
+    extract_tables: bool = True
+    
+    # Quantitative Risk Filter Defaults
+    min_cash_runway_months: float = 18.0
+    max_bid_ask_spread_pct: float = 4.0
+    
+    # Nordnet Small User Commission & Friction Settings
+    # Nordnet Taso 3 (Pienkäyttäjä / 1-10 kauppaa/kk): Kotimaa min 7.00 EUR (0.15%) tai Taso 4 (min 9.00 EUR / 0.20%)
+    nordnet_min_commission_eur: float = 7.00
+    nordnet_commission_percent: float = 0.0015
+    nordnet_min_trade_eur: float = 500.0
+    max_total_friction_pct: float = 5.5  # Max combined spread + round-trip commission %
+    
+    # State / History limits
+    max_history_days: int = 90
+
+    @classmethod
+    def from_env(cls) -> "ScreenerConfig":
+        """Load optional configuration overrides from environment variables."""
+        db_env = os.getenv("SCREENER_DB_PATH")
+        db_path = Path(db_env) if db_env else None
+        
+        cfg = cls()
+        if db_path:
+            cfg.db_path = db_path
+        
+        min_runway = os.getenv("SCREENER_MIN_CASH_RUNWAY_MONTHS")
+        if min_runway:
+            cfg.min_cash_runway_months = float(min_runway)
+            
+        max_spread = os.getenv("SCREENER_MAX_BID_ASK_SPREAD_PCT")
+        if max_spread:
+            cfg.max_bid_ask_spread_pct = float(max_spread)
+
+        min_comm = os.getenv("COMMISSION_MIN_EUR") or os.getenv("NORDNET_MIN_COMMISSION_EUR")
+        if min_comm:
+            cfg.nordnet_min_commission_eur = float(min_comm)
+
+        comm_pct = os.getenv("COMMISSION_PERCENT") or os.getenv("NORDNET_COMMISSION_PERCENT")
+        if comm_pct:
+            cfg.nordnet_commission_percent = float(comm_pct)
+
+        max_friction = os.getenv("MAX_TOTAL_FRICTION_PCT")
+        if max_friction:
+            cfg.max_total_friction_pct = float(max_friction)
+            
+        return cfg

@@ -44,6 +44,11 @@ reports/*.md
 !reports/.gitkeep
 tiuku_portfolio.json
 
+# Testing & Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
 # IDE / OS
 .vscode/
 .idea/
