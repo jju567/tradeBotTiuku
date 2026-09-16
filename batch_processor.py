@@ -58,7 +58,7 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3-8b-instruct:free")
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 60.0
-THROTTLE_DELAY_SECONDS = 3.0
+THROTTLE_DELAY_SECONDS = 7.0
 
 # Dual-Lens Core System Prompt
 CORE_SYSTEM_PROMPT = """You are an expert quantitative equity analyst evaluating Nordic micro-cap companies from Earnings Reports and Annual Reports.

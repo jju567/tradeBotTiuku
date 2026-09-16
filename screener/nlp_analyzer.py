@@ -37,7 +37,7 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3-8b-instruct:free"
 
 # Rate Limiting Configuration
-DEFAULT_THROTTLE_SLEEP = 3.0      # Mandatory politeness delay between successful API requests (seconds)
+DEFAULT_THROTTLE_SLEEP = 7.0      # Mandatory politeness delay between successful API requests (seconds)
 MAX_RETRIES = 3                   # Maximum retries on 429 or 5xx errors
 RETRY_BACKOFF_DELAYS = [5.0, 10.0, 20.0]  # Progressive sleep on rate-limit breaches (seconds)
 
