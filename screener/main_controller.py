@@ -707,7 +707,12 @@ class ScreenerPipelineController:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Nordic Micro-Cap Core & Satellite Production MVP Daemon"
+        description="Nordic Micro-Cap Core & Satellite Screener & Trading Bot v2.0.0"
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="tradeBotTiuku Core & Satellite Screener v2.0.0"
     )
     parser.add_argument(
         "--run-once",

@@ -26,7 +26,8 @@ def main():
         except Exception:
             pass
 
-    parser = argparse.ArgumentParser(description="tradeBotTiuku - Open Source Portfolio Advisor & Advisory Agent")
+    parser = argparse.ArgumentParser(description=f"tradeBotTiuku v{config.APP_VERSION} - Open Source Portfolio Advisor & Advisory Agent")
+    parser.add_argument("--version", action="version", version=f"tradeBotTiuku v{config.APP_VERSION}")
     parser.add_argument("--run-once", action="store_true", help="Run a single Tiuku analysis cycle and generate report")
     parser.add_argument("--schedule", action="store_true", help="Start background weekly analysis schedule")
     parser.add_argument("--show-portfolio", action="store_true", help="Display current local portfolio holdings")

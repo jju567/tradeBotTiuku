@@ -23,6 +23,8 @@ def load_env_file(filepath: str = ".env") -> dict:
 # Load environment variables
 env = load_env_file()
 
+APP_VERSION = "2.0.0"
+
 # Base & Directory paths
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / env.get("DATA_DIR", "data")
