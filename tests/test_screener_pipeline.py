@@ -344,3 +344,42 @@ def test_check_liquidity_and_spread_filters(monkeypatch):
     assert res_friction["passed_spread_check"] is False
     assert "Total friction" in res_friction["reason"]
     assert res_friction["total_friction_pct"] == 6.60
+
+
+def test_asymmetric_scraping_schedule():
+    from screener.config import ScreenerConfig, get_dynamic_interval
+
+    cfg = ScreenerConfig(
+        peak_interval_seconds=40,
+        regular_interval_seconds=300,
+        offmarket_interval_seconds=900,
+        peak_start_time="08:30",
+        peak_end_time="10:00",
+        market_open_time="08:00",
+        market_close_time="18:30"
+    )
+
+    # 1. Peak rush morning window (e.g. Wednesday 08:45)
+    wed_peak = datetime(2026, 9, 16, 8, 45, 0)
+    interval, mode = get_dynamic_interval(wed_peak, cfg)
+    assert interval == 40
+    assert "Morning Peak Rush" in mode
+
+    # 2. Regular market hours afternoon (e.g. Wednesday 14:15)
+    wed_day = datetime(2026, 9, 16, 14, 15, 0)
+    interval, mode = get_dynamic_interval(wed_day, cfg)
+    assert interval == 300
+    assert "Regular Market Hours" in mode
+
+    # 3. Off-market late evening (e.g. Wednesday 22:00)
+    wed_night = datetime(2026, 9, 16, 22, 0, 0)
+    interval, mode = get_dynamic_interval(wed_night, cfg)
+    assert interval == 900
+    assert "Off-Market / Night" in mode
+
+    # 4. Weekend (e.g. Saturday 09:00)
+    sat_morning = datetime(2026, 9, 19, 9, 0, 0)
+    interval, mode = get_dynamic_interval(sat_morning, cfg)
+    assert interval == 900
+    assert "Weekend Off-Market" in mode
+

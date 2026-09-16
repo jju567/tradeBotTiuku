@@ -3,8 +3,9 @@ Configuration settings for Nasdaq OMX Helsinki stock screener.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import os
 
 
@@ -61,6 +62,18 @@ class ScreenerConfig:
     nordnet_min_trade_eur: float = 500.0
     max_total_friction_pct: float = 5.5  # Max combined spread + round-trip commission %
     
+    # Dynamic Asymmetric Polling Schedule
+    # Peak rush (08:30 - 10:00 on weekdays): Aggressive 40s polling (80% of critical earnings/MAR releases)
+    # Regular market hours (10:00 - 18:30): 5 minutes (300s)
+    # Off-market / nights / weekends: 15 minutes (900s)
+    peak_interval_seconds: int = 40
+    regular_interval_seconds: int = 300
+    offmarket_interval_seconds: int = 900
+    peak_start_time: str = "08:30"
+    peak_end_time: str = "10:00"
+    market_open_time: str = "08:00"
+    market_close_time: str = "18:30"
+    
     # State / History limits
     max_history_days: int = 90
 
@@ -111,3 +124,49 @@ class ScreenerConfig:
             cfg.max_total_friction_pct = float(max_friction)
             
         return cfg
+
+
+def get_dynamic_interval(
+    now: Optional[datetime] = None,
+    config: Optional[ScreenerConfig] = None
+) -> Tuple[int, str]:
+    """
+    Calculates dynamic asymmetric scraping interval based on Helsinki market schedule:
+    - Morning Peak Rush (08:30 - 10:00, Mon-Fri): 40 seconds (80% of critical earnings/MAR releases)
+    - Regular Market Hours (08:00 - 18:30, Mon-Fri): 300 seconds (5 minutes)
+    - Off-Market / Night / Weekends: 900 seconds (15 minutes)
+
+    Returns:
+        (interval_seconds, mode_description)
+    """
+    cfg = config or ScreenerConfig()
+    dt = now or datetime.now()
+
+    # Check weekend (Mon=0, Sun=6)
+    if dt.weekday() >= 5:
+        return cfg.offmarket_interval_seconds, "Weekend Off-Market (15 min)"
+
+    # Parse hour:minute bounds
+    def _parse_hm(time_str: str) -> Tuple[int, int]:
+        parts = time_str.split(":")
+        return int(parts[0]), int(parts[1])
+
+    current_minutes = dt.hour * 60 + dt.minute
+
+    peak_start_h, peak_start_m = _parse_hm(cfg.peak_start_time)
+    peak_end_h, peak_end_m = _parse_hm(cfg.peak_end_time)
+    market_open_h, market_open_m = _parse_hm(cfg.market_open_time)
+    market_close_h, market_close_m = _parse_hm(cfg.market_close_time)
+
+    peak_start_min = peak_start_h * 60 + peak_start_m
+    peak_end_min = peak_end_h * 60 + peak_end_m
+    mkt_open_min = market_open_h * 60 + market_open_m
+    mkt_close_min = market_close_h * 60 + market_close_m
+
+    if peak_start_min <= current_minutes < peak_end_min:
+        return cfg.peak_interval_seconds, f"Morning Peak Rush ({cfg.peak_start_time}-{cfg.peak_end_time}, {cfg.peak_interval_seconds}s)"
+    elif mkt_open_min <= current_minutes < mkt_close_min:
+        return cfg.regular_interval_seconds, f"Regular Market Hours ({cfg.regular_interval_seconds//60} min)"
+    else:
+        return cfg.offmarket_interval_seconds, f"Off-Market / Night ({cfg.offmarket_interval_seconds//60} min)"
+

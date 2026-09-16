@@ -62,7 +62,7 @@ BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from screener.config import ScreenerConfig
+from screener.config import ScreenerConfig, get_dynamic_interval
 from screener.models import FeedItem, StrategyType, DocumentPayload
 from screener.scraper_module import NasdaqHelsinkiScraper, fetch_latest_releases
 from screener.state_manager import init_db, is_processed, mark_as_processed
@@ -722,13 +722,31 @@ def main():
     parser.add_argument(
         "--loop",
         action="store_true",
-        help="Run continuous background daemon loop (default interval: 900s / 15 min)"
+        help="Run continuous background daemon loop (with dynamic asymmetric scraping)"
     )
     parser.add_argument(
         "--interval",
         type=int,
+        default=None,
+        help="Explicit fixed polling interval in seconds (overrides asymmetric dynamic schedule)"
+    )
+    parser.add_argument(
+        "--peak-interval",
+        type=int,
+        default=40,
+        help="Polling interval in seconds during morning peak rush 08:30-10:00 (default: 40s)"
+    )
+    parser.add_argument(
+        "--regular-interval",
+        type=int,
+        default=300,
+        help="Polling interval in seconds during regular day hours 08:00-18:30 (default: 300s = 5 min)"
+    )
+    parser.add_argument(
+        "--offmarket-interval",
+        type=int,
         default=900,
-        help="Polling interval in seconds when running in --loop mode (default: 900 = 15 minutes)"
+        help="Polling interval in seconds outside market hours and weekends (default: 900s = 15 min)"
     )
     parser.add_argument(
         "--check-exits",
@@ -755,7 +773,19 @@ def main():
         return
 
     if args.loop:
-        logger.info(f"Starting continuous daemon loop (interval: {args.interval}s / {args.interval/60:.1f} min)...")
+        # Override config interval values if passed
+        controller.config.peak_interval_seconds = args.peak_interval
+        controller.config.regular_interval_seconds = args.regular_interval
+        controller.config.offmarket_interval_seconds = args.offmarket_interval
+
+        if args.interval is not None:
+            logger.info(f"Starting continuous daemon loop with FIXED interval: {args.interval}s...")
+        else:
+            logger.info(
+                f"Starting continuous daemon loop with ASYMMETRIC dynamic schedule "
+                f"(Peak 08:30-10:00: {args.peak_interval}s, Day: {args.regular_interval}s, Off-market: {args.offmarket_interval}s)..."
+            )
+
         last_eod_date = None
         try:
             while True:
@@ -770,8 +800,14 @@ def main():
                     controller.run_eod_maintenance(dry_run=args.dry_run)
                     last_eod_date = today
 
-                logger.info(f"Heartbeat OK. Sleeping for {args.interval} seconds until next cycle...")
-                time.sleep(args.interval)
+                if args.interval is not None:
+                    sleep_sec = args.interval
+                    mode_desc = f"Fixed interval ({sleep_sec}s)"
+                else:
+                    sleep_sec, mode_desc = get_dynamic_interval(datetime.now(), controller.config)
+
+                logger.info(f"Heartbeat OK | Schedule Mode: {mode_desc} | Next cycle in {sleep_sec}s...")
+                time.sleep(sleep_sec)
         except KeyboardInterrupt:
             logger.info("Daemon loop terminated by user (KeyboardInterrupt). Exiting cleanly.")
     else:
