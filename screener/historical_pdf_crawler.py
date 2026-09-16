@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any, Set
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -285,7 +285,7 @@ class HistoricalPDFCrawler:
         return stocks
 
     def resolve_cision_company_url(self, company_name: str) -> Optional[str]:
-        """Tries slug variants to resolve the active Cision company archive URL."""
+        """Tries slug variants and search queries to resolve the active Cision company archive URL."""
         slug_candidates = generate_company_slug_candidates(company_name)
         
         # Test Finnish and Scandinavian country routes
@@ -297,6 +297,23 @@ class HistoricalPDFCrawler:
                 resp = self._safe_get(url, timeout=8.0)
                 if resp and resp.status_code == 200 and len(resp.text) > 5000:
                     return url
+
+        # Fallback: search query on Cision
+        clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|corporation|group)\b", "", company_name, flags=re.IGNORECASE).strip()
+        for domain in ["https://news.cision.com/fi", "https://news.cision.com/se"]:
+            search_url = f"{domain}/search?q={quote(clean_name)}"
+            resp = self._safe_get(search_url, timeout=10.0)
+            if resp and resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    # Company archive links are typically /fi/company-slug or /se/company-slug
+                    m = re.match(r"^/(fi|se)/([a-z0-9\-]+)/?$", href.lower())
+                    if m and m.group(2) not in ("search", "all", "rss", "contact", "about"):
+                        full_url = urljoin(domain, href)
+                        check_resp = self._safe_get(full_url, timeout=8.0)
+                        if check_resp and check_resp.status_code == 200 and len(check_resp.text) > 5000:
+                            return full_url
 
         return None
 
@@ -379,18 +396,63 @@ class HistoricalPDFCrawler:
 
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # Look for direct PDF links or Cision media server attachments (mb.cision.com)
+        # Look for direct PDF links or Cision media server attachments
+        candidate_urls = []
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"].strip()
-            if ".pdf" in href.lower() or "mb.cision.com" in href.lower():
+            href_lower = href.lower()
+            text_lower = a_tag.get_text().lower()
+
+            # Ignore social sharing links
+            if any(s in href_lower for s in ["pinterest.com", "facebook.com", "twitter.com", "linkedin.com", "whatsapp.com"]):
+                continue
+            # Ignore image files
+            if any(href_lower.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".svg"]):
+                continue
+
+            # Prioritize links explicitly containing .pdf or pdf/download keywords
+            if ".pdf" in href_lower or ("download" in href_lower and "pdf" in text_lower) or ("mb.cision.com" in href_lower and ".pdf" in href_lower):
                 return urljoin(release_url, href)
+            elif "mb.cision.com" in href_lower and not any(ext in href_lower for ext in [".png", ".jpg", ".jpeg"]):
+                candidate_urls.append(urljoin(release_url, href))
+
+        if candidate_urls:
+            return candidate_urls[0]
 
         return None
 
+    def extract_html_body_text(self, release_url: str) -> str:
+        """
+        HTML Fallback: Fetches release HTML and extracts sanitized body text
+        when no PDF attachment is available.
+        """
+        resp = self._safe_get(release_url)
+        if not resp or resp.status_code != 200:
+            return ""
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # Decompose noise tags
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "svg", "form"]):
+            tag.decompose()
+
+        main_container = (
+            soup.find("div", class_=re.compile(r"release|article|content|news-body|press-release|mfn-body", re.I))
+            or soup.find("article")
+            or soup.find("main")
+            or soup.body
+        )
+
+        if main_container:
+            text = main_container.get_text(separator="\n")
+        else:
+            text = soup.get_text(separator="\n")
+
+        cleaned_lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return "\n".join(cleaned_lines)
+
     def download_pdf(self, pdf_url: str, target_filename: str) -> bool:
-        """Downloads and saves a PDF report to data/historical_reports/."""
+        """Downloads and saves a PDF report to output_dir."""
         dest_path = self.output_dir / target_filename
-        
         if dest_path.exists() and dest_path.stat().st_size > 1024:
             logger.info(f"   [SKIP] Already exists: {target_filename} ({dest_path.stat().st_size / 1024:.1f} KB)")
             return True
@@ -400,7 +462,6 @@ class HistoricalPDFCrawler:
             logger.warning(f"   [FAIL] Failed to download PDF from {pdf_url}")
             return False
 
-        # Ensure content is strictly valid PDF binary (%PDF header)
         content = resp.content
         if not content.startswith(b"%PDF"):
             logger.warning(f"   [FAIL] Content from {pdf_url} is not valid PDF binary (%PDF header missing).")
@@ -415,36 +476,253 @@ class HistoricalPDFCrawler:
             logger.error(f"   [ERROR] Failed writing PDF {target_filename}: {e}")
             return False
 
-    def crawl_company(self, ticker: str, company_name: str, max_reports: int = 8) -> int:
-        """Crawls and downloads all matching earnings reports for a single company."""
-        logger.info(f"\n[{ticker}] Searching archives for: {company_name}...")
-        
+    def save_report_document(self, cand: ReportCandidate, source_name: str) -> bool:
+        """
+        Saves the financial report document as a PDF, or falls back to saving
+        clean HTML body text as a .txt file if no PDF attachment exists.
+        """
+        base_stem = f"{cand.ticker}_{cand.year}_{cand.period}"
+        target_pdf = self.output_dir / f"{base_stem}.pdf"
+        target_txt = self.output_dir / f"{base_stem}.txt"
+
+        if target_pdf.exists() and target_pdf.stat().st_size > 1024:
+            logger.info(f"   [SOURCE: {source_name}] [FORMAT: PDF] [SKIP] Already exists: {target_pdf.name}")
+            return True
+        if target_txt.exists() and target_txt.stat().st_size > 100:
+            logger.info(f"   [SOURCE: {source_name}] [FORMAT: HTML-TXT] [SKIP] Already exists: {target_txt.name}")
+            return True
+
+        # 1. Try PDF download
+        pdf_url = self.extract_pdf_download_url(cand.release_url)
+        if pdf_url:
+            resp = self._safe_get(pdf_url, timeout=25.0)
+            if resp and resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+                try:
+                    with open(target_pdf, "wb") as f:
+                        f.write(resp.content)
+                    logger.info(f"   [SOURCE: {source_name}] [FORMAT: PDF] Saved {target_pdf.name} ({len(resp.content) / 1024:.1f} KB)")
+                    return True
+                except Exception as e:
+                    logger.error(f"   Failed writing PDF {target_pdf.name}: {e}")
+
+        # 2. HTML Fallback (.txt)
+        logger.info(f"   [HTML FALLBACK] No PDF found. Extracting press release text from {source_name}...")
+        body_text = self.extract_html_body_text(cand.release_url)
+        if body_text and len(body_text) >= 150:
+            try:
+                with open(target_txt, "w", encoding="utf-8") as f:
+                    f.write(f"Title: {cand.title}\nSource: {source_name}\nURL: {cand.release_url}\n\n{body_text}")
+                logger.info(f"   [SOURCE: {source_name}] [FORMAT: HTML-TXT Fallback] Saved {target_txt.name} ({len(body_text.split())} words)")
+                return True
+            except Exception as e:
+                logger.error(f"   Failed writing TXT fallback {target_txt.name}: {e}")
+        else:
+            logger.warning(f"   [-] Could not extract report text from {cand.release_url}")
+
+        return False
+
+    # -------------------------------------------------------------------------
+    # Channel Specific Search Implementations
+    # -------------------------------------------------------------------------
+
+    def _crawl_cision(self, ticker: str, company_name: str, max_reports: int, country_prefix: str = "fi") -> List[ReportCandidate]:
+        """Crawl Cision PR archives (Sweden/Finland)."""
         archive_url = self.resolve_cision_company_url(company_name)
         if not archive_url:
-            logger.info(f"[-] No centralized Cision archive found for '{company_name}'.")
-            return 0
-
-        logger.info(f"[+] Found archive: {archive_url}")
+            return []
         candidates = self.extract_reports_from_cision_archive(archive_url, ticker, company_name)
+        return candidates[:max_reports]
+
+    def _crawl_mfn(self, ticker: str, company_name: str, max_reports: int) -> List[ReportCandidate]:
+        """Crawl MFN.se (Modular Finance) for Swedish small/micro caps."""
+        clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|corporation|group)\b", "", company_name, flags=re.IGNORECASE).strip()
+        search_url = f"https://mfn.se/search?q={quote(clean_name)}"
+        resp = self._safe_get(search_url, timeout=10.0)
+        if not resp or resp.status_code != 200:
+            return []
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        candidates: List[ReportCandidate] = []
+        seen_urls: Set[str] = set()
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if not href.startswith("/a/"):
+                continue
+            full_url = urljoin("https://mfn.se", href)
+            if full_url in seen_urls:
+                continue
+            seen_urls.add(full_url)
+
+            title = a.get_text(strip=True)
+            if not title or EXCLUSION_KEYWORDS_REGEX.search(title):
+                continue
+            if not CORE_REPORT_KEYWORDS_REGEX.search(title):
+                continue
+
+            year, period = extract_period_and_year(title)
+            if year < self.min_year or year > self.max_year:
+                continue
+
+            candidates.append(ReportCandidate(
+                ticker=ticker,
+                company_name=company_name,
+                title=title,
+                release_url=full_url,
+                published_date_str=str(year),
+                year=year,
+                period=period,
+                target_filename=f"{ticker}_{year}_{period}.pdf",
+            ))
+            if len(candidates) >= max_reports:
+                break
+
+        return candidates
+
+    def _crawl_bequoted(self, ticker: str, company_name: str, max_reports: int) -> List[ReportCandidate]:
+        """Crawl BeQuoted for Swedish Spotlight / NGM micro-caps."""
+        clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|corporation|group)\b", "", company_name, flags=re.IGNORECASE).strip()
+        search_url = f"https://www.bequoted.com/search/?q={quote(clean_name)}"
+        resp = self._safe_get(search_url, timeout=10.0)
+        if not resp or resp.status_code != 200:
+            return []
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        candidates: List[ReportCandidate] = []
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            title = a.get_text(strip=True)
+            if not title or EXCLUSION_KEYWORDS_REGEX.search(title) or not CORE_REPORT_KEYWORDS_REGEX.search(title):
+                continue
+            year, period = extract_period_and_year(title)
+            if year < self.min_year or year > self.max_year:
+                continue
+            candidates.append(ReportCandidate(
+                ticker=ticker,
+                company_name=company_name,
+                title=title,
+                release_url=urljoin("https://www.bequoted.com", href),
+                published_date_str=str(year),
+                year=year,
+                period=period,
+                target_filename=f"{ticker}_{year}_{period}.pdf",
+            ))
+            if len(candidates) >= max_reports:
+                break
+        return candidates
+
+    def _crawl_newsweb_oslo(self, ticker: str, company_name: str, max_reports: int) -> List[ReportCandidate]:
+        """Crawl Oslo Børs NewsWeb for Norwegian (.OL) equities."""
+        ticker_symbol = ticker.replace(".OL", "").strip()
+        clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|corporation|group)\b", "", company_name, flags=re.IGNORECASE).strip()
+        
+        # Query NewsWeb search
+        search_url = f"https://newsweb.oslobors.no/search?issuer={quote(ticker_symbol)}"
+        resp = self._safe_get(search_url, timeout=10.0)
+        candidates: List[ReportCandidate] = []
+
+        if resp and resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if "/message/" not in href:
+                    continue
+                title = a.get_text(strip=True)
+                if not title or EXCLUSION_KEYWORDS_REGEX.search(title) or not CORE_REPORT_KEYWORDS_REGEX.search(title):
+                    continue
+                year, period = extract_period_and_year(title)
+                if year < self.min_year or year > self.max_year:
+                    continue
+                candidates.append(ReportCandidate(
+                    ticker=ticker,
+                    company_name=company_name,
+                    title=title,
+                    release_url=urljoin("https://newsweb.oslobors.no", href),
+                    published_date_str=str(year),
+                    year=year,
+                    period=period,
+                    target_filename=f"{ticker}_{year}_{period}.pdf",
+                ))
+                if len(candidates) >= max_reports:
+                    break
+
+        return candidates
+
+    # -------------------------------------------------------------------------
+    # Main Geographic / Exchange Router
+    # -------------------------------------------------------------------------
+
+    def crawl_company(self, ticker: str, company_name: str, max_reports: int = 8) -> int:
+        """
+        Geographic / Exchange-Aware Multi-Source Routing:
+        - Norwegian (.OL) -> Oslo Børs NewsWeb
+        - Swedish (.ST)   -> Cision SE -> MFN.se -> BeQuoted
+        - Finnish (.HE)   -> Cision FI -> GlobeNewswire / Nasdaq CDS -> Inderes
+        - Other           -> Cision / General Cascade
+        """
+        logger.info(f"\n[{ticker}] Searching archives for: {company_name}...")
+        candidates: List[Tuple[ReportCandidate, str]] = []
+
+        # 1. Norway (.OL) Routing
+        if ticker.endswith(".OL"):
+            logger.info(f" -> Routing {ticker} to Oslo Børs NewsWeb...")
+            nw_cands = self._crawl_newsweb_oslo(ticker, company_name, max_reports)
+            if nw_cands:
+                candidates.extend((c, "Oslo Børs NewsWeb") for c in nw_cands)
+            else:
+                logger.info(" -> NewsWeb had no direct hits, trying Cision Scandinavia fallback...")
+                scand_cands = self._crawl_cision(ticker, company_name, max_reports, country_prefix="se")
+                candidates.extend((c, "Cision Scandinavia") for c in scand_cands)
+
+        # 2. Sweden (.ST) Routing
+        elif ticker.endswith(".ST"):
+            logger.info(f" -> Routing {ticker} to Cision Sweden...")
+            cision_cands = self._crawl_cision(ticker, company_name, max_reports, country_prefix="se")
+            if cision_cands:
+                candidates.extend((c, "Cision Sweden") for c in cision_cands)
+            else:
+                logger.info(" -> Cision Sweden had no archive. Cascading to MFN (Modular Finance)...")
+                mfn_cands = self._crawl_mfn(ticker, company_name, max_reports)
+                if mfn_cands:
+                    candidates.extend((c, "MFN.se") for c in mfn_cands)
+                else:
+                    logger.info(" -> Cascading to BeQuoted...")
+                    beq_cands = self._crawl_bequoted(ticker, company_name, max_reports)
+                    candidates.extend((c, "BeQuoted") for c in beq_cands)
+
+        # 3. Finland (.HE) Routing
+        elif ticker.endswith(".HE"):
+            logger.info(f" -> Routing {ticker} to Cision Finland...")
+            cision_cands = self._crawl_cision(ticker, company_name, max_reports, country_prefix="fi")
+            if cision_cands:
+                candidates.extend((c, "Cision Finland") for c in cision_cands)
+            else:
+                logger.info(" -> Cision Finland had no archive. Cascading to MFN / Nasdaq CDS...")
+                mfn_cands = self._crawl_mfn(ticker, company_name, max_reports)
+                candidates.extend((c, "MFN Nordic") for c in mfn_cands)
+
+        # 4. Default / Other Nordic Routing
+        else:
+            logger.info(f" -> Routing {ticker} to general Nordic cascade...")
+            cands = self._crawl_cision(ticker, company_name, max_reports, country_prefix="fi")
+            if not cands:
+                cands = self._crawl_mfn(ticker, company_name, max_reports)
+            candidates.extend((c, "Nordic PR Cascade") for c in cands)
 
         if not candidates:
-            logger.info(f"[-] No quarterly/annual earnings releases found for {ticker} ({self.min_year}-{self.max_year}).")
+            logger.info(f"[-] No quarterly/annual earnings releases found for {ticker} ({self.min_year}-{self.max_year}) across any distribution channels.")
             return 0
 
         logger.info(f"[+] Discovered {len(candidates)} report release(s) for {ticker}:")
-        downloaded_count = 0
+        saved_count = 0
 
-        for cand in candidates[:max_reports]:
-            logger.info(f" -> Release: {cand.title[:65]}... ({cand.target_filename})")
-            pdf_url = self.extract_pdf_download_url(cand.release_url)
-            if pdf_url:
-                success = self.download_pdf(pdf_url, cand.target_filename or f"{ticker}_{cand.year}_{cand.period}.pdf")
-                if success:
-                    downloaded_count += 1
-            else:
-                logger.warning(f"   [-] No attached PDF found on release page: {cand.release_url}")
+        for cand, source_name in candidates[:max_reports]:
+            logger.info(f" -> Release: {cand.title[:65]}... (Target: {cand.target_filename})")
+            success = self.save_report_document(cand, source_name)
+            if success:
+                saved_count += 1
 
-        return downloaded_count
+        return saved_count
 
     def crawl_all(self, limit: Optional[int] = None, filter_ticker: Optional[str] = None, max_reports_per_company: int = 8) -> Dict[str, Any]:
         """Iterates through universe and mass downloads historical earnings reports."""

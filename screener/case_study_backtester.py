@@ -128,6 +128,28 @@ class CaseStudyBacktester:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.results_csv_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def extract_text_from_file(self, file_path: Path) -> Tuple[str, str]:
+        """
+        Extracts text from a report file (.pdf or .txt).
+        Returns: (extracted_text, extraction_backend)
+        """
+        if not file_path.exists() or file_path.stat().st_size == 0:
+            logger.warning(f"File {file_path.name} is missing or empty.")
+            return "", "None"
+
+        # 1. Plain text file (HTML fallback extraction)
+        if file_path.suffix.lower() == ".txt":
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                return content.strip(), "HTML-TXT"
+            except Exception as e:
+                logger.error(f"Failed to read TXT file {file_path.name}: {e}")
+                return "", "None"
+
+        # 2. PDF file (try pdfplumber, then pypdf/PyPDF2)
+        return self.extract_text_from_pdf(file_path)
+
     def extract_text_from_pdf(self, pdf_path: Path) -> Tuple[str, str]:
         """
         Extracts text from the first N pages of a PDF file using pdfplumber or pypdf/PyPDF2.
@@ -356,26 +378,29 @@ class CaseStudyBacktester:
         }
 
     def run_all(self) -> List[CaseStudyResult]:
-        """Runs the case study pipeline over all PDFs in `reports_dir`."""
-        logger.info(f"Scanning for PDF reports in {self.reports_dir}...")
-        pdf_files = sorted(list(self.reports_dir.glob("*.pdf")))
+        """Runs the case study pipeline over all PDF and TXT reports in `reports_dir`."""
+        logger.info(f"Scanning for PDF and TXT reports in {self.reports_dir}...")
+        report_files = sorted([
+            f for f in self.reports_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in (".pdf", ".txt")
+        ])
 
-        if not pdf_files:
+        if not report_files:
             logger.warning(
-                f"No PDF files found in {self.reports_dir}!\n"
-                f"Place historical earnings reports (e.g. QT_Group_Q3_2020.pdf, Lehto_Q2_2022.pdf) in that directory and run again."
+                f"No PDF or TXT report files found in {self.reports_dir}!\n"
+                f"Place historical earnings reports (e.g. QT_Group_Q3_2020.pdf, SGG.ST_2023_Q3.txt) in that directory and run again."
             )
             return []
 
-        logger.info(f"Found {len(pdf_files)} PDF report(s) to analyze.")
+        logger.info(f"Found {len(report_files)} report file(s) to analyze.")
         results: List[CaseStudyResult] = []
 
-        for idx, pdf_path in enumerate(pdf_files, 1):
-            filename = pdf_path.name
+        for idx, file_path in enumerate(report_files, 1):
+            filename = file_path.name
             company, period = self.parse_company_and_period_from_filename(filename)
-            logger.info(f"\n[{idx}/{len(pdf_files)}] Processing: {filename} ({company} | {period})...")
+            logger.info(f"\n[{idx}/{len(report_files)}] Processing: {filename} ({company} | {period})...")
 
-            raw_text, backend = self.extract_text_from_pdf(pdf_path)
+            raw_text, backend = self.extract_text_from_file(file_path)
             if not raw_text:
                 logger.error(f"Skipping {filename} due to empty text extraction.")
                 continue
