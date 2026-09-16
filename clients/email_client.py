@@ -480,6 +480,110 @@ class EmailClient:
             logger.error(f"❌ Failed to send screener alert email for {ticker}: {e}")
             return False
 
+    def send_screener_sell_alert_email(
+        self,
+        ticker: str,
+        strategy_type: str,
+        trade_data: Dict[str, Any],
+    ) -> bool:
+        """
+        Sends an automated [SELL ALERT] email notification when an open position is exited.
+        """
+        if not self.is_configured:
+            logger.debug("Email client not configured. Skipping sell alert email.")
+            return False
+
+        strat = strategy_type.upper().strip()
+        entry_price = float(trade_data.get("EntryPrice", 0.0))
+        exit_price_raw = float(trade_data.get("ExitPriceRaw", 0.0))
+        exit_price_exec = float(trade_data.get("ExitPriceExec", exit_price_raw))
+        net_return_pct = float(trade_data.get("NetReturnPct", 0.0))
+        net_pnl_eur = float(trade_data.get("NetPnLEur", 0.0))
+        holding_days = int(trade_data.get("HoldingDays", 0))
+        exit_reason = trade_data.get("ExitReason", "Exit Condition Met")
+        entry_date = trade_data.get("EntryDate", "")
+        exit_date = trade_data.get("ExitDate", "")
+
+        is_win = net_return_pct >= 0
+        badge_color = "#10b981" if is_win else "#ef4444"
+        subject = f"[SELL ALERT] {strat} Exit: {ticker} ({net_return_pct:+.1f}%)"
+
+        plain_text = f"""
+===================================================================
+[SELL ALERT] {strat} POSITION CLOSED: {ticker}
+===================================================================
+Exit Reason:        {exit_reason}
+Realized Net PnL:   {net_return_pct:+.2f}% ({net_pnl_eur:+.2f} EUR)
+Holding Period:     {holding_days} days (Entry: {entry_date} -> Exit: {exit_date})
+Entry Price:        {entry_price:.2f} EUR
+Exit Price (Exec):  {exit_price_exec:.2f} EUR (Raw: {exit_price_raw:.2f} EUR)
+===================================================================
+tradeBotTiuku Exit Manager
+        """.strip()
+
+        body_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 650px; margin: 0 auto; padding: 20px; background-color: #f8fafc;">
+            <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; padding: 22px; border-radius: 10px; margin-bottom: 20px;">
+                <div style="font-size: 0.85rem; font-weight: bold; letter-spacing: 0.05em; text-transform: uppercase; color: #cbd5e1; margin-bottom: 6px;">{strat} STRATEGY EXIT</div>
+                <h1 style="margin: 0; font-size: 1.6rem; color: #ffffff;">[SELL ALERT] {ticker} <span style="background: {badge_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 1.1rem; margin-left: 6px;">{net_return_pct:+.1f}%</span></h1>
+            </div>
+
+            <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: #0f172a; border-bottom: 2px solid #f1f5f9; padding-bottom: 8px;">📊 Kaupan Tiedot & Tuotto</h3>
+                <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                    <tr><td style="padding: 8px 12px; font-weight: bold;">Syy:</td><td style="padding: 8px 12px; color: {badge_color}; font-weight: bold;">{exit_reason}</td></tr>
+                    <tr><td style="padding: 8px 12px; font-weight: bold;">Nettotuotto:</td><td style="padding: 8px 12px;"><strong>{net_return_pct:+.2f}% ({net_pnl_eur:+.2f} EUR)</strong></td></tr>
+                    <tr><td style="padding: 8px 12px; font-weight: bold;">Pitoaika:</td><td style="padding: 8px 12px;">{holding_days} päivää ({entry_date} &rarr; {exit_date})</td></tr>
+                    <tr><td style="padding: 8px 12px; font-weight: bold;">Ostohinta:</td><td style="padding: 8px 12px;">{entry_price:.2f} EUR</td></tr>
+                    <tr><td style="padding: 8px 12px; font-weight: bold;">Myyntihinta:</td><td style="padding: 8px 12px;">{exit_price_exec:.2f} EUR (kulujen jälkeen)</td></tr>
+                </table>
+            </div>
+
+            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 30px; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 15px;">
+                tradeBotTiuku Exit Manager • Dual-Pipeline Core & Satellite System
+            </p>
+        </body>
+        </html>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = self.email_from or self.username or "tiuku@local"
+        msg["To"] = self.email_to
+
+        msg.attach(MIMEText(plain_text, "plain", "utf-8"))
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+        try:
+            logger.info(f"Sending [SELL ALERT] email for {ticker} to {self.email_to}...")
+            if self.smtp_port == 465:
+                server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, timeout=30)
+            else:
+                server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
+                if self.smtp_port == 587:
+                    try:
+                        server.starttls()
+                    except Exception as e:
+                        logger.warning(f"STARTTLS warning: {e}")
+
+            pwd_lower = str(self.password).lower()
+            if self.username and self.password and "syötä-tähän" not in pwd_lower and "your-" not in pwd_lower:
+                try:
+                    server.login(self.username, self.password)
+                except Exception as e:
+                    logger.warning(f"SMTP login skipped or failed: {e}")
+
+            server.sendmail(self.email_from or self.username, [self.email_to], msg.as_string())
+            server.quit()
+            logger.info(f"✅ [SELL ALERT] email successfully sent for {ticker} to {self.email_to}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to send sell alert email for {ticker}: {e}")
+            return False
+
 
 def send_alert(
     pipeline_type: str,
@@ -490,16 +594,6 @@ def send_alert(
 ) -> bool:
     """
     Convenience function to send a formatted trade alert email.
-
-    Parameters:
-        pipeline_type (str): 'SATELLITE' or 'CORE' (case-insensitive).
-        ticker (str): Equity ticker (e.g., 'RAUTE.HE', 'KEMIRA.HE').
-        company_name (str): Company name (e.g., 'Raute Oyj').
-        analysis_summary (dict): LLM evaluation dictionary with reasoning, signals, metrics, etc.
-        email_client (EmailClient, optional): Custom EmailClient instance if provided.
-
-    Returns:
-        bool: True if email was successfully sent, False otherwise.
     """
     client = email_client or EmailClient()
     return client.send_screener_alert_email(
@@ -507,6 +601,23 @@ def send_alert(
         ticker=ticker,
         company_name=company_name,
         analysis_summary=analysis_summary,
+    )
+
+
+def send_sell_alert(
+    ticker: str,
+    strategy_type: str,
+    trade_data: Dict[str, Any],
+    email_client: Optional[EmailClient] = None,
+) -> bool:
+    """
+    Convenience function to send an automated sell alert email.
+    """
+    client = email_client or EmailClient()
+    return client.send_screener_sell_alert_email(
+        ticker=ticker,
+        strategy_type=strategy_type,
+        trade_data=trade_data,
     )
 
 

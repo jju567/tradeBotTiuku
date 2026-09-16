@@ -1,26 +1,32 @@
 """
-Main Orchestration Controller for Nordic Micro-Cap Stock Screener.
+Main Orchestration Controller for Nordic Micro-Cap Stock Screener & Trading Bot.
 
-Dual-Pipeline "Core & Satellite" Architecture:
-1. Universe Loading & Ingestion Filter:
-   - Ingests pre-filtered Nordic micro/small-cap universe (MarketCap <= 300M EUR) from `data/nordnet_universe.csv`.
-   - Discards disclosures from stocks outside the universe to protect API credits and ensure capital focus.
+Dual-Pipeline "Core & Satellite" Production MVP Daemon:
+1. Initialization:
+   - Ingests master Nordic micro/small-cap universe (MarketCap <= 300M EUR) from `data/nordnet_universe.csv`.
+   - Initializes SQLite state database (`data/screener_state.db`).
+   - Configures and verifies SMTP email alerts (`EmailClient`).
+   - Initializes strategy-aware `ExitManager` for tracking paper positions.
 
-2. Intelligent Document Router (`route_document`):
-   - TRASH: Discards AGM invitations ("Kutsu yhtiökokoukseen" / "Kallelse till bolagsstämma"), board minutes, incentive plans, reporting calendars.
-   - CORE: Directs Earnings Reports & Annual Reports (with PDF attachments) to Pipeline B: CORE.
-   - SATELLITE: Directs Daily PRs, insider transactions ("Johdon liiketoimet" / "Insynshandel"), and profit warnings to Pipeline A: SATELLITE.
+2. Screening Execution Loop (Every 15 minutes during market hours / scheduled interval):
+   - Step A (Scrape): Ingests latest regulatory filings and PRs across Nordic wires.
+   - Step B (Route): Intelligently routes documents to TRASH, CORE, or SATELLITE.
+   - Step C (NLP Analysis): Evaluates LLM prompt (Risk Screen -> Quality/Catalyst check).
+   - Step D (Quant Filter & Sizing): Verifies bid-ask spread (< 4.0%), liquidity, and calculates
+     Fractional Half-Kelly (Satellite) vs Equal Weight Conviction (Core) position sizing.
+   - Step E (Execute & Alert):
+     * Opens paper position in `data/open_positions.csv`.
+     * Logs alert to `data/screener_alerts.csv`.
+     * Dispatches structured HTML/plain-text `[CORE ALERT]` or `[SATELLITE ALERT]` email.
 
-3. Pipeline A: SATELLITE (Daily Catalyst Hunting)
-   - Trigger: Personal Insider Buying (`insider_buying_personal`) or Positive Profit Warnings (`positive_guidance`).
-   - Sizing: Fractional Half-Kelly model allocated from `SATELLITE_CAPITAL_PCT` (25%).
-   - Exit Logic: Managed daily via `exit_manager.py` (TP +25%, Trailing Stop 15%, 45d Time Decay).
-
-4. Pipeline B: CORE (Quarterly Fundamental Tenbagger Hunting)
-   - Trigger: Fundamental quality check (Gross Margin > 40%, Recurring Revenue/SaaS, Rule of 40 >= 40%).
-   - Sizing: Equal weight conviction allocation from `CORE_CAPITAL_PCT` (75%).
-   - Exit Logic: Daily price drops are NEVER sold. Position is only exited if a subsequent quarterly report fails fundamental quality.
+3. End-of-Day (EOD) Maintenance (Runs daily at 19:00):
+   - Calls `exit_manager.check_exits()` to evaluate all active positions.
+   - SATELLITE: Executes on +25% Take Profit, 15% Trailing Stop, 15% Hard Stop, 45d Time Decay.
+   - CORE: Bypasses daily volatility; exits only on quarterly fundamental breakdown.
+   - Archives closed trades to `data/trade_history.csv` and dispatches `[SELL ALERT]` emails.
 """
+
+from __future__ import annotations
 
 import argparse
 import csv
@@ -29,15 +35,16 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
+
 from dotenv import load_dotenv
 
 # Load .env variables
 load_dotenv()
 
-# Reconfigure stdout/stderr for cross-platform encoding compatibility
+# Reconfigure stdout/stderr for cross-platform encoding compatibility (Windows cp1252 fix)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -50,12 +57,13 @@ if hasattr(sys.stderr, "reconfigure"):
         pass
 
 # Ensure parent directory is in sys.path
-BASE_DIR = Path(__file__).resolve().parent.parent
+_current_dir = Path(__file__).resolve().parent
+BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_dir
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from screener.config import ScreenerConfig
-from screener.models import FeedItem, StrategyType
+from screener.models import FeedItem, StrategyType, DocumentPayload
 from screener.scraper_module import NasdaqHelsinkiScraper, fetch_latest_releases
 from screener.state_manager import init_db, is_processed, mark_as_processed
 from screener.nlp_analyzer import (
@@ -67,7 +75,8 @@ from screener.nlp_analyzer import (
     FinancialNLPAnalyzer,
 )
 from screener.quant_engine import QuantitativeRiskEngine, check_liquidity_and_spread
-from clients.email_client import send_alert
+from screener.exit_manager import ExitManager
+from clients.email_client import EmailClient, send_alert, send_sell_alert
 
 # Logging configuration
 logging.basicConfig(
@@ -79,6 +88,8 @@ logger = logging.getLogger("screener.main_controller")
 
 DEFAULT_ALERTS_CSV = BASE_DIR / "data" / "screener_alerts.csv"
 DEFAULT_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_universe.csv"
+DEFAULT_OPEN_POSITIONS_CSV = BASE_DIR / "data" / "open_positions.csv"
+DEFAULT_TRADE_HISTORY_CSV = BASE_DIR / "data" / "trade_history.csv"
 
 
 def load_nordnet_universe(csv_path: Optional[Path | str] = None) -> Dict[str, Any]:
@@ -154,7 +165,6 @@ def match_universe_item(
     Returns matched universe record or None if the stock is not in the tradable micro-cap pool.
     """
     if not universe_data or universe_data.get("total_count", 0) == 0:
-        # If no universe file is loaded, allow all items (fallback mode)
         return {
             "Ticker_YF": item.ticker or "",
             "Name": item.company_name or item.title,
@@ -183,7 +193,7 @@ def match_universe_item(
         if item.company_name.lower().strip() in by_name:
             return by_name[item.company_name.lower().strip()]
 
-    # 3. Match title prefix / bracket patterns e.g. "Faron Pharmaceuticals Oy:" or "[FARON]"
+    # 3. Match title with word boundary regex
     title_lower = (item.title or "").lower()
     for name_key, entry in by_name.items():
         if len(name_key) >= 4:
@@ -201,27 +211,33 @@ def match_universe_item(
 
 
 class ScreenerPipelineController:
-    """Orchestrates universe loading, dual-pipeline ingestion, document routing, NLP evaluation, and alerting."""
+    """Production MVP Orchestration Daemon for Core & Satellite Trading System."""
 
     def __init__(
         self,
         config: Optional[ScreenerConfig] = None,
         alerts_csv_path: Optional[Path | str] = None,
         universe_csv_path: Optional[Path | str] = None,
+        open_positions_path: Optional[Path | str] = None,
+        trade_history_path: Optional[Path | str] = None,
         openrouter_api_key: Optional[str] = None,
         total_portfolio_eur: float = 10_000.0,
         enforce_universe: bool = True,
+        email_client: Optional[EmailClient] = None,
     ):
         self.config = config or ScreenerConfig.from_env()
         self.alerts_csv_path = Path(alerts_csv_path or DEFAULT_ALERTS_CSV)
         self.alerts_csv_path.parent.mkdir(parents=True, exist_ok=True)
         self.universe_csv_path = Path(universe_csv_path or DEFAULT_UNIVERSE_CSV)
+        self.open_positions_path = Path(open_positions_path or DEFAULT_OPEN_POSITIONS_CSV)
+        self.trade_history_path = Path(trade_history_path or DEFAULT_TRADE_HISTORY_CSV)
         self.enforce_universe = enforce_universe
+        self.total_portfolio_eur = float(os.getenv("PORTFOLIO_TOTAL_CAPITAL_EUR", str(total_portfolio_eur)))
+
         if openrouter_api_key is not None:
             self.api_key = openrouter_api_key
         else:
             self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-        self.total_portfolio_eur = float(os.getenv("PORTFOLIO_TOTAL_CAPITAL_EUR", str(total_portfolio_eur)))
 
         # 1. Initialize SQLite State Database
         init_db(self.config.db_path)
@@ -229,29 +245,36 @@ class ScreenerPipelineController:
 
         # 2. Check API key status
         if not self.api_key:
-            logger.warning(
-                "OPENROUTER_API_KEY is not set in environment or .env file. "
-                "The pipeline will use the built-in deterministic Finnish keyword NLP engine."
-            )
+            logger.warning("OPENROUTER_API_KEY is not set. Operating with deterministic Finnish keyword NLP engine.")
         else:
             logger.info("OpenRouter API key detected and loaded.")
 
-        # 3. Load Master Stock Universe (Nordnet Micro-Caps)
+        # 3. Load Master Stock Universe
         self.universe_data = load_nordnet_universe(self.universe_csv_path) if self.enforce_universe else {}
 
+        # 4. Initialize Core Components
         self.scraper = NasdaqHelsinkiScraper(self.config)
         self.quant_engine = QuantitativeRiskEngine(self.config)
+        self.exit_manager = ExitManager(
+            open_positions_path=self.open_positions_path,
+            trade_history_path=self.trade_history_path,
+        )
+        self.email_client = email_client or EmailClient()
+
+        if self.email_client.is_configured:
+            logger.info(f"Email Alerter configured (SMTP: {self.email_client.smtp_server}:{self.email_client.smtp_port} -> {self.email_client.email_to})")
+        else:
+            logger.info("Email Alerter unconfigured (operating in silent notification mode).")
 
     def calculate_sizing(self, strategy_type: str, ticker: str, min_trade_eur: float = 500.0) -> Dict[str, Any]:
         """
         Computes capital allocation and position sizing based on Strategy Type.
-        - SATELLITE: Fractional Half-Kelly sizing on the 25% satellite pool.
-        - CORE: Conviction / Equal-weight sizing on the 75% core pool.
+        - SATELLITE: Fractional Half-Kelly model on the 25% satellite pool.
+        - CORE: Conviction Equal-Weight allocation (15%) on the 75% core pool.
         """
         if strategy_type == StrategyType.CORE.value:
             core_pool = self.total_portfolio_eur * self.config.core_capital_pct
-            # Equal weight targeting ~5-7 positions (15% of Core pool per position)
-            target_pct = 0.15
+            target_pct = 0.15  # 15% equal weight per Core position
             allocation_eur = max(min_trade_eur, round(core_pool * target_pct, 2))
             return {
                 "strategy_type": StrategyType.CORE.value,
@@ -278,27 +301,64 @@ class ScreenerPipelineController:
                 "sizing_model": f"Fractional Half-Kelly ({half_kelly*100:.1f}% of Satellite Pool)",
             }
 
-    def run_pipeline_cycle(self, dry_run: bool = False) -> List[Dict[str, Any]]:
+    def record_open_position(
+        self,
+        candidate: Dict[str, Any],
+        entry_price: float,
+        shares: int,
+        position_value: float,
+    ) -> bool:
         """
-        Runs one complete pass of the screening pipeline:
-        1. Ingests releases from exchange feeds.
-        2. Filters releases by master micro-cap stock universe.
-        3. Routes document to TRASH, CORE, or SATELLITE.
-        4. Evaluates NLP prompt and strategy-specific quality/catalyst filters.
-        5. Executes sizing and alerts on BUY signals.
+        Records a newly executed trade to `data/open_positions.csv`.
+        Skips if position for this ticker is already open.
+        """
+        ticker = candidate.get("ticker", "").strip().upper()
+        if not ticker:
+            return False
+
+        open_positions = self.exit_manager.load_open_positions()
+        existing_tickers = {p["Ticker"].upper() for p in open_positions}
+
+        if ticker in existing_tickers:
+            logger.info(f"[EXISTS] Position already open for {ticker}. Skipping duplicate position recording.")
+            return False
+
+        today_str = date.today().strftime("%Y-%m-%d")
+        new_pos = {
+            "Ticker": ticker,
+            "EntryDate": today_str,
+            "EntryPrice": round(entry_price, 4),
+            "HighestPrice": round(entry_price, 4),
+            "Shares": shares,
+            "PositionValue": round(position_value, 2),
+            "Strategy_Type": candidate.get("strategy_type", "SATELLITE"),
+        }
+
+        open_positions.append(new_pos)
+        self.exit_manager.save_open_positions(open_positions)
+        logger.info(f"💎 [POSITION OPENED] Recorded {ticker} ({candidate.get('strategy_type')}) in {self.open_positions_path}: {shares} shs @ {entry_price:.2f}€ = {position_value:.2f}€")
+        return True
+
+    def run_screening_cycle(self, dry_run: bool = False) -> List[Dict[str, Any]]:
+        """
+        Executes one full screening pass across all active Nordic feeds:
+        Step A: Scrape news & PRs.
+        Step B: Match universe and route document (TRASH, CORE, SATELLITE).
+        Step C: NLP analysis and quality validation.
+        Step D: Quant friction filter & sizing.
+        Step E: Execute trade (open_positions.csv) and send alert.
         """
         logger.info("=" * 75)
-        logger.info(">>> STARTING DUAL-PIPELINE SCREENING CYCLE (Nordic Micro-Cap Universe) <<<")
+        logger.info(">>> STARTING SCREENING PASS (Nordic Micro-Cap Universe) <<<")
         logger.info(
-            f"Universe: {self.universe_data.get('total_count', 0)} micro-cap stocks | "
+            f"Universe: {self.universe_data.get('total_count', 0)} stocks | "
             f"Capital Allocation: Core={self.config.core_capital_pct*100:.0f}% | "
             f"Satellite={self.config.satellite_capital_pct*100:.0f}%"
         )
         logger.info("=" * 75)
         start_time = time.time()
 
-        # Step 1: Fetch latest releases
-        logger.info("Step 1: Fetching latest releases from exchange feeds...")
+        # Step A: Scrape latest releases
         try:
             releases: List[FeedItem] = fetch_latest_releases(self.config)
         except Exception as e:
@@ -306,33 +366,29 @@ class ScreenerPipelineController:
             return []
 
         if not releases:
-            logger.info("No releases returned from feeds. Cycle complete.")
+            logger.info("No releases returned from feeds. Pass complete.")
             return []
 
-        logger.info(f"Retrieved {len(releases)} total feed items.")
-        
         candidates_found: List[Dict[str, Any]] = []
         processed_count = 0
         skipped_count = 0
         trash_count = 0
         universe_discard_count = 0
 
-        # Step 2: Iterate through fetched releases
-        for idx, release in enumerate(releases, start=1):
+        for release in releases:
             article_id = release.guid or release.link
             title = release.title
             pub_date = release.published_at.isoformat() if release.published_at else ""
 
-            # Step 3: Check state database (Skip already processed)
+            # Check SQLite state
             if is_processed(article_id, self.config.db_path):
                 skipped_count += 1
                 continue
 
-            # Step 3b: Micro-Cap Universe Match & Filter
+            # Step B: Match Universe
             matched_stock = match_universe_item(release, self.universe_data)
             if self.universe_data.get("total_count", 0) > 0 and matched_stock is None:
                 universe_discard_count += 1
-                logger.info(f"[-] Discarded (Outside Micro-Cap Universe): {title[:65]}")
                 if not dry_run:
                     mark_as_processed(article_id, title, pub_date, self.config.db_path)
                 continue
@@ -343,23 +399,19 @@ class ScreenerPipelineController:
                     release.company_name = matched_stock["Name"]
 
             processed_count += 1
-            logger.info(f"[{processed_count}] Processing new release: {title[:75]}... ({release.ticker or 'Unknown Ticker'})")
+            logger.info(f"[{processed_count}] Processing release: {title[:70]}... ({release.ticker or 'N/A'})")
 
-            # Step 4: Extract text & Router Classification
+            # Extract Document Content & Route
             try:
-                # Fetch full document (HTML content and in-memory attached PDFs)
                 doc = self.scraper.fetch_and_parse_document(release.link)
-                
                 header_info = f"{title}\n{release.category or ''}\n{release.summary or ''}"
                 full_text = f"{header_info}\n\n{doc.full_combined_text}".strip()
 
                 if not full_text:
-                    logger.warning(f"No text content could be extracted for {release.link}. Marking processed.")
                     if not dry_run:
                         mark_as_processed(article_id, title, pub_date, self.config.db_path)
                     continue
 
-                # ROUTER: Classify document strategy (TRASH, CORE, or SATELLITE)
                 has_pdf = len(doc.pdf_urls) > 0 or bool(doc.pdf_text.strip())
                 strategy_route = route_document(
                     news_item=release,
@@ -367,17 +419,15 @@ class ScreenerPipelineController:
                     full_text=full_text,
                 )
 
-                # Route to TRASH: Discard administrative & routine noise
                 if strategy_route == "TRASH":
                     trash_count += 1
-                    logger.info(f"--> [ROUTER] Discarded as routine administrative noise [TRASH]: '{title[:55]}...'")
                     if not dry_run:
                         mark_as_processed(article_id, title, pub_date, self.config.db_path)
                     continue
 
-                logger.info(f"--> [ROUTER] Classified '{title[:50]}...' as [{strategy_route}]")
+                logger.info(f"--> [ROUTER] Classified as [{strategy_route}]: '{title[:55]}...'")
 
-                # Pass text to appropriate NLP analyzer
+                # Step C: NLP Analysis
                 signals = analyze_text(
                     text_content=full_text,
                     api_key=self.api_key,
@@ -385,13 +435,11 @@ class ScreenerPipelineController:
                 )
 
             except Exception as e:
-                logger.error(f"Error processing release {article_id}: {e}. Will retry on next cycle.")
+                logger.error(f"Error processing release {article_id}: {e}")
                 continue
 
-            # Step 5: Evaluate Strategy Rules
+            # Risk Screen Gatekeeper
             cash_issue = signals.get("cash_issue", False)
-
-            # RISK SCREEN FIRST: Absolute gatekeeper for both pipelines
             if cash_issue:
                 logger.info(f"[-] Rejected by Risk Screen (Cash/Distress Risk): {title[:60]}")
                 if not dry_run:
@@ -402,15 +450,12 @@ class ScreenerPipelineController:
             signal_label = ""
             educational_rationale = signals.get("reasoning", "")
 
-            # Pipeline A: SATELLITE Evaluation
+            # Satellite Catalyst Evaluation
             if strategy_route == StrategyType.SATELLITE.value:
                 insider_buying_personal = signals.get("insider_buying_personal", signals.get("management_buying", False))
-                company_share_buyback = signals.get("company_share_buyback", False)
                 pos_guidance = signals.get("positive_guidance", False)
 
-                if company_share_buyback and not insider_buying_personal and not pos_guidance:
-                    logger.info(f"[INFO] Company Share Buyback program (No insider personal buy): {title[:65]}")
-                elif insider_buying_personal or pos_guidance:
+                if insider_buying_personal or pos_guidance:
                     signal_types = []
                     if insider_buying_personal:
                         signal_types.append("INSIDER_BUYING")
@@ -418,11 +463,9 @@ class ScreenerPipelineController:
                         signal_types.append("POSITIVE_GUIDANCE")
                     signal_label = " & ".join(signal_types)
                     is_candidate = True
-                    logger.info(f"[+] [SATELLITE] Buy Signal ({signal_label}): {title}")
-                else:
-                    logger.debug(f"[.] Neutral Satellite Release: {title[:60]}")
+                    logger.info(f"[+] [SATELLITE BUY] {signal_label}: {title}")
 
-            # Pipeline B: CORE Evaluation
+            # Core Fundamental Evaluation
             elif strategy_route == StrategyType.CORE.value:
                 gross_margin_above_40 = signals.get("gross_margin_above_40", False)
                 recurring_revenue = signals.get("recurring_revenue", False)
@@ -432,17 +475,16 @@ class ScreenerPipelineController:
                 if core_quality_passed or (gross_margin_above_40 and recurring_revenue and rule_of_40_passed):
                     signal_label = f"CORE_10BAGGER_QUALITY (GM: {signals.get('gross_margin_pct', 0):.0f}%, R40: {signals.get('rule_of_40_score', 0):.0f}%)"
                     is_candidate = True
-                    logger.info(f"[+] [CORE] Tenbagger Fundamental Candidate: {title}")
-                else:
-                    logger.debug(f"[.] Report did not meet Core quality criteria: {title[:60]}")
+                    logger.info(f"[+] [CORE 10-BAGGER CANDIDATE] {title}")
 
-            # Step 5b: Liquidity Filter & Sizing if candidate passed
+            # Step D: Quant Filter & Sizing
             if is_candidate:
                 ticker = release.ticker
                 spread_pct = None
                 bid = None
                 ask = None
                 volume = 0
+                entry_price = 10.0  # Default fallback if quote unavailable
 
                 if ticker:
                     liquidity_res = check_liquidity_and_spread(
@@ -461,6 +503,10 @@ class ScreenerPipelineController:
                     total_friction_pct = liquidity_res.get("total_friction_pct")
                     comm_round_trip = liquidity_res.get("commission_round_trip_eur", 14.0)
                     min_trade = liquidity_res.get("min_recommended_trade_eur", self.config.nordnet_min_trade_eur)
+                    if ask and ask > 0:
+                        entry_price = ask
+                    elif bid and bid > 0:
+                        entry_price = bid
 
                     if not liquidity_res["passed_spread_check"]:
                         logger.info(f"[-] Rejected by Quant Friction Filter ({ticker}): {liquidity_res['reason']}")
@@ -471,10 +517,11 @@ class ScreenerPipelineController:
                     total_friction_pct = None
                     comm_round_trip = 14.0
                     min_trade = self.config.nordnet_min_trade_eur
-                    logger.warning(f"No ticker resolved for release '{title[:50]}'. Proceeding with defaults.")
 
-                # Calculate capital sizing
+                # Calculate Sizing
                 sizing = self.calculate_sizing(strategy_route, ticker or "", min_trade)
+                alloc_eur = sizing["recommended_allocation_eur"]
+                shares_to_buy = max(1, int(alloc_eur / entry_price)) if entry_price > 0 else 100
 
                 candidate = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -485,7 +532,7 @@ class ScreenerPipelineController:
                     "link": release.link,
                     "signals": signal_label,
                     "reasoning": educational_rationale,
-                    "recommended_allocation_eur": sizing["recommended_allocation_eur"],
+                    "recommended_allocation_eur": alloc_eur,
                     "kelly_fraction": sizing.get("kelly_fraction"),
                     "sizing_model": sizing["sizing_model"],
                     "spread_pct": spread_pct,
@@ -496,7 +543,8 @@ class ScreenerPipelineController:
                     "commission_round_trip_eur": comm_round_trip,
                     "min_recommended_trade_eur": min_trade,
                     "pdf_attached": len(doc.pdf_urls) > 0,
-                    # Backwards compatibility flags
+                    "entry_price": entry_price,
+                    "shares": shares_to_buy,
                     "management_buying": signals.get("insider_buying_personal", signals.get("management_buying", False)),
                     "positive_guidance": signals.get("positive_guidance", False),
                     "insider_buying_personal": signals.get("insider_buying_personal", False),
@@ -507,20 +555,27 @@ class ScreenerPipelineController:
 
                 self._print_alert(candidate)
 
+                # Step E: Execute & Alert
                 if not dry_run:
                     self._append_to_csv(candidate)
+                    if ticker:
+                        self.record_open_position(
+                            candidate=candidate,
+                            entry_price=entry_price,
+                            shares=shares_to_buy,
+                            position_value=alloc_eur,
+                        )
                     try:
-                        from clients.email_client import send_alert
                         send_alert(
                             pipeline_type=strategy_route,
                             ticker=candidate["ticker"],
                             company_name=candidate["company_name"],
                             analysis_summary=candidate,
+                            email_client=self.email_client,
                         )
                     except Exception as email_err:
-                        logger.debug(f"Email notification skipped or failed: {email_err}")
+                        logger.debug(f"Email notification error: {email_err}")
 
-            # Step 6: Commit state in SQLite
             if not dry_run:
                 mark_as_processed(article_id, title, pub_date, self.config.db_path)
 
@@ -536,8 +591,51 @@ class ScreenerPipelineController:
 
         return candidates_found
 
+    # Compatibility alias for existing tests
+    def run_pipeline_cycle(self, dry_run: bool = False) -> List[Dict[str, Any]]:
+        return self.run_screening_cycle(dry_run=dry_run)
+
+    def run_eod_maintenance(self, dry_run: bool = False) -> List[Dict[str, Any]]:
+        """
+        End-of-Day maintenance routine (Run daily at 19:00):
+        1. Evaluates all open paper positions with ExitManager.
+        2. Closed trades are moved to trade_history.csv.
+        3. Dispatches automated [SELL ALERT] emails.
+        """
+        logger.info("\n" + "=" * 80)
+        logger.info(">>> RUNNING END-OF-DAY (EOD) MAINTENANCE & EXIT MANAGEMENT <<<")
+        logger.info("=" * 80)
+
+        eod_res = self.exit_manager.check_exits()
+        closed_trades = eod_res.get("closed_trades", []) if isinstance(eod_res, dict) else (eod_res or [])
+
+        if not closed_trades:
+            logger.info("No position exits triggered today. All positions held.")
+            return []
+
+        logger.info(f"✅ Executed {len(closed_trades)} position exit(s):")
+        for trade in closed_trades:
+            ticker = trade["Ticker"]
+            strat = trade.get("Strategy_Type", "SATELLITE")
+            net_ret = trade.get("NetReturnPct", 0.0)
+            reason = trade.get("ExitReason", "")
+            logger.info(f" -> [EXIT] {ticker} ({strat}): Net PnL {net_ret:+.2f}% | Reason: {reason}")
+
+            if not dry_run:
+                try:
+                    send_sell_alert(
+                        ticker=ticker,
+                        strategy_type=strat,
+                        trade_data=trade,
+                        email_client=self.email_client,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to dispatch sell alert email for {ticker}: {e}")
+
+        return closed_trades
+
     def _print_alert(self, candidate: Dict[str, Any]) -> None:
-        """Print highlighted alert to console with educational pedagogical explanation."""
+        """Print highlighted alert to console."""
         strat = candidate.get("strategy_type", "SATELLITE")
         spread_info = (
             f"{candidate['spread_pct']}% (Bid: {candidate['bid']} / Ask: {candidate['ask']})"
@@ -566,7 +664,7 @@ class ScreenerPipelineController:
         print("=" * 80 + "\n")
 
     def _append_to_csv(self, candidate: Dict[str, Any]) -> None:
-        """Append candidate record to alerts CSV file."""
+        """Append candidate record to screener_alerts.csv."""
         file_exists = self.alerts_csv_path.exists()
         fieldnames = [
             "timestamp", "company_name", "ticker", "strategy_type", "title",
@@ -609,23 +707,28 @@ class ScreenerPipelineController:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Nordic Micro-Cap Dual-Pipeline Stock Screener Orchestrator"
+        description="Nordic Micro-Cap Core & Satellite Production MVP Daemon"
     )
     parser.add_argument(
         "--run-once",
         action="store_true",
-        help="Run the screening pipeline once and exit (ideal for testing or cron jobs)"
+        help="Run the screening pipeline once and exit"
     )
     parser.add_argument(
         "--loop",
         action="store_true",
-        help="Run the pipeline continuously in a scheduled loop"
+        help="Run continuous background daemon loop (default interval: 900s / 15 min)"
     )
     parser.add_argument(
         "--interval",
         type=int,
-        default=3600,
-        help="Polling interval in seconds when running in --loop mode (default: 3600 = 1 hour)"
+        default=900,
+        help="Polling interval in seconds when running in --loop mode (default: 900 = 15 minutes)"
+    )
+    parser.add_argument(
+        "--check-exits",
+        action="store_true",
+        help="Run End-of-Day exit maintenance on open positions and exit"
     )
     parser.add_argument(
         "--universe",
@@ -636,23 +739,38 @@ def main():
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Execute the pipeline without persisting to SQLite or appending to CSV"
+        help="Execute without persisting positions or state"
     )
     args = parser.parse_args()
 
     controller = ScreenerPipelineController(universe_csv_path=args.universe)
 
+    if args.check_exits:
+        controller.run_eod_maintenance(dry_run=args.dry_run)
+        return
+
     if args.loop:
-        logger.info(f"Starting continuous screening loop (interval: {args.interval} seconds / {args.interval/60:.1f} minutes)...")
+        logger.info(f"Starting continuous daemon loop (interval: {args.interval}s / {args.interval/60:.1f} min)...")
+        last_eod_date = None
         try:
             while True:
-                controller.run_pipeline_cycle(dry_run=args.dry_run)
-                logger.info(f"Sleeping for {args.interval} seconds until next cycle...")
+                now = datetime.now()
+                # Run regular intraday screening cycle
+                controller.run_screening_cycle(dry_run=args.dry_run)
+
+                # Check if it's EOD maintenance time (19:00+) and hasn't run today
+                today = now.date()
+                if now.hour >= 19 and last_eod_date != today:
+                    logger.info("19:00 reached: Triggering scheduled End-of-Day maintenance...")
+                    controller.run_eod_maintenance(dry_run=args.dry_run)
+                    last_eod_date = today
+
+                logger.info(f"Heartbeat OK. Sleeping for {args.interval} seconds until next cycle...")
                 time.sleep(args.interval)
         except KeyboardInterrupt:
-            logger.info("Screening loop terminated by user (KeyboardInterrupt). Exiting cleanly.")
+            logger.info("Daemon loop terminated by user (KeyboardInterrupt). Exiting cleanly.")
     else:
-        controller.run_pipeline_cycle(dry_run=args.dry_run)
+        controller.run_screening_cycle(dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
