@@ -97,17 +97,24 @@ def test_analyze_core_fundamentals_openrouter(mock_post):
             {
                 "message": {
                     "content": json.dumps({
-                        "cash_issue": False,
-                        "gross_margin_pct": 55.0,
-                        "gross_margin_above_40": True,
-                        "recurring_revenue": True,
-                        "recurring_revenue_details": "80% SaaS ARR",
-                        "revenue_growth_pct": 30.0,
-                        "operating_margin_pct": 15.0,
-                        "rule_of_40_score": 45.0,
-                        "rule_of_40_passed": True,
-                        "core_quality_passed": True,
-                        "reasoning": "Täyttää kaikki Core-salkun kriteerit."
+                        "profile_A_growth": {
+                            "gross_margin_over_40": True,
+                            "rule_of_40_passed": True,
+                            "recurring_revenue_mentioned": True,
+                        },
+                        "profile_B_value": {
+                            "strong_net_cash_position": True,
+                            "positive_operating_cash_flow": True,
+                            "turnaround_indicators": False,
+                        },
+                        "financial_safety": {
+                            "going_concern_risk": False,
+                        },
+                        "verdict_details": {
+                            "matched_profile": "GROWTH",
+                            "verdict": "STRONG BUY",
+                            "reasoning": "High margin software compounder with over 40% growth."
+                        }
                     })
                 }
             }
@@ -122,9 +129,13 @@ def test_analyze_core_fundamentals_openrouter(mock_post):
         throttle_sleep_seconds=0.0,
     )
 
-    assert res["gross_margin_pct"] == 55.0
-    assert res["recurring_revenue"] is True
-    assert res["rule_of_40_passed"] is True
+    assert res["profile_A_growth"]["gross_margin_over_40"] is True
+    assert res["profile_A_growth"]["rule_of_40_passed"] is True
+    assert res["profile_A_growth"]["recurring_revenue_mentioned"] is True
+    assert res["profile_B_value"]["strong_net_cash_position"] is True
+    assert res["financial_safety"]["going_concern_risk"] is False
+    assert res["verdict_details"]["matched_profile"] == "GROWTH"
+    assert res["verdict_details"]["verdict"] == "STRONG BUY"
     assert res["core_quality_passed"] is True
 
 

@@ -68,27 +68,53 @@ RETRY_BACKOFF_DELAYS = [5.0, 10.0, 20.0]
 
 # Specialized Core Case Study System Prompt
 CASE_STUDY_CORE_SYSTEM_PROMPT = """You are an expert quantitative equity analyst evaluating Nordic micro-cap companies for long-term "Core Tenbagger" potential based on historical earnings reports.
-Analyze the provided report text and financial statements and evaluate fundamental quality according to these rules:
+Evaluate the company simultaneously through two distinct investment lenses:
+- Profile A: "High-Margin Growth"
+- Profile B: "Deep Value / Turnaround"
 
-1. "cash_or_debt_issues": Set to TRUE if there is evidence of negative equity, going concern uncertainty ('toiminnan jatkuvuus'), severe liquidity shortage (< 12m runway), covenant breaches, or emergency dilutive loans.
-2. "gross_margin_over_40": Set to TRUE if Gross Margin ('myyntikate' / 'bruttokate') > 40.0%, or if the company is a high-margin software/scalable IP business with low COGS.
-3. "recurring_revenue_mentioned": Set to TRUE if the company mentions SaaS, subscription models, ARR, recurring maintenance, or long-term software licensing ('toistuva liikevaihto', 'jatkuvalaskutteinen'). Set to FALSE if purely one-off project delivery / construction.
-4. "rule_of_40_passed": Set to TRUE if (Revenue Growth YoY % + Operating Profit Margin / EBIT %) >= 40.0%.
-5. "verdict":
-   - "REJECT": If "cash_or_debt_issues" is TRUE, OR if both growth and margins are severely negative / low quality.
-   - "STRONG BUY": If "cash_or_debt_issues" is FALSE, "gross_margin_over_40" is TRUE, "recurring_revenue_mentioned" is TRUE, and "rule_of_40_passed" is TRUE.
-   - "HOLD": If viable business without critical cash issues, but fails one or more Rule of 40 / gross margin / recurring revenue criteria.
-6. "reasoning": Provide a concise 2-sentence summary explaining the decision and key drivers/risks in Finnish or English.
+EVALUATION CRITERIA & RULES:
+
+1. FINANCIAL SAFETY (Absolute Gatekeeper):
+   - "going_concern_risk": Set to TRUE if there is evidence of negative equity, going concern uncertainty ('toiminnan jatkuvuus'), severe liquidity shortage (< 12m runway), covenant breaches, or emergency dilutive bridge financing. If TRUE, verdict MUST be "REJECT" and matched_profile: "NONE".
+
+2. PROFILE A (High-Margin Growth):
+   - "gross_margin_over_40": Set to TRUE if Gross Margin ('myyntikate' / 'bruttokate') > 40.0%, or if high-margin software/scalable IP business with low COGS.
+   - "rule_of_40_passed": Set to TRUE if (Revenue Growth YoY % + Operating Profit Margin / EBIT %) >= 40.0%.
+   - "recurring_revenue_mentioned": Set to TRUE if SaaS, subscription models, ARR, recurring maintenance, or long-term software licensing ('toistuva liikevaihto', 'jatkuvalaskutteinen').
+
+3. PROFILE B (Deep Value / Turnaround):
+   - "strong_net_cash_position": Set to TRUE if company has significant cash reserves and minimal/zero debt (net cash positive balance sheet).
+   - "positive_operating_cash_flow": Set to TRUE if core business generates positive cash flow ('liiketoiminnan rahavirta positiivinen').
+   - "turnaround_indicators": Set to TRUE if significant cost cuts, restructuring taking effect, sequential margin expansion, or returning to profitability.
+
+4. VERDICT DETAILS:
+   - "matched_profile": "GROWTH" if meets Profile A; "VALUE" if meets Profile B; "NONE" if neither.
+   - "verdict": "STRONG BUY" if matched_profile is "GROWTH" or "VALUE" and going_concern_risk is FALSE.
+               "HOLD" if viable but incomplete criteria.
+               "REJECT" if going_concern_risk is TRUE or weak fundamentals.
+   - "reasoning": Concise 2-sentence summary explaining the decision and key drivers/risks in Finnish or English.
 
 OUTPUT FORMAT:
 Output strictly a valid JSON object with no markdown fences or preamble:
 {
-  "gross_margin_over_40": bool,
-  "rule_of_40_passed": bool,
-  "recurring_revenue_mentioned": bool,
-  "cash_or_debt_issues": bool,
-  "verdict": "STRONG BUY" | "HOLD" | "REJECT",
-  "reasoning": string
+  "profile_A_growth": {
+    "gross_margin_over_40": bool,
+    "rule_of_40_passed": bool,
+    "recurring_revenue_mentioned": bool
+  },
+  "profile_B_value": {
+    "strong_net_cash_position": bool,
+    "positive_operating_cash_flow": bool,
+    "turnaround_indicators": bool
+  },
+  "financial_safety": {
+    "going_concern_risk": bool
+  },
+  "verdict_details": {
+    "matched_profile": "GROWTH" | "VALUE" | "NONE",
+    "verdict": "STRONG BUY" | "HOLD" | "REJECT",
+    "reasoning": string
+  }
 }"""
 
 
@@ -97,12 +123,18 @@ class CaseStudyResult:
     filename: str
     company_name: str
     report_period: str
+    matched_profile: str
+    verdict: str
     gross_margin_over_40: bool
     rule_of_40_passed: bool
     recurring_revenue_mentioned: bool
-    cash_or_debt_issues: bool
-    verdict: str
+    strong_net_cash_position: bool
+    positive_operating_cash_flow: bool
+    turnaround_indicators: bool
+    going_concern_risk: bool
     reasoning: str
+    # Backwards compatibility alias
+    cash_or_debt_issues: bool = False
 
 
 class CaseStudyBacktester:
@@ -296,40 +328,66 @@ class CaseStudyBacktester:
             return None
 
     def validate_and_normalize_output(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalizes and ensures types for evaluation output."""
-        gm_over_40 = bool(data.get("gross_margin_over_40", False))
-        r40_passed = bool(data.get("rule_of_40_passed", False))
-        recurring = bool(data.get("recurring_revenue_mentioned", False))
-        cash_issues = bool(data.get("cash_or_debt_issues", False))
-        verdict = str(data.get("verdict", "")).strip().upper()
-        
-        if verdict not in ("STRONG BUY", "HOLD", "REJECT"):
-            if cash_issues:
-                verdict = "REJECT"
-            elif gm_over_40 and r40_passed and recurring and not cash_issues:
+        """Normalizes and ensures types for dual-lens evaluation output."""
+        prof_a = data.get("profile_A_growth", {})
+        prof_b = data.get("profile_B_value", {})
+        safety = data.get("financial_safety", {})
+        verdict_info = data.get("verdict_details", {})
+
+        gm_over_40 = bool(prof_a.get("gross_margin_over_40", data.get("gross_margin_over_40", False)))
+        r40_passed = bool(prof_a.get("rule_of_40_passed", data.get("rule_of_40_passed", False)))
+        recurring = bool(prof_a.get("recurring_revenue_mentioned", data.get("recurring_revenue_mentioned", False)))
+
+        net_cash = bool(prof_b.get("strong_net_cash_position", False))
+        pos_ocf = bool(prof_b.get("positive_operating_cash_flow", False))
+        turnaround = bool(prof_b.get("turnaround_indicators", False))
+
+        going_concern = bool(safety.get("going_concern_risk", data.get("cash_or_debt_issues", False)))
+
+        matched_profile = str(verdict_info.get("matched_profile", data.get("matched_profile", ""))).strip().upper()
+        verdict = str(verdict_info.get("verdict", data.get("verdict", ""))).strip().upper()
+
+        if going_concern:
+            matched_profile = "NONE"
+            verdict = "REJECT"
+        elif matched_profile not in ("GROWTH", "VALUE", "NONE"):
+            if gm_over_40 and r40_passed and recurring:
+                matched_profile = "GROWTH"
+                verdict = "STRONG BUY"
+            elif net_cash and pos_ocf and turnaround:
+                matched_profile = "VALUE"
                 verdict = "STRONG BUY"
             else:
+                matched_profile = "NONE"
                 verdict = "HOLD"
 
-        reasoning = str(data.get("reasoning", "")).strip()
+        if verdict not in ("STRONG BUY", "HOLD", "REJECT"):
+            verdict = "STRONG BUY" if matched_profile in ("GROWTH", "VALUE") else "HOLD"
+
+        reasoning = str(verdict_info.get("reasoning", data.get("reasoning", ""))).strip()
         if not reasoning:
-            reasoning = f"Verdict {verdict}: GM>40%={gm_over_40}, Rule40={r40_passed}, Recurring={recurring}, CashIssues={cash_issues}."
+            reasoning = f"Verdict {verdict} ({matched_profile}): GM>40%={gm_over_40}, R40={r40_passed}, Recur={recurring}, NetCash={net_cash}, PosOCF={pos_ocf}, Turnaround={turnaround}, Risk={going_concern}."
 
         return {
+            "matched_profile": matched_profile,
+            "verdict": verdict,
             "gross_margin_over_40": gm_over_40,
             "rule_of_40_passed": r40_passed,
             "recurring_revenue_mentioned": recurring,
-            "cash_or_debt_issues": cash_issues,
-            "verdict": verdict,
+            "strong_net_cash_position": net_cash,
+            "positive_operating_cash_flow": pos_ocf,
+            "turnaround_indicators": turnaround,
+            "going_concern_risk": going_concern,
+            "cash_or_debt_issues": going_concern,
             "reasoning": reasoning,
         }
 
     def rule_based_core_analysis(self, text: str) -> Dict[str, Any]:
-        """Deterministic keyword-based analysis fallback."""
+        """Deterministic keyword-based analysis fallback supporting dual lenses."""
         lower = text.lower()
         
-        # Cash/Debt Issues
-        cash_issues = any(
+        # Financial Safety / Going concern
+        going_concern = any(
             re.search(pat, lower) for pat in [
                 r"käyttöpääoma ei riitä", r"toiminnan jatkuvuus", r"going concern",
                 r"negatiivinen oma pääoma", r"maksuvalmius on heikentynyt",
@@ -337,7 +395,7 @@ class CaseStudyBacktester:
             ]
         )
 
-        # Recurring Revenue
+        # Profile A (Growth)
         recurring = any(
             k in lower for k in [
                 "saas", "toistuva liikevaihto", "jatkuvalaskutteinen", "recurring revenue",
@@ -345,35 +403,66 @@ class CaseStudyBacktester:
             ]
         )
 
-        # Gross margin > 40%
         gm_over_40 = any(
             k in lower for k in [
                 "ohjelmisto", "software", "lisenssit", "license", "myyntikate 5", "myyntikate 6",
-                "myyntikate 7", "myyntikate 8", "myyntikate 9", "bruttokate 5", "bruttokate 6"
+                "myyntikate 7", "myyntikate 8", "myyntikate 9", "bruttokate 5", "bruttokate 6",
+                "myyntikate 85", "myyntikate 80", "myyntikate 70", "myyntikate 60", "myyntikate 50"
             ]
         )
 
-        # Rule of 40 (growth + margin)
-        has_growth = bool(re.search(r"kasvoi\s+(?:[3-9]\d|1\d\d)\s*%", lower) or "vahva kasvu" in lower)
+        has_growth = bool(re.search(r"kasvoi\s+(?:[2-9]\d|1\d\d)\s*%", lower) or "vahva kasvu" in lower)
         has_margin = bool(re.search(r"liikevoittomarginaali\s+(?:1[5-9]|[2-9]\d)\s*%", lower) or "kannattavuus parani" in lower)
         r40_passed = has_growth and (has_margin or recurring)
 
-        if cash_issues:
+        # Profile B (Value / Turnaround)
+        net_cash = any(
+            k in lower for k in [
+                "velaton", "nettovelaton", "net cash", "vahva kassa", "vahva tase",
+                "kassavarat olivat", "kassavarat ylittävät"
+            ]
+        )
+        pos_ocf = any(
+            k in lower for k in [
+                "positiivinen rahavirta", "positive cash flow", "liiketoiminnan rahavirta oli positiivinen",
+                "rahavirta parani"
+            ]
+        )
+        turnaround = any(
+            k in lower for k in [
+                "käänne", "tuloskäänne", "tehostamisohjelma", "säästöohjelma", "kannattavuus parani",
+                "turnaround", "restructuring"
+            ]
+        )
+
+        if going_concern:
+            matched_profile = "NONE"
             verdict = "REJECT"
-            reasoning = "Yhtiö hylättiin vakavien maksuvalmius-, velkaantumis- tai käyttöpääomariskien vuoksi."
-        elif gm_over_40 and recurring and r40_passed and not cash_issues:
+            reasoning = "Yhtiö hylättiin vakavien maksuvalmius-, velkaantumis- tai toiminnan jatkuvuuden riskien vuoksi."
+        elif gm_over_40 and recurring and r40_passed:
+            matched_profile = "GROWTH"
             verdict = "STRONG BUY"
-            reasoning = "Vahva kymmenkertaistajaehdokas: korkea bruttokate, toistuva skaalautuva liikevaihto ja vahva Rule of 40 kasvu."
+            reasoning = "Vahva Kasvu-profiilin kymmenkertaistaja: korkea bruttokate, toistuva SaaS-liikevaihto ja Rule of 40 kasvu."
+        elif net_cash and (pos_ocf or turnaround):
+            matched_profile = "VALUE"
+            verdict = "STRONG BUY"
+            reasoning = "Vahva Arvo/Käänne-profiilin ehdokas: vahva nettovelaton kassapuskuri ja positiivinen operatiivinen rahavirta."
         else:
+            matched_profile = "NONE"
             verdict = "HOLD"
-            reasoning = "Liiketoiminta on kohtuullista ilman akuuttia kassakriisiä, mutta ei täytä kaikkia Core Tenbagger -kriteerejä."
+            reasoning = "Liiketoiminta on kohtuullista ilman akuuttia kassakriisiä, mutta ei täytä täysin Kasvu- tai Arvokriteerejä."
 
         return {
+            "matched_profile": matched_profile,
+            "verdict": verdict,
             "gross_margin_over_40": gm_over_40,
             "rule_of_40_passed": r40_passed,
             "recurring_revenue_mentioned": recurring,
-            "cash_or_debt_issues": cash_issues,
-            "verdict": verdict,
+            "strong_net_cash_position": net_cash,
+            "positive_operating_cash_flow": pos_ocf,
+            "turnaround_indicators": turnaround,
+            "going_concern_risk": going_concern,
+            "cash_or_debt_issues": going_concern,
             "reasoning": reasoning,
         }
 
@@ -414,11 +503,16 @@ class CaseStudyBacktester:
                 filename=filename,
                 company_name=company,
                 report_period=period,
+                matched_profile=eval_res["matched_profile"],
+                verdict=eval_res["verdict"],
                 gross_margin_over_40=eval_res["gross_margin_over_40"],
                 rule_of_40_passed=eval_res["rule_of_40_passed"],
                 recurring_revenue_mentioned=eval_res["recurring_revenue_mentioned"],
-                cash_or_debt_issues=eval_res["cash_or_debt_issues"],
-                verdict=eval_res["verdict"],
+                strong_net_cash_position=eval_res["strong_net_cash_position"],
+                positive_operating_cash_flow=eval_res["positive_operating_cash_flow"],
+                turnaround_indicators=eval_res["turnaround_indicators"],
+                going_concern_risk=eval_res["going_concern_risk"],
+                cash_or_debt_issues=eval_res["going_concern_risk"],
                 reasoning=eval_res["reasoning"],
             )
             results.append(res_obj)
@@ -438,11 +532,18 @@ class CaseStudyBacktester:
         print("\n" + "=" * 75)
         print(f"📄 CASE STUDY: {res.company_name} ({res.report_period}) — {res.filename}")
         print("=" * 75)
+        print(f"MATCHED PROFILE:             [{res.matched_profile}]")
         print(f"VERDICT:                     {verdict_icon} {res.verdict}")
-        print(f"1. Gross Margin > 40%:       {'✅ YES' if res.gross_margin_over_40 else '❌ NO'}")
-        print(f"2. Rule of 40 Passed:        {'✅ YES' if res.rule_of_40_passed else '❌ NO'}")
-        print(f"3. Recurring Revenue:        {'✅ YES' if res.recurring_revenue_mentioned else '❌ NO'}")
-        print(f"4. Cash / Debt Issues:       {'⚠️ YES (DISTRESS)' if res.cash_or_debt_issues else '🛡️ NO (HEALTHY)'}")
+        print(f"Profile A (Growth):")
+        print(f"  - Gross Margin > 40%:      {'✅ YES' if res.gross_margin_over_40 else '❌ NO'}")
+        print(f"  - Rule of 40 Passed:       {'✅ YES' if res.rule_of_40_passed else '❌ NO'}")
+        print(f"  - Recurring Revenue:       {'✅ YES' if res.recurring_revenue_mentioned else '❌ NO'}")
+        print(f"Profile B (Value / Turnaround):")
+        print(f"  - Strong Net Cash:         {'✅ YES' if res.strong_net_cash_position else '❌ NO'}")
+        print(f"  - Positive Operating CF:   {'✅ YES' if res.positive_operating_cash_flow else '❌ NO'}")
+        print(f"  - Turnaround Indicators:   {'✅ YES' if res.turnaround_indicators else '❌ NO'}")
+        print(f"Financial Safety:")
+        print(f"  - Going Concern Risk:      {'⚠️ YES (DISTRESS)' if res.going_concern_risk else '🛡️ NO (HEALTHY)'}")
         print(f"Reasoning / Assessment:")
         print(f"  👉 {res.reasoning}")
         print("=" * 75 + "\n")
@@ -451,19 +552,19 @@ class CaseStudyBacktester:
         """Prints summary table of all case study runs."""
         if not results:
             return
-        print("\n" + "*" * 80)
+        print("\n" + "*" * 90)
         print("                    CASE STUDY BACKTESTER SUMMARY TABLE                    ")
-        print("*" * 80)
-        print(f"{'Company':<18} | {'Period':<10} | {'Verdict':<12} | {'GM>40%':<7} | {'R40':<5} | {'Recur':<6} | {'DebtRisk':<8}")
-        print("-" * 80)
+        print("*" * 90)
+        print(f"{'Company':<16} | {'Period':<8} | {'Profile':<8} | {'Verdict':<12} | {'GM>40%':<6} | {'R40':<5} | {'NetCash':<7} | {'Risk':<6}")
+        print("-" * 90)
         for r in results:
             verdict_str = f"[{r.verdict}]"
             gm_str = "YES" if r.gross_margin_over_40 else "NO"
             r40_str = "YES" if r.rule_of_40_passed else "NO"
-            rec_str = "YES" if r.recurring_revenue_mentioned else "NO"
-            debt_str = "RISK" if r.cash_or_debt_issues else "OK"
-            print(f"{r.company_name[:18]:<18} | {r.report_period[:10]:<10} | {verdict_str:<12} | {gm_str:<7} | {r40_str:<5} | {rec_str:<6} | {debt_str:<8}")
-        print("*" * 80)
+            cash_str = "YES" if r.strong_net_cash_position else "NO"
+            risk_str = "RISK" if r.going_concern_risk else "OK"
+            print(f"{r.company_name[:16]:<16} | {r.report_period[:8]:<8} | {r.matched_profile:<8} | {verdict_str:<12} | {gm_str:<6} | {r40_str:<5} | {cash_str:<7} | {risk_str:<6}")
+        print("*" * 90)
         print(f"Results saved to: {self.results_csv_path}\n")
 
     def save_results_csv(self, results: List[CaseStudyResult]) -> None:
@@ -474,11 +575,16 @@ class CaseStudyBacktester:
             "filename",
             "company_name",
             "report_period",
+            "matched_profile",
+            "verdict",
             "gross_margin_over_40",
             "rule_of_40_passed",
             "recurring_revenue_mentioned",
+            "strong_net_cash_position",
+            "positive_operating_cash_flow",
+            "turnaround_indicators",
+            "going_concern_risk",
             "cash_or_debt_issues",
-            "verdict",
             "reasoning",
         ]
         try:

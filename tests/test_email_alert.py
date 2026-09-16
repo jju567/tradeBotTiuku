@@ -90,8 +90,9 @@ def test_send_alert_core_value_setup():
     )
 
     analysis_summary = {
-        "signals": "CORE_10BAGGER_QUALITY (GM: 68%, R40: 47%)",
-        "reasoning": "Yhtiö täyttää kaikki 10-bagger kasvukriteerit: myyntikate 68%, toistuva liikevaihto 85%, Rule of 40 = 47%.",
+        "signals": "CORE_PROFILE VALUE (GM: 68%, R40: 47%)",
+        "matched_profile": "VALUE",
+        "reasoning": "Yhtiö täyttää kaikki 10-bagger käännekriteerit: vahva nettokassa ja positiivinen liiketoiminnan rahavirta.",
         "gross_margin_pct": 68.0,
         "recurring_revenue": True,
         "rule_of_40_score": 47.0,
@@ -126,7 +127,7 @@ def test_send_alert_core_value_setup():
 
         # Parse message
         msg_obj = email.message_from_string(raw_msg)
-        assert msg_obj["Subject"] == "[CORE ALERT] Value Setup: KEMIRA.HE"
+        assert msg_obj["Subject"] == "[CORE ALERT] VALUE: KEMIRA.HE"
 
         # 2. Verify Body contents
         payloads = []
@@ -143,7 +144,7 @@ def test_send_alert_core_value_setup():
         assert "68.0%" in combined_body
         assert "47.0%" in combined_body
         assert "1,125 EUR" in combined_body
-        assert "Yhtiö täyttää kaikki 10-bagger kasvukriteerit" in combined_body
+        assert "käännekriteerit" in combined_body
 
 
 def test_send_alert_unconfigured_skips_gracefully():

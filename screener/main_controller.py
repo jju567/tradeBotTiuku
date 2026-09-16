@@ -471,11 +471,14 @@ class ScreenerPipelineController:
                 recurring_revenue = signals.get("recurring_revenue", False)
                 rule_of_40_passed = signals.get("rule_of_40_passed", False)
                 core_quality_passed = signals.get("core_quality_passed", False)
+                matched_profile = signals.get("matched_profile") or signals.get("verdict_details", {}).get("matched_profile", "GROWTH")
+                verdict = signals.get("verdict") or signals.get("verdict_details", {}).get("verdict", "")
 
-                if core_quality_passed or (gross_margin_above_40 and recurring_revenue and rule_of_40_passed):
-                    signal_label = f"CORE_10BAGGER_QUALITY (GM: {signals.get('gross_margin_pct', 0):.0f}%, R40: {signals.get('rule_of_40_score', 0):.0f}%)"
+                if core_quality_passed or verdict == "STRONG BUY" or (gross_margin_above_40 and recurring_revenue and rule_of_40_passed):
+                    profile_str = f"PROFILE {matched_profile}" if matched_profile in ("GROWTH", "VALUE") else "10-BAGGER QUALITY"
+                    signal_label = f"CORE_{profile_str} (GM: {signals.get('gross_margin_pct', 0):.0f}%, R40: {signals.get('rule_of_40_score', 0):.0f}%)"
                     is_candidate = True
-                    logger.info(f"[+] [CORE 10-BAGGER CANDIDATE] {title}")
+                    logger.info(f"[+] [CORE {profile_str} CANDIDATE] {title}")
 
             # Step D: Quant Filter & Sizing
             if is_candidate:

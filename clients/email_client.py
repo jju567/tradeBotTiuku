@@ -323,12 +323,20 @@ class EmailClient:
             return False
 
         pipe = pipeline_type.upper().strip()
+        matched_profile = analysis_summary.get("matched_profile") or analysis_summary.get("verdict_details", {}).get("matched_profile")
         signal_title = analysis_summary.get("signal_title")
+
         if not signal_title:
-            signal_title = "Value Setup" if pipe == "CORE" else "Strong Buy"
+            if pipe == "CORE":
+                if matched_profile and matched_profile.upper() in ("GROWTH", "VALUE"):
+                    signal_title = matched_profile.upper()
+                else:
+                    signal_title = "GROWTH"
+            else:
+                signal_title = "Strong Buy"
 
         # 1. Subject Line
-        # E.g. [SATELLITE ALERT] Strong Buy: RAUTE.HE or [CORE ALERT] Value Setup: KEMIRA.HE
+        # E.g. [SATELLITE ALERT] Strong Buy: RAUTE.HE or [CORE ALERT] VALUE: KEMIRA.HE or [CORE ALERT] GROWTH: QTCOM.HE
         subject = f"[{pipe} ALERT] {signal_title}: {ticker}"
 
         # 2. Extract Data

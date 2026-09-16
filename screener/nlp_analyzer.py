@@ -51,17 +51,24 @@ SAFE_DEFAULT_RESPONSE: Dict[str, Any] = {
 }
 
 SAFE_DEFAULT_CORE_RESPONSE: Dict[str, Any] = {
-    "cash_issue": False,
-    "gross_margin_pct": 0.0,
-    "gross_margin_above_40": False,
-    "recurring_revenue": False,
-    "recurring_revenue_details": "",
-    "revenue_growth_pct": 0.0,
-    "operating_margin_pct": 0.0,
-    "rule_of_40_score": 0.0,
-    "rule_of_40_passed": False,
-    "core_quality_passed": False,
-    "reasoning": "Ei täytä Core-salkun fundamenttikriteerejä (Gross Margin > 40%, Toistuva liikevaihto, Rule of 40 >= 40%).",
+    "profile_A_growth": {
+        "gross_margin_over_40": False,
+        "rule_of_40_passed": False,
+        "recurring_revenue_mentioned": False,
+    },
+    "profile_B_value": {
+        "strong_net_cash_position": False,
+        "positive_operating_cash_flow": False,
+        "turnaround_indicators": False,
+    },
+    "financial_safety": {
+        "going_concern_risk": False,
+    },
+    "verdict_details": {
+        "matched_profile": "NONE",
+        "verdict": "REJECT",
+        "reasoning": "Ei täytä Core-salkun kriteerejä (Profile A Kasvu tai Profile B Arvo/Käänne).",
+    },
 }
 
 # ----------------------------------------------------------------------
@@ -94,40 +101,54 @@ Output strictly a valid JSON object with no markdown outside JSON:
 # Backwards compatibility alias
 SYSTEM_PROMPT = SATELLITE_SYSTEM_PROMPT
 
-CORE_SYSTEM_PROMPT = """You are an expert quantitative equity analyst and mentor evaluating Nordic micro-caps for long-term "Core Tenbagger" potential from Earnings Reports and Annual Reports.
-Analyze the provided report text and attached financial statements against the 6-point Growth & Quality Checklist:
+CORE_SYSTEM_PROMPT = """You are an expert quantitative equity analyst evaluating Nordic micro-cap companies from Earnings Reports and Annual Reports.
+You must evaluate the company through TWO distinct investment lenses simultaneously:
+- Profile A (High-Margin Growth / Tenbagger Compounder)
+- Profile B (Deep Value / Turnaround Setup)
 
-1. RISK SCREEN FIRST (Absolute Gatekeeper):
-   - "cash_issue": Set to TRUE if the company has negative equity, going concern uncertainty ('toiminnan jatkuvuus'), severe cash burn with < 12m runway, or emergency dilutive debt. If TRUE, the company must be REJECTED immediately!
+EVALUATION CRITERIA & RULES:
 
-2. FUNDAMENTAL QUALITY CRITERIA:
-   - "gross_margin_pct": Extract the Gross Margin % ('myyntikate-%' / 'bruttokate-%'). If not explicitly stated, compute/estimate from revenue - COGS.
-   - "gross_margin_above_40": Set to TRUE if gross margin > 40.0%.
-   - "recurring_revenue": Set to TRUE if the company has SaaS, subscription-based, recurring maintenance, or long-term service contracts ('toistuva liikevaihto', 'jatkuvalaskutteinen', 'tilauspohjainen liikevaihto', 'ARR'). Set to FALSE if purely project-based one-off consulting/delivery.
-   - "recurring_revenue_details": Summary of recurring revenue model and percentage if available.
-   - "revenue_growth_pct": Revenue growth rate % year-over-year (e.g. 25.0).
-   - "operating_margin_pct": Operating margin / EBIT % (e.g. 15.0).
-   - "rule_of_40_score": Sum of revenue_growth_pct + operating_margin_pct.
-   - "rule_of_40_passed": Set to TRUE if rule_of_40_score >= 40.0.
-   - "core_quality_passed": Set to TRUE ONLY if cash_issue is FALSE AND gross_margin_above_40 is TRUE AND recurring_revenue is TRUE AND rule_of_40_passed is TRUE.
+1. FINANCIAL SAFETY (Absolute Gatekeeper):
+   - "going_concern_risk": Set to TRUE if there is evidence of severe insolvency, going concern uncertainty ('toiminnan jatkuvuus'), severe cash burn with < 12m runway, covenant breaches, or emergency dilutive bridge financing. If TRUE, the company MUST receive verdict: "REJECT" and matched_profile: "NONE".
 
-3. "reasoning": Provide a structured Finnish pedagogical assessment detailing:
-   (1) Kasvuvauhti & kehityssuunta, (2) Markkinan koko & skaalautuvuus ("tilaa kasvaa"), (3) Johdon omistus/sitoutuminen, (4) Marginaalin suunta/operatiivinen vipuvaikutus, (5) Tulojen laatu (toistuva vs kertaluonteinen), (6) Kassan riittävyys kasvuun ilman merkittävää diluutiota.
+2. PROFILE A (High-Margin Growth):
+   - "gross_margin_over_40": Set to TRUE if Gross Margin ('myyntikate' / 'bruttokate') > 40.0%, or if high-margin software/scalable IP business with low COGS.
+   - "rule_of_40_passed": Set to TRUE if (Revenue Growth YoY % + Operating Profit Margin / EBIT %) >= 40.0%.
+   - "recurring_revenue_mentioned": Set to TRUE if SaaS, subscription models, ARR, recurring maintenance, or long-term contracts ('toistuva liikevaihto', 'jatkuvalaskutteinen').
+
+3. PROFILE B (Deep Value / Turnaround):
+   - "strong_net_cash_position": Set to TRUE if company has significant cash reserves and minimal/zero debt (net cash positive balance sheet).
+   - "positive_operating_cash_flow": Set to TRUE if core operations generate positive cash flow ('liiketoiminnan rahavirta positiivinen').
+   - "turnaround_indicators": Set to TRUE if significant cost cuts, restructuring taking effect, sequential margin expansion, or returning to profitability.
+
+4. VERDICT DETAILS:
+   - "matched_profile": "GROWTH" if meets Profile A criteria; "VALUE" if meets Profile B criteria; "NONE" if neither or fails safety.
+   - "verdict": "STRONG BUY" if matched_profile is "GROWTH" or "VALUE" AND going_concern_risk is FALSE.
+               "HOLD" if viable but incomplete criteria.
+               "REJECT" if going_concern_risk is TRUE or fundamentally weak.
+   - "reasoning": Concise 2-sentence summary explaining the logic and key drivers.
 
 OUTPUT FORMAT:
-Output strictly a valid JSON object with no markdown outside JSON:
+Output strictly a valid JSON object with no markdown fences or preamble:
 {
-  "cash_issue": bool,
-  "gross_margin_pct": float,
-  "gross_margin_above_40": bool,
-  "recurring_revenue": bool,
-  "recurring_revenue_details": string,
-  "revenue_growth_pct": float,
-  "operating_margin_pct": float,
-  "rule_of_40_score": float,
-  "rule_of_40_passed": bool,
-  "core_quality_passed": bool,
-  "reasoning": string
+  "profile_A_growth": {
+    "gross_margin_over_40": bool,
+    "rule_of_40_passed": bool,
+    "recurring_revenue_mentioned": bool
+  },
+  "profile_B_value": {
+    "strong_net_cash_position": bool,
+    "positive_operating_cash_flow": bool,
+    "turnaround_indicators": bool
+  },
+  "financial_safety": {
+    "going_concern_risk": bool
+  },
+  "verdict_details": {
+    "matched_profile": "GROWTH" | "VALUE" | "NONE",
+    "verdict": "STRONG BUY" | "HOLD" | "REJECT",
+    "reasoning": string
+  }
 }"""
 
 
@@ -481,7 +502,7 @@ def analyze_core_fundamentals(
     max_words: int = 2000,
     throttle_sleep_seconds: float = DEFAULT_THROTTLE_SLEEP,
 ) -> Dict[str, Any]:
-    """Analyzes earnings and annual reports for 10-bagger core fundamental quality."""
+    """Analyzes earnings and annual reports with dual-lens (Profile A Growth / Profile B Value)."""
     key = api_key if api_key is not None else os.getenv("OPENROUTER_API_KEY")
     if not key:
         return rule_based_analyze_core_fundamentals(text_content)
@@ -507,34 +528,82 @@ def analyze_core_fundamentals(
     if not parsed_json:
         return rule_based_analyze_core_fundamentals(target_text)
 
-    cash_issue = bool(parsed_json.get("cash_issue", False))
-    gross_margin_pct = float(parsed_json.get("gross_margin_pct", 0.0) or 0.0)
-    gross_margin_above_40 = bool(parsed_json.get("gross_margin_above_40", gross_margin_pct > 40.0))
-    recurring_revenue = bool(parsed_json.get("recurring_revenue", False))
-    recurring_details = str(parsed_json.get("recurring_revenue_details", ""))
-    rev_growth = float(parsed_json.get("revenue_growth_pct", 0.0) or 0.0)
-    op_margin = float(parsed_json.get("operating_margin_pct", 0.0) or 0.0)
-    r40_score = float(parsed_json.get("rule_of_40_score", rev_growth + op_margin) or 0.0)
-    r40_passed = bool(parsed_json.get("rule_of_40_passed", r40_score >= 40.0))
-    quality_passed = bool(parsed_json.get("core_quality_passed", (not cash_issue and gross_margin_above_40 and recurring_revenue and r40_passed)))
-    reasoning = str(parsed_json.get("reasoning", "")).strip()
+    # Validate / Normalize dual-lens response
+    prof_a = parsed_json.get("profile_A_growth", {})
+    prof_b = parsed_json.get("profile_B_value", {})
+    safety = parsed_json.get("financial_safety", {})
+    verdict_info = parsed_json.get("verdict_details", {})
 
+    gm_over_40 = bool(prof_a.get("gross_margin_over_40", False))
+    r40_passed = bool(prof_a.get("rule_of_40_passed", False))
+    recurring = bool(prof_a.get("recurring_revenue_mentioned", False))
+
+    net_cash = bool(prof_b.get("strong_net_cash_position", False))
+    pos_ocf = bool(prof_b.get("positive_operating_cash_flow", False))
+    turnaround = bool(prof_b.get("turnaround_indicators", False))
+
+    going_concern = bool(safety.get("going_concern_risk", parsed_json.get("cash_issue", False)))
+
+    matched_profile = str(verdict_info.get("matched_profile", "")).strip().upper()
+    verdict = str(verdict_info.get("verdict", "")).strip().upper()
+
+    if going_concern:
+        matched_profile = "NONE"
+        verdict = "REJECT"
+    elif matched_profile not in ("GROWTH", "VALUE", "NONE"):
+        if gm_over_40 and r40_passed and recurring:
+            matched_profile = "GROWTH"
+            verdict = "STRONG BUY"
+        elif net_cash and pos_ocf and turnaround:
+            matched_profile = "VALUE"
+            verdict = "STRONG BUY"
+        else:
+            matched_profile = "NONE"
+            verdict = "HOLD"
+
+    if verdict not in ("STRONG BUY", "HOLD", "REJECT"):
+        verdict = "STRONG BUY" if matched_profile in ("GROWTH", "VALUE") else "HOLD"
+
+    reasoning = str(verdict_info.get("reasoning", "")).strip()
     if not reasoning:
         reasoning = generate_core_fallback_rationale(
-            cash_issue, gross_margin_pct, recurring_revenue, rev_growth, op_margin, r40_score, quality_passed
+            going_concern_risk=going_concern,
+            matched_profile=matched_profile,
+            verdict=verdict,
+            prof_a={"gross_margin_over_40": gm_over_40, "rule_of_40_passed": r40_passed, "recurring_revenue_mentioned": recurring},
+            prof_b={"strong_net_cash_position": net_cash, "positive_operating_cash_flow": pos_ocf, "turnaround_indicators": turnaround},
         )
 
+    # Core quality passed if either Profile A or Profile B satisfies STRONG BUY
+    quality_passed = (verdict == "STRONG BUY" and not going_concern)
+
     return {
-        "cash_issue": cash_issue,
-        "gross_margin_pct": gross_margin_pct,
-        "gross_margin_above_40": gross_margin_above_40,
-        "recurring_revenue": recurring_revenue,
-        "recurring_revenue_details": recurring_details,
-        "revenue_growth_pct": rev_growth,
-        "operating_margin_pct": op_margin,
-        "rule_of_40_score": r40_score,
+        "profile_A_growth": {
+            "gross_margin_over_40": gm_over_40,
+            "rule_of_40_passed": r40_passed,
+            "recurring_revenue_mentioned": recurring,
+        },
+        "profile_B_value": {
+            "strong_net_cash_position": net_cash,
+            "positive_operating_cash_flow": pos_ocf,
+            "turnaround_indicators": turnaround,
+        },
+        "financial_safety": {
+            "going_concern_risk": going_concern,
+        },
+        "verdict_details": {
+            "matched_profile": matched_profile,
+            "verdict": verdict,
+            "reasoning": reasoning,
+        },
+        # Backwards compatibility flat helpers
+        "cash_issue": going_concern,
+        "gross_margin_above_40": gm_over_40,
+        "recurring_revenue": recurring,
         "rule_of_40_passed": r40_passed,
         "core_quality_passed": quality_passed,
+        "matched_profile": matched_profile,
+        "verdict": verdict,
         "reasoning": reasoning,
     }
 
@@ -575,34 +644,32 @@ def generate_fallback_rationale(
 
 
 def generate_core_fallback_rationale(
-    cash_issue: bool,
-    gross_margin_pct: float,
-    recurring_revenue: bool,
-    revenue_growth_pct: float,
-    operating_margin_pct: float,
-    rule_of_40_score: float,
-    core_quality_passed: bool,
+    going_concern_risk: bool,
+    matched_profile: str,
+    verdict: str,
+    prof_a: Dict[str, bool],
+    prof_b: Dict[str, bool],
 ) -> str:
-    """Generates structured educational Finnish explanation for Core tenbagger quality checklist."""
-    if cash_issue:
+    """Generates structured Finnish pedagogical explanation for Dual-Lens Core analysis."""
+    if going_concern_risk:
         return (
-            "Tämä yhtiö hylättiin Core-salkusta riskiseulan perusteella: (a) Raportissa havaittiin negatiivinen oma pääoma, "
-            "käyttöpääoman heikkous tai toiminnan jatkuvuuden riski. (b) Riskiseula ensin: riski syö kasvupotentiaalin merkityksettömäksi."
+            "Tämä yhtiö hylättiin Core-salkusta riskiseulan perusteella: (a) Raportissa havaittiin vakava toiminnan jatkuvuuden riski, "
+            "käyttöpääomakriisi tai kovenanttirikko. (b) Riskiseula ensin: taseriski kumoaa kaiken tuotto-odotuksen."
         )
-    if core_quality_passed:
-        return (
-            f"Tämä yhtiö valittiin Core-salkkuun (10-bagger -potentiaali): "
-            f"(1) Kasvuvauhti ja kehityssuunta: Liikevaihto kasvaa {revenue_growth_pct:.1f}%. "
-            f"(2) Korkea myyntikate: {gross_margin_pct:.1f}% (> 40%), mikä osoittaa vahvaa hinnoitteluvoimaa ja skaalautuvuutta. "
-            f"(3) Tulojen laatu: Toistuva, tilauspohjainen/SaaS-liikevaihto luo ennustettavuutta. "
-            f"(4) Rule of 40: Tulos ({revenue_growth_pct:.1f}% + {operating_margin_pct:.1f}% = {rule_of_40_score:.1f}%) ylittää vaaditun 40% tason. "
-            f"(5) Tase ja kassa: Kassa riittää kasvuun ilman merkittävää omistusosuuden laimentumista."
-        )
+    if verdict == "STRONG BUY":
+        if matched_profile == "GROWTH":
+            return (
+                "Valittu Core-salkkuun Kasvu-profiilin (Profile A) mukaisesti: (1) Korkea skaalautuva bruttokate (> 40%) ja toistuva SaaS/sopimusliikevaihto. "
+                "(2) Vahva Rule of 40 kasvuvauhti ja operatiivinen vipu ilman taseriskejä."
+            )
+        elif matched_profile == "VALUE":
+            return (
+                "Valittu Core-salkkuun Arvo/Käänne-profiilin (Profile B) mukaisesti: (1) Vahva nettovelaton kassapuskuri ja positiivinen operatiivinen rahavirta. "
+                "(2) Selkeät tehostumisen ja tuloskäänteen merkit houkuttelevalla arvostuksella."
+            )
     return (
-        f"Tämä yhtiö hylättiin Core-salkusta: "
-        f"Ei täytä kaikkia laatu- ja kasvukriteerejä (Gross Margin: {gross_margin_pct:.1f}% vs >40%, "
-        f"Toistuva liikevaihto: {'Kyllä' if recurring_revenue else 'Ei'}, "
-        f"Rule of 40: {rule_of_40_score:.1f}% vs >=40%)."
+        f"Jätetty odottamaan (verdict: {verdict}): Yhtiö ei täytä riittävästi Profile A (Kasvu) eikä Profile B (Arvo/Käänne) vaatimuksia, "
+        f"vaikka välitöntä maksukyvyttömyysriskiä ei havaittu."
     )
 
 
@@ -725,14 +792,14 @@ def rule_based_analyze_text(text: str) -> Dict[str, Any]:
 
 
 def rule_based_analyze_core_fundamentals(text: str) -> Dict[str, Any]:
-    """Deterministic rule-based keyword & financial metric matcher for Core fundamentals."""
+    """Deterministic rule-based keyword & financial metric matcher for Dual-Lens Core fundamentals."""
     if not text:
         return dict(SAFE_DEFAULT_CORE_RESPONSE)
 
     lower = text.lower()
 
-    # 1. Risk Screen First (Cash issue / Distress / Insolvency)
-    cash_issue = False
+    # 1. Financial Safety / Going Concern Risk
+    going_concern = False
     for pat in [
         r"toiminnan jatkuvuuteen liittyy",
         r"käyttöpääoma ei riitä",
@@ -741,12 +808,13 @@ def rule_based_analyze_core_fundamentals(text: str) -> Dict[str, Any]:
         r"hätälaina",
         r"maksuvalmius on heikentynyt",
         r"going concern",
+        r"kovenanttirikko",
     ]:
         if re.search(pat, lower):
-            cash_issue = True
+            going_concern = True
             break
 
-    # 2. Recurring Revenue Detection
+    # 2. Profile A (Growth) Indicators
     recurring_revenue = any(
         k in lower
         for k in [
@@ -764,28 +832,28 @@ def rule_based_analyze_core_fundamentals(text: str) -> Dict[str, Any]:
         ]
     )
 
-    # 3. Gross Margin Extraction / Heuristic
-    gross_margin_pct = 0.0
+    gm_pct = 0.0
+    gm_over_40 = False
     gm_match = re.search(r"(?:myyntikate|bruttokate|gross margin)[^\d%]{0,30}(\d+[\.,]?\d*)\s*%", lower)
     if gm_match:
         try:
-            gross_margin_pct = float(gm_match.group(1).replace(",", "."))
+            gm_pct = float(gm_match.group(1).replace(",", "."))
+            gm_over_40 = gm_pct >= 40.0
         except ValueError:
-            gross_margin_pct = 0.0
-    elif recurring_revenue or "ohjelmisto" in lower or "software" in lower:
-        # Software/SaaS micro-caps default high gross margin heuristic
-        gross_margin_pct = 65.0
+            pass
+    elif recurring_revenue or "ohjelmisto" in lower or "software" in lower or "lisenssi" in lower:
+        gm_pct = 65.0
+        gm_over_40 = True
 
-    gross_margin_above_40 = gross_margin_pct >= 40.0
-
-    # 4. Revenue Growth & Operating Margin
     rev_growth = 0.0
-    growth_match = re.search(r"(?:liikevaihto kasvoi|liikevaihdon kasvu|revenue growth)[^\d%]{0,30}(\d+[\.,]?\d*)\s*%", lower)
+    growth_match = re.search(r"(?:liikevaihto kasvoi|liikevaihdon kasvu|liikevaihto nousi|revenue growth)[^\d%]{0,30}(\d+[\.,]?\d*)\s*%", lower)
     if growth_match:
         try:
             rev_growth = float(growth_match.group(1).replace(",", "."))
         except ValueError:
             rev_growth = 0.0
+    elif re.search(r"kasvoi\s+(?:[2-9]\d|1\d\d)\s*%", lower) or "vahva kasvu" in lower:
+        rev_growth = 30.0
 
     op_margin = 0.0
     ebit_match = re.search(r"(?:liikevoittomarginaali|liikevoitto-%|ebit-%|ebit margin)[^\d%]{0,30}([+-]?\d+[\.,]?\d*)\s*%", lower)
@@ -795,26 +863,103 @@ def rule_based_analyze_core_fundamentals(text: str) -> Dict[str, Any]:
         except ValueError:
             op_margin = 0.0
 
-    rule_of_40_score = rev_growth + op_margin
-    rule_of_40_passed = rule_of_40_score >= 40.0
+    r40_score = rev_growth + op_margin
+    r40_passed = (r40_score >= 40.0) or (rev_growth >= 20.0 and (op_margin >= 10.0 or recurring_revenue))
 
-    core_quality_passed = (not cash_issue) and gross_margin_above_40 and recurring_revenue and rule_of_40_passed
-
-    reasoning = generate_core_fallback_rationale(
-        cash_issue, gross_margin_pct, recurring_revenue, rev_growth, op_margin, rule_of_40_score, core_quality_passed
+    # 3. Profile B (Deep Value / Turnaround) Indicators
+    net_cash = any(
+        k in lower
+        for k in [
+            "velaton",
+            "nettovelaton",
+            "net cash",
+            "vahva kassa",
+            "kassavarat ylittävät velat",
+            "vahva tase",
+            "kassavarat olivat",
+        ]
+    )
+    pos_ocf = any(
+        k in lower
+        for k in [
+            "liiketoiminnan rahavirta oli positiivinen",
+            "operatiivinen rahavirta oli positiivinen",
+            "positiivinen rahavirta",
+            "positive cash flow",
+            "operating cash flow was positive",
+            "rahavirta parani",
+        ]
+    )
+    turnaround = any(
+        k in lower
+        for k in [
+            "käänne",
+            "tuloskäänne",
+            "tehostamisohjelma",
+            "säästöohjelma",
+            "kannattavuus parani merkittävästi",
+            "palasi voitolliseksi",
+            "restructuring",
+            "turnaround",
+        ]
     )
 
+    if going_concern:
+        matched_profile = "NONE"
+        verdict = "REJECT"
+    elif gm_over_40 and recurring_revenue and r40_passed:
+        matched_profile = "GROWTH"
+        verdict = "STRONG BUY"
+    elif net_cash and (pos_ocf or turnaround):
+        matched_profile = "VALUE"
+        verdict = "STRONG BUY"
+    else:
+        matched_profile = "NONE"
+        verdict = "HOLD"
+
+    prof_a = {
+        "gross_margin_over_40": gm_over_40,
+        "rule_of_40_passed": r40_passed,
+        "recurring_revenue_mentioned": recurring_revenue,
+    }
+    prof_b = {
+        "strong_net_cash_position": net_cash,
+        "positive_operating_cash_flow": pos_ocf,
+        "turnaround_indicators": turnaround,
+    }
+
+    reasoning = generate_core_fallback_rationale(
+        going_concern_risk=going_concern,
+        matched_profile=matched_profile,
+        verdict=verdict,
+        prof_a=prof_a,
+        prof_b=prof_b,
+    )
+
+    quality_passed = (verdict == "STRONG BUY" and not going_concern)
+
     return {
-        "cash_issue": cash_issue,
-        "gross_margin_pct": gross_margin_pct,
-        "gross_margin_above_40": gross_margin_above_40,
-        "recurring_revenue": recurring_revenue,
-        "recurring_revenue_details": "Toistuva SaaS/sopimuspohjainen liikevaihto" if recurring_revenue else "Kertaluonteinen/projektipohjainen",
+        "profile_A_growth": prof_a,
+        "profile_B_value": prof_b,
+        "financial_safety": {
+            "going_concern_risk": going_concern,
+        },
+        "verdict_details": {
+            "matched_profile": matched_profile,
+            "verdict": verdict,
+            "reasoning": reasoning,
+        },
+        "cash_issue": going_concern,
+        "gross_margin_pct": gm_pct,
+        "gross_margin_above_40": gm_over_40,
         "revenue_growth_pct": rev_growth,
         "operating_margin_pct": op_margin,
-        "rule_of_40_score": rule_of_40_score,
-        "rule_of_40_passed": rule_of_40_passed,
-        "core_quality_passed": core_quality_passed,
+        "rule_of_40_score": r40_score,
+        "recurring_revenue": recurring_revenue,
+        "rule_of_40_passed": r40_passed,
+        "core_quality_passed": quality_passed,
+        "matched_profile": matched_profile,
+        "verdict": verdict,
         "reasoning": reasoning,
     }
 

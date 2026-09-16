@@ -242,7 +242,7 @@ def test_pipeline_controller_core_tenbagger_cycle(tmp_path, monkeypatch):
     assert len(candidates) == 1
     cand = candidates[0]
     assert cand["strategy_type"] == "CORE"
-    assert "CORE_10BAGGER_QUALITY" in cand["signals"]
+    assert "CORE_PROFILE GROWTH" in cand["signals"] or "CORE_10BAGGER_QUALITY" in cand["signals"]
     # Core pool is 75% of 10000 = 7500 EUR, 15% equal weight = 1125 EUR
     assert cand["recommended_allocation_eur"] == 1125.0
     assert cand["kelly_fraction"] is None
