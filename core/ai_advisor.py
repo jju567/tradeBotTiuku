@@ -172,18 +172,21 @@ TIUKU EVALUATION RULES:
 2. Penalize severe overbought momentum (RSI > 75 or %B > 0.95) under active trading strategies.
 3. Reward oversold quality stocks (RSI < 38 or price near/below Lower Bollinger Band %B < 0.1). Recommend buying.
 4. Maximum stock weight limit is {config.MAX_POSITION_WEIGHT*100:.0f}%.
+5. EDUCATIONAL RATIONALE REQUIREMENT:
+   Do NOT just output a score. You must write an educational, step-by-step explanation in Finnish following this exact pedagogical structure:
+   "Tämä yhtiö [nousi listalle / suositellaan ostettavaksi / pidetään ennallaan / suositellaan myytäväksi] koska (a) [tarkka tekninen tai fundamenttihavainto, esim. RSI/Bollinger/liikevaihto/osinko], (b) [miten havainto liittyy strategiaan tai arvostukseen], (c) [tärkeä ristiriita, riski tai kysymys joka sijoittajan kannattaa selvittää ennen päätöstä]."
 
 Respond ONLY with valid JSON with keys:
 - "score": integer 1 to 10
 - "recommendation": "STRONG_BUY", "BUY", "HOLD", "SELL", or "STRONG_SELL"
 - "target_weight": float between 0.0 and {config.MAX_POSITION_WEIGHT}
-- "reasoning": concise 1-2 sentence explanation
+- "reasoning": detailed educational step-by-step explanation in Finnish as specified in rule 5
 """
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are Tiuku, a quantitative stock advisor giving JSON output."},
+                    {"role": "system", "content": "You are Tiuku, a quantitative pedagogical stock advisor giving JSON output."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
@@ -236,21 +239,36 @@ Respond ONLY with valid JSON with keys:
         if score >= 8:
             rec = "STRONG_BUY"
             weight = 0.15
+            action_desc = "nousi vahvaksi ostoehdokkaaksi"
+            obs_b = f"hinta on painunut houkuttelevaan alennukseen ({trend}-trendistä huolimatta) strategian [{strat_key}] mukaisesti"
+            risk_c = "tarkista ettei laskun taustalla ole heikentynyttä kassavirtaa tai negatiivista tulosvaroitusta"
         elif score >= 7:
             rec = "BUY"
             weight = 0.10
+            action_desc = "suositellaan lisättäväksi"
+            obs_b = f"momentti ja arvostus tukevat salkun tuotto-odotusta [{strat_key}]"
+            risk_c = "varmista että toimialapaino ei nouse liian suureksi"
         elif score <= 3:
             rec = "STRONG_SELL"
             weight = 0.0
+            action_desc = "suositellaan myytäväksi kokonaan"
+            obs_b = f"trendi on heikentynyt ({trend}) ja tekninen tuki murtunut"
+            risk_c = "tappioiden katkaisu on tarpeen pääoman suojelemiseksi"
         elif score <= 4:
             rec = "SELL"
             weight = 0.02
+            action_desc = "suositellaan kevennettäväksi"
+            obs_b = f"momentum on ylikuumentunut tai riski-tuottosuhde heikentynyt [{strat_key}]"
+            risk_c = "harkitse voittojen kotiuttamista ennen mahdollista korjausliikettä"
         else:
             rec = "HOLD"
             weight = 0.05
+            action_desc = "pidetään nykyisessä painossaan (HOLD)"
+            obs_b = f"arvostus ja momentti ovat tasapainossa [{strat_key}]"
+            risk_c = "seuraa rikkooko hinta Bollinger-kaistat tai muuttuuko trendi ennen seuraavaa siirtoa"
 
         reasoning = (
-            f"Tiuku score {score}/10 [{strat_key}] based on RSI ({rsi}), Bollinger %B ({pct_b}), "
-            f"Dividend ({div*100:.1f}%), and Trend ({trend})."
+            f"Tämä yhtiö {action_desc} koska (a) RSI(14) on {rsi:.1f}, Bollinger %B on {pct_b:.2f} ja osinkotuotto {div*100:.1f}%, "
+            f"(b) {obs_b}, (c) {risk_c}."
         )
         return {"score": score, "recommendation": rec, "target_weight": weight, "reasoning": reasoning}

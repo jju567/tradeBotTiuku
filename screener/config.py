@@ -46,6 +46,14 @@ class ScreenerConfig:
     min_cash_runway_months: float = 18.0
     max_bid_ask_spread_pct: float = 4.0
     
+    # Portfolio Splitting & Strategy Allocation Defaults
+    core_capital_pct: float = 0.75       # 75% for long-term fundamental Core Tenbagger Hunting
+    satellite_capital_pct: float = 0.25  # 25% for daily catalyst Satellite Trading
+    
+    # Core Fundamental Screening Defaults (Rule of 40 & Quality Checklist)
+    core_min_gross_margin_pct: float = 40.0   # Gross margin > 40%
+    core_min_rule_of_40: float = 40.0         # Revenue Growth % + Profit Margin % >= 40%
+
     # Nordnet Small User Commission & Friction Settings
     # Nordnet Taso 3 (Pienkäyttäjä / 1-10 kauppaa/kk): Kotimaa min 7.00 EUR (0.15%) tai Taso 4 (min 9.00 EUR / 0.20%)
     nordnet_min_commission_eur: float = 7.00
@@ -73,6 +81,22 @@ class ScreenerConfig:
         max_spread = os.getenv("SCREENER_MAX_BID_ASK_SPREAD_PCT")
         if max_spread:
             cfg.max_bid_ask_spread_pct = float(max_spread)
+
+        core_cap = os.getenv("CORE_CAPITAL_PCT") or os.getenv("SCREENER_CORE_CAPITAL_PCT")
+        if core_cap:
+            cfg.core_capital_pct = float(core_cap)
+
+        sat_cap = os.getenv("SATELLITE_CAPITAL_PCT") or os.getenv("SCREENER_SATELLITE_CAPITAL_PCT")
+        if sat_cap:
+            cfg.satellite_capital_pct = float(sat_cap)
+
+        min_gross_m = os.getenv("CORE_MIN_GROSS_MARGIN_PCT")
+        if min_gross_m:
+            cfg.core_min_gross_margin_pct = float(min_gross_m)
+
+        min_r40 = os.getenv("CORE_MIN_RULE_OF_40")
+        if min_r40:
+            cfg.core_min_rule_of_40 = float(min_r40)
 
         min_comm = os.getenv("COMMISSION_MIN_EUR") or os.getenv("NORDNET_MIN_COMMISSION_EUR")
         if min_comm:

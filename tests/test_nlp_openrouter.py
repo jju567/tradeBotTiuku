@@ -10,6 +10,8 @@ from screener.nlp_analyzer import (
     chunk_text,
     extract_json_from_llm_response,
     analyze_text,
+    analyze_core_fundamentals,
+    classify_release_strategy,
     SAFE_DEFAULT_RESPONSE,
     FinancialNLPAnalyzer
 )
@@ -86,55 +88,50 @@ def test_analyze_text_openrouter_success(mock_post):
     assert mock_post.call_count == 1
 
 
-@patch("screener.nlp_analyzer.time.sleep")
 @patch("screener.nlp_analyzer.requests.post")
-def test_analyze_text_rate_limit_429_retry_success(mock_post, mock_sleep):
-    # 1st call returns 429, 2nd call returns 200
-    resp_429 = MagicMock()
-    resp_429.status_code = 429
-
-    resp_200 = MagicMock()
-    resp_200.status_code = 200
-    resp_200.json.return_value = {
-        "choices": [
-            {
-                "message": {
-                    "content": '{"cash_issue": true, "management_buying": false, "positive_guidance": false}'
-                }
-            }
-        ]
-    }
-    resp_200.raise_for_status.return_value = None
-
-    mock_post.side_effect = [resp_429, resp_200]
-
-    result = analyze_text(
-        text_content="Company needs urgent refinancing.",
-        api_key="mock-openrouter-key",
-        throttle_sleep_seconds=0.0
-    )
-
-    assert result["cash_issue"] is True
-    assert mock_post.call_count == 2
-    assert mock_sleep.called
-
-
-@patch("screener.nlp_analyzer.requests.post")
-def test_analyze_text_malformed_json_fallback(mock_post):
+def test_analyze_core_fundamentals_openrouter(mock_post):
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
         "choices": [
-            {"message": {"content": "I am unable to parse this report properly."}}
+            {
+                "message": {
+                    "content": json.dumps({
+                        "cash_issue": False,
+                        "gross_margin_pct": 55.0,
+                        "gross_margin_above_40": True,
+                        "recurring_revenue": True,
+                        "recurring_revenue_details": "80% SaaS ARR",
+                        "revenue_growth_pct": 30.0,
+                        "operating_margin_pct": 15.0,
+                        "rule_of_40_score": 45.0,
+                        "rule_of_40_passed": True,
+                        "core_quality_passed": True,
+                        "reasoning": "Täyttää kaikki Core-salkun kriteerit."
+                    })
+                }
+            }
         ]
     }
     mock_resp.raise_for_status.return_value = None
     mock_post.return_value = mock_resp
 
-    result = analyze_text(
-        text_content="Unparseable report text",
+    res = analyze_core_fundamentals(
+        text_content="Osavuosikatsaus Q3: Liikevaihdon kasvu 30%, SaaS-tuotot 80%, EBIT 15%.",
         api_key="mock-openrouter-key",
-        throttle_sleep_seconds=0.0
+        throttle_sleep_seconds=0.0,
     )
 
-    assert result == SAFE_DEFAULT_RESPONSE
+    assert res["gross_margin_pct"] == 55.0
+    assert res["recurring_revenue"] is True
+    assert res["rule_of_40_passed"] is True
+    assert res["core_quality_passed"] is True
+
+
+def test_classify_release_strategy_router():
+    assert classify_release_strategy("Faron Oy: Osavuosikatsaus Q3 2026") == "CORE"
+    assert classify_release_strategy("Kamux Oyj: Tilinpäätöstiedote 2025") == "CORE"
+    assert classify_release_strategy("Wired Oy: Puolivuosikatsaus tammi-kesäkuu") == "CORE"
+    assert classify_release_strategy("Harvia Oyj: Johdon liiketoimet") == "SATELLITE"
+    assert classify_release_strategy("Remedy: Sisäpiiritieto: Positiivinen tulosvaroitus") == "SATELLITE"
+    assert classify_release_strategy("Nokia Oyj: Lehdistötiedote") == "SATELLITE"

@@ -16,7 +16,7 @@ from screener.main_controller import ScreenerPipelineController
 
 
 def test_nlp_cash_flow_issues_detection():
-    analyzer = FinancialNLPAnalyzer(api_key=None)  # Rule-based fallback
+    analyzer = FinancialNLPAnalyzer(api_key="")  # Rule-based fallback
 
     # 1. Distressed cash release
     distressed_item = FeedItem(
@@ -46,7 +46,7 @@ def test_nlp_cash_flow_issues_detection():
 
 
 def test_nlp_management_transactions_detection():
-    analyzer = FinancialNLPAnalyzer(api_key=None)
+    analyzer = FinancialNLPAnalyzer(api_key="")
 
     # Buy transaction
     buy_item = FeedItem(
@@ -80,7 +80,7 @@ def test_nlp_management_transactions_detection():
 
 
 def test_nlp_positive_profit_warning():
-    analyzer = FinancialNLPAnalyzer(api_key=None)
+    analyzer = FinancialNLPAnalyzer(api_key="")
 
     pw_item = FeedItem(
         guid="rel-pw",
@@ -138,12 +138,17 @@ def test_quant_risk_engine_filters(monkeypatch):
     assert cand_good.passed_filters is True
 
 
-def test_pipeline_controller_cycle(tmp_path, monkeypatch):
+def test_pipeline_controller_satellite_cycle(tmp_path, monkeypatch):
     db_file = tmp_path / "test_screener.db"
     csv_file = tmp_path / "alerts.csv"
 
     cfg = ScreenerConfig(db_path=db_file)
-    controller = ScreenerPipelineController(config=cfg, alerts_csv_path=csv_file)
+    controller = ScreenerPipelineController(
+        config=cfg,
+        alerts_csv_path=csv_file,
+        openrouter_api_key="",
+        enforce_universe=False,
+    )
 
     mock_release = FeedItem(
         guid="mock-item-1",
@@ -157,7 +162,6 @@ def test_pipeline_controller_cycle(tmp_path, monkeypatch):
         html_text="Faron nostaa ohjeistustaan. Rahat ja pankkisaamiset ovat 25 MEUR."
     )
 
-    # Mock fetch_latest_releases and document parsing
     monkeypatch.setattr("screener.main_controller.fetch_latest_releases", lambda config: [mock_release])
     monkeypatch.setattr(controller.scraper, "fetch_and_parse_document", lambda url: mock_doc)
     monkeypatch.setattr(
@@ -178,13 +182,89 @@ def test_pipeline_controller_cycle(tmp_path, monkeypatch):
     candidates = controller.run_pipeline_cycle()
 
     assert len(candidates) == 1
+    assert candidates[0]["strategy_type"] == "SATELLITE"
     assert candidates[0]["positive_guidance"] is True
     assert candidates[0]["spread_pct"] == 1.25
+    assert candidates[0]["kelly_fraction"] is not None
     assert csv_file.exists()
 
     # Second run should skip already processed release
     candidates_second_run = controller.run_pipeline_cycle()
     assert len(candidates_second_run) == 0
+
+
+def test_pipeline_controller_core_tenbagger_cycle(tmp_path, monkeypatch):
+    db_file = tmp_path / "test_screener_core.db"
+    csv_file = tmp_path / "alerts_core.csv"
+
+    cfg = ScreenerConfig(db_path=db_file)
+    controller = ScreenerPipelineController(
+        config=cfg,
+        alerts_csv_path=csv_file,
+        total_portfolio_eur=10000.0,
+        openrouter_api_key="",
+        enforce_universe=False,
+    )
+
+    mock_release = FeedItem(
+        guid="mock-core-1",
+        title="SaaS Growth Oyj: Osavuosikatsaus Q3 2026",
+        link="https://mock.com/core1",
+        company_name="SaaS Growth Oyj",
+        ticker="SAAS",
+        category="Osavuosikatsaus"
+    )
+    mock_doc = DocumentPayload(
+        url="https://mock.com/core1",
+        html_text="SaaS Growth Oyj: Liikevaihdon kasvu 35%. Myyntikate 68%. Jatkuvalaskutteinen toistuva liikevaihto 85%. Liikevoitto-% 12%. Kassavarat 15 MEUR.",
+        pdf_urls=["https://mock.com/core1.pdf"]
+    )
+
+    monkeypatch.setattr("screener.main_controller.fetch_latest_releases", lambda config: [mock_release])
+    monkeypatch.setattr(controller.scraper, "fetch_and_parse_document", lambda url: mock_doc)
+    monkeypatch.setattr(
+        "screener.main_controller.check_liquidity_and_spread",
+        lambda ticker, **kwargs: {
+            "passed_spread_check": True,
+            "spread_pct": 0.85,
+            "bid": 5.10,
+            "ask": 5.14,
+            "volume": 25000,
+            "total_friction_pct": 1.55,
+            "commission_round_trip_eur": 14.0,
+            "min_recommended_trade_eur": 500.0,
+            "reason": "Passed liquidity and spread checks",
+        }
+    )
+
+    candidates = controller.run_pipeline_cycle()
+
+    assert len(candidates) == 1
+    cand = candidates[0]
+    assert cand["strategy_type"] == "CORE"
+    assert "CORE_10BAGGER_QUALITY" in cand["signals"]
+    # Core pool is 75% of 10000 = 7500 EUR, 15% equal weight = 1125 EUR
+    assert cand["recommended_allocation_eur"] == 1125.0
+    assert cand["kelly_fraction"] is None
+    assert csv_file.exists()
+
+
+def test_capital_sizing_calculations():
+    cfg = ScreenerConfig()
+    controller = ScreenerPipelineController(config=cfg, total_portfolio_eur=10000.0)
+
+    # 1. Core Sizing (75% pool)
+    core_sizing = controller.calculate_sizing("CORE", "QTCOM")
+    assert core_sizing["capital_pool_eur"] == 7500.0
+    assert core_sizing["recommended_allocation_eur"] == 1125.0
+    assert core_sizing["kelly_fraction"] is None
+
+    # 2. Satellite Sizing (25% pool)
+    sat_sizing = controller.calculate_sizing("SATELLITE", "FARON")
+    assert sat_sizing["capital_pool_eur"] == 2500.0
+    assert sat_sizing["kelly_fraction"] == 0.18
+    # 2500 * 0.18 = 450 -> max(500, 450) = 500
+    assert sat_sizing["recommended_allocation_eur"] == 500.0
 
 
 def test_check_liquidity_and_spread_filters(monkeypatch):
@@ -247,7 +327,6 @@ def test_check_liquidity_and_spread_filters(monkeypatch):
     assert "Market closed" in res_closed["reason"]
 
     # 5. Nordnet Small Investor Total Friction Rejection
-    # Spread 3.80% (under 4.0% limit), but with round trip commission of 14 EUR on 500 EUR (2.80%), total friction is 6.60% > 5.5% limit
     class MockTickerMarginalSpread:
         info = {
             "bid": 9.62,

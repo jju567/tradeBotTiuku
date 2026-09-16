@@ -308,3 +308,205 @@ class EmailClient:
             logger.error(f"❌ Failed to send urgent alert email: {e}")
             return False
 
+    def send_screener_alert_email(
+        self,
+        pipeline_type: str,
+        ticker: str,
+        company_name: str,
+        analysis_summary: Dict[str, Any],
+    ) -> bool:
+        """
+        Sends a cleanly formatted trade alert email for Core or Satellite signals.
+        """
+        if not self.is_configured():
+            logger.warning("SMTP email configuration incomplete (check SMTP_SERVER, EMAIL_TO). Skipping screener alert email.")
+            return False
+
+        pipe = pipeline_type.upper().strip()
+        signal_title = analysis_summary.get("signal_title")
+        if not signal_title:
+            signal_title = "Value Setup" if pipe == "CORE" else "Strong Buy"
+
+        # 1. Subject Line
+        # E.g. [SATELLITE ALERT] Strong Buy: RAUTE.HE or [CORE ALERT] Value Setup: KEMIRA.HE
+        subject = f"[{pipe} ALERT] {signal_title}: {ticker}"
+
+        # 2. Extract Data
+        reasoning = analysis_summary.get("reasoning", "")
+        signals = analysis_summary.get("signals", "")
+        allocation_eur = analysis_summary.get("recommended_allocation_eur")
+        sizing_model = analysis_summary.get("sizing_model", "")
+        spread_pct = analysis_summary.get("spread_pct")
+        bid = analysis_summary.get("bid")
+        ask = analysis_summary.get("ask")
+        volume = analysis_summary.get("volume")
+        total_friction_pct = analysis_summary.get("total_friction_pct")
+        min_trade = analysis_summary.get("min_recommended_trade_eur")
+        link = analysis_summary.get("link", "")
+        title = analysis_summary.get("title", "")
+
+        # Strategy specific fields
+        gm_pct = analysis_summary.get("gross_margin_pct")
+        recurring_rev = analysis_summary.get("recurring_revenue")
+        r40_score = analysis_summary.get("rule_of_40_score")
+        insider_buying = analysis_summary.get("insider_buying_personal", analysis_summary.get("management_buying"))
+        pos_guidance = analysis_summary.get("positive_guidance")
+
+        # Color palette
+        if pipe == "CORE":
+            badge_color = "#2563eb"
+            bg_gradient = "linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%)"
+            pipeline_label = "CORE STRATEGY (10-Bagger Fundamental Setup)"
+        else:
+            badge_color = "#059669"
+            bg_gradient = "linear-gradient(135deg, #064e3b 0%, #047857 100%)"
+            pipeline_label = "SATELLITE STRATEGY (Daily Catalyst Hunting)"
+
+        # 3. Plain Text Body
+        plain_lines = [
+            f"=== [{pipe} ALERT] {signal_title}: {ticker} ===",
+            f"Company:      {company_name}",
+            f"Pipeline:     {pipeline_label}",
+            f"Signals:      {signals or signal_title}",
+            "",
+            "--- LLM REASONING & ANALYSIS ---",
+            f"{reasoning or 'Ei lisäperusteluja.'}",
+            "",
+            "--- TRADE SPECIFICATIONS ---",
+        ]
+        if allocation_eur is not None:
+            plain_lines.append(f"Position Size: {allocation_eur:,.0f} EUR ({sizing_model})")
+        if spread_pct is not None:
+            plain_lines.append(f"Spread:        {spread_pct:.2f}% (Bid: {bid} / Ask: {ask})")
+        if total_friction_pct is not None:
+            plain_lines.append(f"Total Friction: {total_friction_pct:.2f}%")
+        if min_trade is not None:
+            plain_lines.append(f"Min. Trade:    {min_trade:,.0f} EUR")
+        if title:
+            plain_lines.append(f"Disclosure:    {title}")
+        if link:
+            plain_lines.append(f"Source Link:   {link}")
+
+        plain_text = "\n".join(plain_lines)
+
+        # 4. HTML Table of Metrics
+        metrics_rows = []
+        if pipe == "CORE":
+            if gm_pct is not None:
+                metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Myyntikate (Gross Margin):</td><td style='padding: 8px 12px;'>{gm_pct:.1f}%</td></tr>")
+            if recurring_rev is not None:
+                metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Toistuva liikevaihto (SaaS/ARR):</td><td style='padding: 8px 12px;'>{'Kyllä' if recurring_rev else 'Ei'}</td></tr>")
+            if r40_score is not None:
+                metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Rule of 40:</td><td style='padding: 8px 12px;'>{r40_score:.1f}%</td></tr>")
+        else:
+            if insider_buying is not None:
+                metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Sisäpiirin henkilökohtainen osto:</td><td style='padding: 8px 12px;'>{'Kyllä' if insider_buying else 'Ei'}</td></tr>")
+            if pos_guidance is not None:
+                metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Positiivinen tulosvaroitus:</td><td style='padding: 8px 12px;'>{'Kyllä' if pos_guidance else 'Ei'}</td></tr>")
+
+        if allocation_eur is not None:
+            metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Suositeltu positio:</td><td style='padding: 8px 12px;'><strong>{allocation_eur:,.0f} EUR</strong> ({sizing_model})</td></tr>")
+        if spread_pct is not None:
+            metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Spread & Volyymi:</td><td style='padding: 8px 12px;'>{spread_pct:.2f}% (Vol: {volume or 'N/A'})</td></tr>")
+        if total_friction_pct is not None:
+            metrics_rows.append(f"<tr><td style='padding: 8px 12px; font-weight: bold;'>Kaupankäynnin kokonaiskitka:</td><td style='padding: 8px 12px;'>{total_friction_pct:.2f}% (Min. suositus >= {min_trade or 500:,.0f} EUR)</td></tr>")
+
+        metrics_table_html = "<table style='width: 100%; border-collapse: collapse; margin-top: 10px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px;'>" + "".join(metrics_rows) + "</table>" if metrics_rows else ""
+
+        link_html = f"<p style='margin-top: 18px;'><a href='{link}' style='display: inline-block; background: {badge_color}; color: #ffffff; padding: 10px 18px; border-radius: 6px; text-decoration: none; font-weight: bold;'>🔗 Avaa Pörssitiedote</a></p>" if link else ""
+
+        body_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 650px; margin: 0 auto; padding: 20px; background-color: #f8fafc;">
+            <div style="background: {bg_gradient}; color: #ffffff; padding: 22px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+                <div style="font-size: 0.85rem; font-weight: bold; letter-spacing: 0.05em; text-transform: uppercase; color: #cbd5e1; margin-bottom: 6px;">{pipeline_label}</div>
+                <h1 style="margin: 0; font-size: 1.6rem; color: #ffffff;">{company_name} <span style="background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 4px; font-size: 1.1rem; margin-left: 6px;">{ticker}</span></h1>
+            </div>
+
+            <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: #0f172a; border-bottom: 2px solid #f1f5f9; padding-bottom: 8px;">🎯 Signaali & Kaupankäyntiparametrit</h3>
+                <p style="margin: 6px 0;"><strong>Signaali:</strong> <span style="color: {badge_color}; font-weight: bold;">{signals or signal_title}</span></p>
+                {metrics_table_html}
+            </div>
+
+            <div style="background: #ffffff; border-left: 4px solid {badge_color}; border: 1px solid #e2e8f0; border-left-width: 5px; border-radius: 8px; padding: 18px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: #0f172a;">🧠 LLM Analyysi & Pedagoginen Perustelu</h3>
+                <p style="margin: 0; font-size: 0.95rem; color: #334155; line-height: 1.6; white-space: pre-line;">{reasoning or 'Ei lisäperusteluja saatavilla.'}</p>
+            </div>
+
+            {link_html}
+
+            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 30px; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 15px;">
+                tradeBotTiuku Screener • Dual-Pipeline Core & Satellite System
+            </p>
+        </body>
+        </html>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = self.email_from or self.username or "tiuku@local"
+        msg["To"] = self.email_to
+
+        msg.attach(MIMEText(plain_text, "plain", "utf-8"))
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+        try:
+            logger.info(f"Sending [{pipe} ALERT] email for {ticker} to {self.email_to}...")
+            if self.smtp_port == 465:
+                server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, timeout=30)
+            else:
+                server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
+                if self.smtp_port == 587:
+                    try:
+                        server.starttls()
+                    except Exception as e:
+                        logger.warning(f"STARTTLS warning: {e}")
+
+            pwd_lower = str(self.password).lower()
+            if self.username and self.password and "syötä-tähän" not in pwd_lower and "your-" not in pwd_lower:
+                try:
+                    server.login(self.username, self.password)
+                except Exception as e:
+                    logger.warning(f"SMTP login skipped or failed: {e}")
+
+            server.sendmail(self.email_from or self.username, [self.email_to], msg.as_string())
+            server.quit()
+            logger.info(f"✅ [{pipe} ALERT] email successfully sent for {ticker} to {self.email_to}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to send screener alert email for {ticker}: {e}")
+            return False
+
+
+def send_alert(
+    pipeline_type: str,
+    ticker: str,
+    company_name: str,
+    analysis_summary: Dict[str, Any],
+    email_client: Optional[EmailClient] = None,
+) -> bool:
+    """
+    Convenience function to send a formatted trade alert email.
+
+    Parameters:
+        pipeline_type (str): 'SATELLITE' or 'CORE' (case-insensitive).
+        ticker (str): Equity ticker (e.g., 'RAUTE.HE', 'KEMIRA.HE').
+        company_name (str): Company name (e.g., 'Raute Oyj').
+        analysis_summary (dict): LLM evaluation dictionary with reasoning, signals, metrics, etc.
+        email_client (EmailClient, optional): Custom EmailClient instance if provided.
+
+    Returns:
+        bool: True if email was successfully sent, False otherwise.
+    """
+    client = email_client or EmailClient()
+    return client.send_screener_alert_email(
+        pipeline_type=pipeline_type,
+        ticker=ticker,
+        company_name=company_name,
+        analysis_summary=analysis_summary,
+    )
+
+

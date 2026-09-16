@@ -18,6 +18,11 @@ class ProcessingStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class StrategyType(str, Enum):
+    CORE = "CORE"
+    SATELLITE = "SATELLITE"
+
+
 @dataclass
 class FeedItem:
     """Represents an individual item parsed from an RSS feed."""
@@ -60,6 +65,7 @@ class ScrapedRelease:
     feed_item: FeedItem
     document: DocumentPayload
     status: ProcessingStatus = ProcessingStatus.PARSED
+    strategy_type: StrategyType = StrategyType.SATELLITE
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     @property
@@ -73,19 +79,33 @@ class NLPExtractionResult:
     release_id: str
     ticker: Optional[str] = None
     company_name: Optional[str] = None
+    strategy_type: str = "SATELLITE"
     
-    # 1. Cash flow issues or need for new funding
+    # 1. Cash flow issues or need for new funding (Risk screen - always evaluated first!)
     has_cash_flow_issues: bool = False
     funding_need_explanation: str = ""
     
-    # 2. Management buying/selling shares (MAR Art 19 / Insider transactions)
+    # 2. Satellite Catalyst Signals: Management buying / Positive guidance / Share buyback
     has_management_transactions: bool = False
     transaction_direction: Optional[str] = None  # "BUY", "SELL", "NONE"
     transaction_details: str = ""
-    
-    # 3. Positive profit warning / guidance upgrade
+    is_company_buyback: bool = False
     is_positive_profit_warning: bool = False
     guidance_change_summary: str = ""
+    
+    # 3. Core Fundamental 10-Bagger Signals (Quarterly / Annual Reports)
+    gross_margin_pct: Optional[float] = None
+    gross_margin_above_40: bool = False
+    recurring_revenue: bool = False
+    recurring_revenue_details: str = ""
+    revenue_growth_pct: Optional[float] = None
+    operating_margin_pct: Optional[float] = None
+    rule_of_40_score: Optional[float] = None
+    rule_of_40_passed: bool = False
+    core_quality_passed: bool = False
+
+    # 4. Educational step-by-step reasoning / rationale (Tämä yhtiö nousi listalle koska...)
+    educational_rationale: str = ""
     
     confidence_score: float = 1.0
     raw_llm_response: Optional[str] = None
@@ -96,6 +116,7 @@ class ScreeningCandidate:
     """Complete evaluated candidate that passes or fails quant risk filters."""
     release: ScrapedRelease
     nlp_result: NLPExtractionResult
+    strategy_type: str = "SATELLITE"
     
     # Quantitative Risk Metrics
     cash_runway_months: Optional[float] = None
@@ -103,6 +124,10 @@ class ScreeningCandidate:
     current_cash_eur: Optional[float] = None
     quarterly_burn_rate_eur: Optional[float] = None
     latest_price_eur: Optional[float] = None
+    
+    # Capital allocation & sizing
+    recommended_allocation_eur: Optional[float] = None
+    kelly_fraction: Optional[float] = None
     
     passed_filters: bool = False
     rejection_reasons: List[str] = field(default_factory=list)
