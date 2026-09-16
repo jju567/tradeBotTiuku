@@ -28,21 +28,32 @@ ENV/
 
 # Sensitive Keys & Environment Configuration
 .env
+.env.*
+!.env.example
 data/nordnet_ed25519*
 *.pem
 *.key
+*.cert
+*.crt
+*.pfx
 
 # Logs & Temporary Data
 logs/*
 !logs/.gitkeep
 data/*
 !data/.gitkeep
-tradebot.db
+!data/nordnet_universe.csv
+*.db
+*.sqlite
+*.sqlite3
 *.html
 reports/*.html
 reports/*.md
 !reports/.gitkeep
 tiuku_portfolio.json
+data/open_positions.csv
+data/screener_alerts.csv
+data/trade_history.csv
 
 # Testing & Coverage
 .coverage
