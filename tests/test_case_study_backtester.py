@@ -63,6 +63,16 @@ def test_rule_based_core_analysis_loser(temp_case_study_dirs):
     assert res["cash_or_debt_issues"] is True
     assert res["verdict"] == "REJECT"
 
+    dilution_text = """
+    PMGC Holdings / ELAB 10-Q report.
+    Company executed 1-for-25 reverse stock split to maintain Nasdaq listing.
+    Continuous dilution via death spiral convertible debt.
+    """
+    res_d = tester.rule_based_core_analysis(dilution_text)
+    assert res_d["dilution_risk_detected"] is True
+    assert res_d["cash_or_debt_issues"] is True
+    assert res_d["verdict"] == "REJECT"
+
 
 def test_extract_json_response(temp_case_study_dirs):
     reports_dir, results_csv = temp_case_study_dirs

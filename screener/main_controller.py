@@ -76,6 +76,7 @@ from screener.nlp_analyzer import (
 )
 from screener.quant_engine import QuantitativeRiskEngine, check_liquidity_and_spread
 from screener.exit_manager import ExitManager
+from screener.web_verifier import WebSearchVerifier
 from clients.email_client import EmailClient, send_alert, send_sell_alert
 
 # Logging configuration
@@ -255,6 +256,7 @@ class ScreenerPipelineController:
         # 4. Initialize Core Components
         self.scraper = NasdaqHelsinkiScraper(self.config)
         self.quant_engine = QuantitativeRiskEngine(self.config)
+        self.web_verifier = WebSearchVerifier(api_key=self.api_key)
         self.exit_manager = ExitManager(
             open_positions_path=self.open_positions_path,
             trade_history_path=self.trade_history_path,
@@ -439,9 +441,24 @@ class ScreenerPipelineController:
                 continue
 
             # Risk Screen Gatekeeper
-            cash_issue = signals.get("cash_issue", False)
-            if cash_issue:
-                logger.info(f"[-] Rejected by Risk Screen (Cash/Distress Risk): {title[:60]}")
+            safety = signals.get("financial_safety", {})
+            going_concern = safety.get("going_concern_risk", signals.get("cash_issue", False))
+            dilution_risk = safety.get("dilution_risk_detected", False)
+            unsustainable_cash_burn = safety.get("unsustainable_cash_burn", False)
+            erratic_pivots = safety.get("erratic_pivots_detected", False)
+            safety_failed = going_concern or dilution_risk or unsustainable_cash_burn or erratic_pivots or signals.get("cash_issue", False)
+
+            if safety_failed:
+                reasons = []
+                if going_concern or signals.get("cash_issue", False):
+                    reasons.append("Going Concern / Cash Distress")
+                if dilution_risk:
+                    reasons.append("Dilution / Reverse Split")
+                if unsustainable_cash_burn:
+                    reasons.append("Unsustainable Cash Burn (< 12m runway)")
+                if erratic_pivots:
+                    reasons.append("Erratic Strategic Pivots")
+                logger.info(f"[-] Rejected by Risk Screen ({', '.join(reasons)}): {title[:60]}")
                 if not dry_run:
                     mark_as_processed(article_id, title, pub_date, self.config.db_path)
                 continue
@@ -480,9 +497,20 @@ class ScreenerPipelineController:
                     is_candidate = True
                     logger.info(f"[+] [CORE {profile_str} CANDIDATE] {title}")
 
-            # Step D: Quant Filter & Sizing
+            # Step D: Web Search Sanity Check & Quant Filter
             if is_candidate:
                 ticker = release.ticker
+
+                # Step D1: Web Search Verification (Reverse splits, dilution, regulatory red flags)
+                if ticker:
+                    web_res = self.web_verifier.verify(ticker=ticker, company_name=release.company_name or "")
+                    if not web_res.get("passed_web_check", True):
+                        reason = web_res.get("reason", "Failed web sanity check")
+                        logger.info(f"[-] Rejected by Web Sanity Check ({ticker}): {reason}")
+                        if not dry_run:
+                            mark_as_processed(article_id, title, pub_date, self.config.db_path)
+                        continue
+
                 spread_pct = None
                 bid = None
                 ask = None
@@ -552,7 +580,7 @@ class ScreenerPipelineController:
                     "positive_guidance": signals.get("positive_guidance", False),
                     "insider_buying_personal": signals.get("insider_buying_personal", False),
                     "company_share_buyback": signals.get("company_share_buyback", False),
-                    "cash_issue": cash_issue,
+                    "cash_issue": safety_failed,
                 }
                 candidates_found.append(candidate)
 

@@ -139,6 +139,59 @@ def test_analyze_core_fundamentals_openrouter(mock_post):
     assert res["core_quality_passed"] is True
 
 
+@patch("screener.nlp_analyzer.requests.post")
+def test_analyze_core_fundamentals_dilution_and_cash_burn_rejection(mock_post):
+    # Test that even if LLM claimed STRONG BUY, dilution_risk_detected or unsustainable_cash_burn forces REJECT
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({
+                        "profile_A_growth": {
+                            "gross_margin_over_40": True,
+                            "rule_of_40_passed": True,
+                            "recurring_revenue_mentioned": True,
+                            "organic_growth_confirmed": False,
+                        },
+                        "profile_B_value": {
+                            "strong_net_cash_position": False,
+                            "positive_operating_cash_flow": False,
+                            "turnaround_indicators": False,
+                        },
+                        "financial_safety": {
+                            "going_concern_risk": False,
+                            "dilution_risk_detected": True,
+                            "unsustainable_cash_burn": True,
+                            "erratic_pivots_detected": False,
+                        },
+                        "verdict_details": {
+                            "matched_profile": "GROWTH",
+                            "verdict": "STRONG BUY",
+                            "reasoning": "High margin on paper but severe dilution and cash burn."
+                        }
+                    })
+                }
+            }
+        ]
+    }
+    mock_resp.raise_for_status.return_value = None
+    mock_post.return_value = mock_resp
+
+    res = analyze_core_fundamentals(
+        text_content="10-Q filing: 1-for-20 reverse stock split completed, operating cash burn will exhaust cash in 2 quarters.",
+        api_key="mock-openrouter-key",
+        throttle_sleep_seconds=0.0,
+    )
+
+    assert res["financial_safety"]["dilution_risk_detected"] is True
+    assert res["financial_safety"]["unsustainable_cash_burn"] is True
+    assert res["verdict_details"]["matched_profile"] == "NONE"
+    assert res["verdict_details"]["verdict"] == "REJECT"
+    assert res["core_quality_passed"] is False
+
+
 def test_classify_release_strategy_router():
     assert classify_release_strategy("Faron Oy: Osavuosikatsaus Q3 2026") == "CORE"
     assert classify_release_strategy("Kamux Oyj: Tilinpäätöstiedote 2025") == "CORE"

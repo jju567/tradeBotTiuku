@@ -51,7 +51,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("screener.sec_crawler")
 
-BASE_DIR = Path(__file__).resolve().parent
+_current_dir = Path(__file__).resolve().parent
+BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_dir
 DEFAULT_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_global_universe.csv"
 FALLBACK_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_universe.csv"
 DEFAULT_US_REPORTS_DIR = BASE_DIR / "data" / "historical_reports" / "us"

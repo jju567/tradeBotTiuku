@@ -67,20 +67,25 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_DELAYS = [5.0, 10.0, 20.0]
 
 # Specialized Core Case Study System Prompt
-CASE_STUDY_CORE_SYSTEM_PROMPT = """You are an expert quantitative equity analyst evaluating Nordic micro-cap companies for long-term "Core Tenbagger" potential based on historical earnings reports.
+CASE_STUDY_CORE_SYSTEM_PROMPT = """You are an expert quantitative equity analyst evaluating Nordic and US micro-cap companies for long-term "Core Tenbagger" potential based on historical earnings reports.
 Evaluate the company simultaneously through two distinct investment lenses:
 - Profile A: "High-Margin Growth"
 - Profile B: "Deep Value / Turnaround"
 
 EVALUATION CRITERIA & RULES:
 
-1. FINANCIAL SAFETY (Absolute Gatekeeper):
-   - "going_concern_risk": Set to TRUE if there is evidence of negative equity, going concern uncertainty ('toiminnan jatkuvuus'), severe liquidity shortage (< 12m runway), covenant breaches, or emergency dilutive bridge financing. If TRUE, verdict MUST be "REJECT" and matched_profile: "NONE".
+1. FINANCIAL SAFETY (Absolute Mandatory Gatekeeper - Instant REJECT if ANY are True):
+   - "going_concern_risk": Set to TRUE if there is evidence of negative equity, going concern uncertainty ('toiminnan jatkuvuus'), severe liquidity shortage (< 12m runway), covenant breaches, or emergency dilutive bridge financing.
+   - "dilution_risk_detected": Set to TRUE if there are mentions of "reverse stock split" / share consolidation ('käänteinen split', 'osakkeiden yhdistäminen'), continuous massive dilutive share issuances, death-spiral convertible notes, or toxic equity lines destroying shareholder value.
+   - "unsustainable_cash_burn": Set to TRUE if the company has negative operating cash flow and its existing cash balance will be entirely consumed within less than 4 quarters (12 months runway) without near-term breakeven or non-dilutive financing.
+   - "erratic_pivots_detected": Set to TRUE if the company has opportunistically changed its core business model across unrelated industries (e.g., from beverages/skincare to crypto/blockchain/AI/mining/drones/shells).
+   * MANDATORY ENFORCEMENT: If ANY of going_concern_risk, dilution_risk_detected, unsustainable_cash_burn, or erratic_pivots_detected is TRUE, verdict MUST be "REJECT" and matched_profile MUST be "NONE".
 
 2. PROFILE A (High-Margin Growth):
    - "gross_margin_over_40": Set to TRUE if Gross Margin ('myyntikate' / 'bruttokate') > 40.0%, or if high-margin software/scalable IP business with low COGS.
    - "rule_of_40_passed": Set to TRUE if (Revenue Growth YoY % + Operating Profit Margin / EBIT %) >= 40.0%.
    - "recurring_revenue_mentioned": Set to TRUE if SaaS, subscription models, ARR, recurring maintenance, or long-term software licensing ('toistuva liikevaihto', 'jatkuvalaskutteinen').
+   - "organic_growth_confirmed": Set to TRUE if revenue growth is driven by core organic product/customer traction rather than artificial shell acquisitions or one-time accounting gains.
 
 3. PROFILE B (Deep Value / Turnaround):
    - "strong_net_cash_position": Set to TRUE if company has significant cash reserves and minimal/zero debt (net cash positive balance sheet).
@@ -88,10 +93,10 @@ EVALUATION CRITERIA & RULES:
    - "turnaround_indicators": Set to TRUE if significant cost cuts, restructuring taking effect, sequential margin expansion, or returning to profitability.
 
 4. VERDICT DETAILS:
-   - "matched_profile": "GROWTH" if meets Profile A; "VALUE" if meets Profile B; "NONE" if neither.
-   - "verdict": "STRONG BUY" if matched_profile is "GROWTH" or "VALUE" and going_concern_risk is FALSE.
+   - "matched_profile": "GROWTH" if meets Profile A; "VALUE" if meets Profile B; "NONE" if neither or fails financial safety.
+   - "verdict": "STRONG BUY" if matched_profile is "GROWTH" or "VALUE" and all financial_safety flags are FALSE.
                "HOLD" if viable but incomplete criteria.
-               "REJECT" if going_concern_risk is TRUE or weak fundamentals.
+               "REJECT" if ANY financial_safety flag is TRUE or weak fundamentals.
    - "reasoning": Concise 2-sentence summary explaining the decision and key drivers/risks in Finnish or English.
 
 OUTPUT FORMAT:
@@ -100,7 +105,8 @@ Output strictly a valid JSON object with no markdown fences or preamble:
   "profile_A_growth": {
     "gross_margin_over_40": bool,
     "rule_of_40_passed": bool,
-    "recurring_revenue_mentioned": bool
+    "recurring_revenue_mentioned": bool,
+    "organic_growth_confirmed": bool
   },
   "profile_B_value": {
     "strong_net_cash_position": bool,
@@ -108,7 +114,10 @@ Output strictly a valid JSON object with no markdown fences or preamble:
     "turnaround_indicators": bool
   },
   "financial_safety": {
-    "going_concern_risk": bool
+    "going_concern_risk": bool,
+    "dilution_risk_detected": bool,
+    "unsustainable_cash_burn": bool,
+    "erratic_pivots_detected": bool
   },
   "verdict_details": {
     "matched_profile": "GROWTH" | "VALUE" | "NONE",
@@ -133,6 +142,10 @@ class CaseStudyResult:
     turnaround_indicators: bool
     going_concern_risk: bool
     reasoning: str
+    dilution_risk_detected: bool = False
+    unsustainable_cash_burn: bool = False
+    erratic_pivots_detected: bool = False
+    organic_growth_confirmed: bool = True
     # Backwards compatibility alias
     cash_or_debt_issues: bool = False
 
@@ -337,21 +350,27 @@ class CaseStudyBacktester:
         gm_over_40 = bool(prof_a.get("gross_margin_over_40", data.get("gross_margin_over_40", False)))
         r40_passed = bool(prof_a.get("rule_of_40_passed", data.get("rule_of_40_passed", False)))
         recurring = bool(prof_a.get("recurring_revenue_mentioned", data.get("recurring_revenue_mentioned", False)))
+        organic_growth = bool(prof_a.get("organic_growth_confirmed", True))
 
         net_cash = bool(prof_b.get("strong_net_cash_position", False))
         pos_ocf = bool(prof_b.get("positive_operating_cash_flow", False))
         turnaround = bool(prof_b.get("turnaround_indicators", False))
 
         going_concern = bool(safety.get("going_concern_risk", data.get("cash_or_debt_issues", False)))
+        dilution_risk = bool(safety.get("dilution_risk_detected", False))
+        unsustainable_cash_burn = bool(safety.get("unsustainable_cash_burn", False))
+        erratic_pivots = bool(safety.get("erratic_pivots_detected", False))
+
+        safety_failed = going_concern or dilution_risk or unsustainable_cash_burn or erratic_pivots
 
         matched_profile = str(verdict_info.get("matched_profile", data.get("matched_profile", ""))).strip().upper()
         verdict = str(verdict_info.get("verdict", data.get("verdict", ""))).strip().upper()
 
-        if going_concern:
+        if safety_failed:
             matched_profile = "NONE"
             verdict = "REJECT"
         elif matched_profile not in ("GROWTH", "VALUE", "NONE"):
-            if gm_over_40 and r40_passed and recurring:
+            if gm_over_40 and r40_passed and recurring and organic_growth:
                 matched_profile = "GROWTH"
                 verdict = "STRONG BUY"
             elif net_cash and pos_ocf and turnaround:
@@ -361,12 +380,14 @@ class CaseStudyBacktester:
                 matched_profile = "NONE"
                 verdict = "HOLD"
 
-        if verdict not in ("STRONG BUY", "HOLD", "REJECT"):
+        if safety_failed:
+            verdict = "REJECT"
+        elif verdict not in ("STRONG BUY", "HOLD", "REJECT"):
             verdict = "STRONG BUY" if matched_profile in ("GROWTH", "VALUE") else "HOLD"
 
         reasoning = str(verdict_info.get("reasoning", data.get("reasoning", ""))).strip()
         if not reasoning:
-            reasoning = f"Verdict {verdict} ({matched_profile}): GM>40%={gm_over_40}, R40={r40_passed}, Recur={recurring}, NetCash={net_cash}, PosOCF={pos_ocf}, Turnaround={turnaround}, Risk={going_concern}."
+            reasoning = f"Verdict {verdict} ({matched_profile}): GM>40%={gm_over_40}, R40={r40_passed}, Recur={recurring}, NetCash={net_cash}, PosOCF={pos_ocf}, Turnaround={turnaround}, Risk={safety_failed}."
 
         return {
             "matched_profile": matched_profile,
@@ -374,11 +395,15 @@ class CaseStudyBacktester:
             "gross_margin_over_40": gm_over_40,
             "rule_of_40_passed": r40_passed,
             "recurring_revenue_mentioned": recurring,
+            "organic_growth_confirmed": organic_growth,
             "strong_net_cash_position": net_cash,
             "positive_operating_cash_flow": pos_ocf,
             "turnaround_indicators": turnaround,
             "going_concern_risk": going_concern,
-            "cash_or_debt_issues": going_concern,
+            "dilution_risk_detected": dilution_risk,
+            "unsustainable_cash_burn": unsustainable_cash_burn,
+            "erratic_pivots_detected": erratic_pivots,
+            "cash_or_debt_issues": safety_failed,
             "reasoning": reasoning,
         }
 
@@ -394,6 +419,32 @@ class CaseStudyBacktester:
                 r"kovenanttirikko", r"covenant breach", r"tarvitsee lisärahoitusta"
             ]
         )
+
+        dilution_risk = any(
+            re.search(pat, lower) for pat in [
+                r"reverse stock split", r"reverse split", r"share consolidation",
+                r"osakkeiden yhdistäminen", r"käänteinen split", r"continuous dilution",
+                r"death spiral",
+            ]
+        )
+
+        unsustainable_cash_burn = any(
+            re.search(pat, lower) for pat in [
+                r"kassavarat eivät riitä 12", r"cash runway (?:of )?less than",
+                r"runway is less than 12", r"depleted within 12 months",
+                r"depleted within 4 quarters",
+            ]
+        )
+
+        erratic_pivots = any(
+            re.search(pat, lower) for pat in [
+                r"pivot to crypto", r"pivot to ai", r"pivot to blockchain",
+                r"pivot to bitcoin", r"changed business model to crypto",
+                r"reverse merger with",
+            ]
+        )
+
+        safety_failed = going_concern or dilution_risk or unsustainable_cash_burn or erratic_pivots
 
         # Profile A (Growth)
         recurring = any(
@@ -435,10 +486,10 @@ class CaseStudyBacktester:
             ]
         )
 
-        if going_concern:
+        if safety_failed:
             matched_profile = "NONE"
             verdict = "REJECT"
-            reasoning = "Yhtiö hylättiin vakavien maksuvalmius-, velkaantumis- tai toiminnan jatkuvuuden riskien vuoksi."
+            reasoning = "Yhtiö hylättiin vakavien maksuvalmius-, diluutio-, kassapoltto- tai toiminnan jatkuvuuden riskien vuoksi."
         elif gm_over_40 and recurring and r40_passed:
             matched_profile = "GROWTH"
             verdict = "STRONG BUY"
@@ -458,11 +509,15 @@ class CaseStudyBacktester:
             "gross_margin_over_40": gm_over_40,
             "rule_of_40_passed": r40_passed,
             "recurring_revenue_mentioned": recurring,
+            "organic_growth_confirmed": True,
             "strong_net_cash_position": net_cash,
             "positive_operating_cash_flow": pos_ocf,
             "turnaround_indicators": turnaround,
             "going_concern_risk": going_concern,
-            "cash_or_debt_issues": going_concern,
+            "dilution_risk_detected": dilution_risk,
+            "unsustainable_cash_burn": unsustainable_cash_burn,
+            "erratic_pivots_detected": erratic_pivots,
+            "cash_or_debt_issues": safety_failed,
             "reasoning": reasoning,
         }
 
@@ -508,11 +563,15 @@ class CaseStudyBacktester:
                 gross_margin_over_40=eval_res["gross_margin_over_40"],
                 rule_of_40_passed=eval_res["rule_of_40_passed"],
                 recurring_revenue_mentioned=eval_res["recurring_revenue_mentioned"],
+                organic_growth_confirmed=eval_res.get("organic_growth_confirmed", True),
                 strong_net_cash_position=eval_res["strong_net_cash_position"],
                 positive_operating_cash_flow=eval_res["positive_operating_cash_flow"],
                 turnaround_indicators=eval_res["turnaround_indicators"],
                 going_concern_risk=eval_res["going_concern_risk"],
-                cash_or_debt_issues=eval_res["going_concern_risk"],
+                dilution_risk_detected=eval_res.get("dilution_risk_detected", False),
+                unsustainable_cash_burn=eval_res.get("unsustainable_cash_burn", False),
+                erratic_pivots_detected=eval_res.get("erratic_pivots_detected", False),
+                cash_or_debt_issues=eval_res.get("cash_or_debt_issues", eval_res["going_concern_risk"]),
                 reasoning=eval_res["reasoning"],
             )
             results.append(res_obj)
@@ -580,10 +639,14 @@ class CaseStudyBacktester:
             "gross_margin_over_40",
             "rule_of_40_passed",
             "recurring_revenue_mentioned",
+            "organic_growth_confirmed",
             "strong_net_cash_position",
             "positive_operating_cash_flow",
             "turnaround_indicators",
             "going_concern_risk",
+            "dilution_risk_detected",
+            "unsustainable_cash_burn",
+            "erratic_pivots_detected",
             "cash_or_debt_issues",
             "reasoning",
         ]

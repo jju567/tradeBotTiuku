@@ -60,6 +60,17 @@ def test_rule_based_fallback_evaluation():
     assert res_r["verdict_details"]["verdict"] == "REJECT"
     assert res_r["verdict_details"]["matched_profile"] == "NONE"
 
+    text_dilution = "Company executed a 1-for-50 reverse stock split and issued continuous dilution convertible notes."
+    res_d = rule_based_fallback_evaluation(text_dilution)
+    assert res_d["verdict_details"]["verdict"] == "REJECT"
+    assert res_d["verdict_details"]["matched_profile"] == "NONE"
+    assert res_d["financial_safety"]["dilution_risk_detected"] is True
+
+    text_burn = "Company reported cash runway of less than 6 months, cash depleted within 4 quarters."
+    res_b = rule_based_fallback_evaluation(text_burn)
+    assert res_b["verdict_details"]["verdict"] == "REJECT"
+    assert res_b["financial_safety"]["unsustainable_cash_burn"] is True
+
 
 def test_batch_processor_statefulness_and_csv_append(tmp_path):
     reports_dir = tmp_path / "reports"
