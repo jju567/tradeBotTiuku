@@ -43,11 +43,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("screener.universe_builder")
 
-DEFAULT_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_universe.csv"
+DEFAULT_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_global_universe.csv"
+LEGACY_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_universe.csv"
 NORDNET_STOCKLIST_API_URL = "https://www.nordnet.fi/api/2/instrument_search/query/stocklist"
 
 # Micro-cap quantitative constraints
-DEFAULT_MAX_MARKET_CAP_EUR = 300_000_000.0  # 300M EUR upper threshold
+DEFAULT_MAX_MARKET_CAP_EUR = 300_000_000.0  # 300M EUR / ~$300M USD upper threshold
 
 # Approximate FX conversion rates to EUR (fallback if live rates unavailable)
 DEFAULT_FX_RATES_TO_EUR: Dict[str, float] = {
@@ -64,9 +65,10 @@ MARKET_YF_SUFFIXES: Dict[str, str] = {
     "SE": ".ST",   # Nasdaq OMX Stockholm / First North Sweden / Spotlight
     "DK": ".CO",   # Nasdaq OMX Copenhagen / First North Denmark
     "NO": ".OL",   # Oslo Børs / Euronext Growth Oslo
+    "US": "",      # US Equities (NASDAQ / NYSE / AMEX) have no suffix in yfinance
 }
 
-DEFAULT_COUNTRIES: Tuple[str, ...] = ("FI", "SE", "DK", "NO")
+DEFAULT_COUNTRIES: Tuple[str, ...] = ("FI", "SE", "DK", "NO", "US")
 
 # Anti-scraping browser spoofing headers
 DEFAULT_BROWSER_HEADERS: Dict[str, str] = {
@@ -362,7 +364,7 @@ def fetch_nordnet_universe(
 
 def main():
     """CLI entry point for running the Universe Builder."""
-    parser = argparse.ArgumentParser(description="Nordnet Nordic Tradable Micro-Cap Universe Builder")
+    parser = argparse.ArgumentParser(description="Nordnet Global (Nordic + US) Tradable Micro-Cap Universe Builder")
     parser.add_argument(
         "--max-cap",
         type=float,
@@ -372,14 +374,14 @@ def main():
     parser.add_argument(
         "--countries",
         nargs="+",
-        default=["FI", "SE", "DK", "NO"],
-        help="List of Nordic country codes to fetch (e.g. FI SE DK NO)",
+        default=["FI", "SE", "DK", "NO", "US"],
+        help="List of country codes to fetch (e.g. FI SE DK NO US)",
     )
     parser.add_argument(
         "--output",
         type=str,
         default=str(DEFAULT_UNIVERSE_CSV),
-        help="Target CSV output path (default: data/nordnet_universe.csv)",
+        help="Target CSV output path (default: data/nordnet_global_universe.csv)",
     )
     parser.add_argument(
         "--min-delay",

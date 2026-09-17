@@ -411,10 +411,10 @@ class BatchProcessor:
             writer.writerow([filename, ticker, year, quarter, matched_profile, verdict, reasoning])
 
     def run(self) -> None:
-        """Main execution loop over report files."""
+        """Main execution loop over report files (including subdirectories like 'us/')."""
         processed_set = self.load_processed_files()
         all_files = sorted(
-            [f for f in self.reports_dir.iterdir() if f.is_file() and f.suffix.lower() in (".pdf", ".txt")]
+            [f for f in self.reports_dir.rglob("*") if f.is_file() and f.suffix.lower() in (".pdf", ".txt")]
         )
         total_files = len(all_files)
 
