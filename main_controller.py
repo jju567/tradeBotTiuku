@@ -233,6 +233,26 @@ class PaperAccountManager:
         logger.info(f"🔄 Paper Account Reset: Starting Cash = ${self.cash_balance:,.2f} {self.currency}")
 
 
+KNOWN_ENTRY_PRICES: Dict[str, float] = {
+    "VIAFIN.HE": 19.80,
+    "SEDANA.ST": 10.54,
+    "MOB.ST": 10.60,
+    "MSAB-B.ST": 93.00,
+    "WATT": 11.73,
+    "OSS": 9.18,
+    "SSH1V.HE": 2.205,
+    "RAUTE.HE": 15.20,
+    "STIL.ST": 241.50,
+    "SEZI.ST": 2.87,
+    "VUZI": 2.76,
+    "DUOT": 8.54,
+    "HOLO": 1.66,
+    "CAMP": 4.24,
+    "EGAN": 5.36,
+    "GROW": 3.06,
+}
+
+
 class LiveTradingDaemon:
     """
     Central daemon executing Phase 1 (Tri-Layer Portfolio Exit Check)
@@ -293,7 +313,7 @@ class LiveTradingDaemon:
                 logger.warning(f"Could not inspect/fix {self.trade_history_path.name} header: {e}")
 
     def load_open_positions(self) -> List[Dict[str, Any]]:
-        """Reads open positions from CSV, normalizing legacy headers."""
+        """Reads open positions from CSV, normalizing legacy headers and case."""
         if not self.open_positions_path.exists():
             return []
 
@@ -301,21 +321,36 @@ class LiveTradingDaemon:
         try:
             with open(self.open_positions_path, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
-                for row in reader:
-                    ticker = (row.get("Ticker") or row.get("ticker") or "").strip().upper()
+                for raw_row in reader:
+                    row = {str(k).strip().lower(): str(v).strip() for k, v in raw_row.items() if k}
+                    ticker = (row.get("ticker") or "").strip().upper()
                     if not ticker:
                         continue
-                    buy_date = row.get("Buy Date") or row.get("EntryDate") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    buy_price = float(row.get("Buy Price") or row.get("EntryPrice") or 0.0)
-                    shares = int(float(row.get("Shares") or row.get("shares") or 0))
+                    buy_date = row.get("buy date") or row.get("buy_date") or row.get("entrydate") or row.get("entry_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    buy_price = float(
+                        row.get("buy price")
+                        or row.get("buy_price")
+                        or row.get("entryprice")
+                        or row.get("entry_price")
+                        or 0.0
+                    )
+                    shares = int(float(row.get("shares") or 0))
 
-                    cap_invested_raw = row.get("Capital Invested")
-                    if cap_invested_raw is not None and str(cap_invested_raw).strip():
+                    if buy_price <= 0.0:
+                        if ticker in KNOWN_ENTRY_PRICES:
+                            buy_price = KNOWN_ENTRY_PRICES[ticker]
+                        else:
+                            curr_fallback = float(row.get("current_price") or row.get("currentprice") or row.get("highest_price_seen") or 0.0)
+                            if curr_fallback > 0.0:
+                                buy_price = curr_fallback
+
+                    cap_invested_raw = row.get("capital invested") or row.get("capital_invested") or row.get("positionvalue") or row.get("position_value")
+                    if cap_invested_raw is not None and str(cap_invested_raw).strip() and float(cap_invested_raw) > 0:
                         capital_invested = float(cap_invested_raw)
                     else:
                         capital_invested = (shares * buy_price) + calculate_transaction_fee(shares * buy_price)
 
-                    strategy = row.get("Strategy") or row.get("Strategy_Type") or "PROFILE_B"
+                    strategy = row.get("strategy") or row.get("strategy_type") or "PROFILE_B"
 
                     if buy_price > 0 and shares > 0:
                         positions.append({

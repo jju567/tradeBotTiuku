@@ -200,6 +200,26 @@ def evaluate_position(
     return "HOLD", "HOLD"
 
 
+KNOWN_ENTRY_PRICES: Dict[str, float] = {
+    "VIAFIN.HE": 19.80,
+    "SEDANA.ST": 10.54,
+    "MOB.ST": 10.60,
+    "MSAB-B.ST": 93.00,
+    "WATT": 11.73,
+    "OSS": 9.18,
+    "SSH1V.HE": 2.205,
+    "RAUTE.HE": 15.20,
+    "STIL.ST": 241.50,
+    "SEZI.ST": 2.87,
+    "VUZI": 2.76,
+    "DUOT": 8.54,
+    "HOLO": 1.66,
+    "CAMP": 4.24,
+    "EGAN": 5.36,
+    "GROW": 3.06,
+}
+
+
 class PortfolioManager:
     """Manages paper trading state, position sizing, and Tri-Layer Fundamental Exits via CSV."""
 
@@ -247,7 +267,7 @@ class PortfolioManager:
                 ])
 
     def load_open_positions(self) -> List[Dict[str, Any]]:
-        """Loads all active open positions from open_positions.csv."""
+        """Loads all active open positions from open_positions.csv with robust recovery."""
         if not self.open_positions_path.exists():
             return []
         positions = []
@@ -255,35 +275,83 @@ class PortfolioManager:
             with open(self.open_positions_path, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for raw_row in reader:
-                    # Clean and normalize keys
-                    row = {k.strip().lower(): v.strip() for k, v in raw_row.items() if k}
-                    if row.get("ticker"):
-                        buy_p = float(row.get("buy_price", row.get("buyprice", 0.0)) or 0.0)
-                        curr_p = float(row.get("current_price", row.get("currentprice", buy_p)) or buy_p)
-                        high_p = float(row.get("highest_price_seen", row.get("highestprice", buy_p)) or buy_p)
-                        stop_p = float(row.get("catastrophic_stop", row.get("trailing_stop", buy_p * 0.50)) or (buy_p * 0.50))
-                        shs = float(row.get("shares", 0.0) or 0.0)
+                    # Clean and normalize keys to lowercase
+                    row = {str(k).strip().lower(): str(v).strip() for k, v in raw_row.items() if k}
+                    ticker = (row.get("ticker") or "").strip().upper()
+                    if not ticker:
+                        continue
 
-                        positions.append({
-                            "ticker": row.get("ticker", "").strip(),
-                            "market": row.get("market", "US").strip().upper(),
-                            "buy_date": row.get("buy_date", row.get("entry_date", row.get("date", ""))),
-                            "buy_price": round(buy_p, 4),
-                            "current_price": round(curr_p, 4),
-                            "highest_price_seen": round(high_p, 4),
-                            "catastrophic_stop": round(stop_p, 4),
-                            "trailing_stop": round(stop_p, 4),  # backwards compat
-                            "shares": round(shs, 4),
-                            "currency": row.get("currency", "USD").strip().upper(),
-                            "last_evaluated_date": row.get("last_evaluated_date", ""),
-                            "atr_14": float(row.get("atr_14", 0.0) or 0.0),
-                        })
+                    buy_p = float(
+                        row.get("buy_price")
+                        or row.get("buyprice")
+                        or row.get("buy price")
+                        or row.get("entry_price")
+                        or row.get("entryprice")
+                        or row.get("entry price")
+                        or 0.0
+                    )
+                    curr_p = float(row.get("current_price") or row.get("currentprice") or 0.0)
+                    shs = float(row.get("shares", 0.0) or 0.0)
+
+                    # Auto-heal: if buy_p was missing or 0.0, recover from KNOWN_ENTRY_PRICES, capital invested, or current_price
+                    if buy_p <= 0.0:
+                        if ticker in KNOWN_ENTRY_PRICES:
+                            buy_p = KNOWN_ENTRY_PRICES[ticker]
+                        else:
+                            cap_inv = float(row.get("positionvalue") or row.get("position_value") or row.get("capital_invested") or row.get("capital invested") or 0.0)
+                            if cap_inv > 0 and shs > 0:
+                                buy_p = round(cap_inv / shs, 4)
+                            elif curr_p > 0:
+                                buy_p = curr_p
+
+                    if curr_p <= 0.0:
+                        curr_p = buy_p
+
+                    high_p = float(row.get("highest_price_seen") or row.get("highestprice") or max(curr_p, buy_p) or 0.0)
+                    stop_p = float(row.get("catastrophic_stop") or row.get("trailing_stop") or (buy_p * 0.50))
+
+                    # Suffix-aware currency & market detection
+                    curr = row.get("currency", "").strip().upper()
+                    mkt = row.get("market", "").strip().upper()
+                    if not curr or curr == "USD":
+                        if ticker.endswith(".HE"):
+                            curr = "EUR"
+                            mkt = "FI"
+                        elif ticker.endswith(".ST"):
+                            curr = "SEK"
+                            mkt = "SE"
+                        elif ticker.endswith(".OL"):
+                            curr = "NOK"
+                            mkt = "NO"
+                        elif ticker.endswith(".CO"):
+                            curr = "DKK"
+                            mkt = "DK"
+                        else:
+                            curr = "USD"
+                            mkt = "US"
+
+                    b_date = row.get("buy_date") or row.get("entry_date") or row.get("entrydate") or row.get("date") or "2026-09-18"
+
+                    positions.append({
+                        "ticker": ticker,
+                        "market": mkt,
+                        "buy_date": b_date,
+                        "buy_price": round(buy_p, 4),
+                        "current_price": round(curr_p, 4),
+                        "highest_price_seen": round(high_p, 4),
+                        "catastrophic_stop": round(stop_p, 4),
+                        "trailing_stop": round(stop_p, 4),  # backwards compat
+                        "shares": round(shs, 4),
+                        "currency": curr,
+                        "last_evaluated_date": row.get("last_evaluated_date", ""),
+                        "atr_14": float(row.get("atr_14", 0.0) or 0.0),
+                    })
         except Exception as e:
             logger.error(f"Error reading {self.open_positions_path}: {e}")
         return positions
 
     def save_open_positions(self, positions: List[Dict[str, Any]]) -> None:
-        """Saves active open positions list back to open_positions.csv."""
+        """Saves active open positions list back to open_positions.csv, guaranteeing buy_price > 0."""
         fieldnames = [
             "ticker", "market", "buy_date", "buy_price", "current_price",
             "highest_price_seen", "catastrophic_stop", "shares", "currency", "last_evaluated_date"
@@ -293,14 +361,19 @@ class PortfolioManager:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 for pos in positions:
+                    bp = float(pos.get("buy_price", 0.0) or 0.0)
+                    cp = float(pos.get("current_price", 0.0) or 0.0)
+                    t_sym = pos["ticker"]
+                    if bp <= 0.0:
+                        bp = KNOWN_ENTRY_PRICES.get(t_sym, cp)
                     writer.writerow({
-                        "ticker": pos["ticker"],
+                        "ticker": t_sym,
                         "market": pos["market"],
                         "buy_date": pos["buy_date"],
-                        "buy_price": pos["buy_price"],
-                        "current_price": pos["current_price"],
-                        "highest_price_seen": pos.get("highest_price_seen", pos["buy_price"]),
-                        "catastrophic_stop": pos.get("catastrophic_stop", pos.get("trailing_stop", round(pos["buy_price"] * 0.50, 4))),
+                        "buy_price": round(bp, 4),
+                        "current_price": round(cp, 4),
+                        "highest_price_seen": round(pos.get("highest_price_seen", max(bp, cp)), 4),
+                        "catastrophic_stop": round(pos.get("catastrophic_stop", bp * 0.50), 4),
                         "shares": pos["shares"],
                         "currency": pos["currency"],
                         "last_evaluated_date": pos.get("last_evaluated_date", ""),

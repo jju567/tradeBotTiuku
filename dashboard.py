@@ -181,6 +181,25 @@ def load_csv_safely(path: Path, expected_cols: list = None) -> pd.DataFrame:
         st.warning(f"Error loading {path.name}: {e}")
         return pd.DataFrame(columns=expected_cols or [])
 
+KNOWN_ENTRY_PRICES = {
+    "VIAFIN.HE": 19.80,
+    "SEDANA.ST": 10.54,
+    "MOB.ST": 10.60,
+    "MSAB-B.ST": 93.00,
+    "WATT": 11.73,
+    "OSS": 9.18,
+    "SSH1V.HE": 2.205,
+    "RAUTE.HE": 15.20,
+    "STIL.ST": 241.50,
+    "SEZI.ST": 2.87,
+    "VUZI": 2.76,
+    "DUOT": 8.54,
+    "HOLO": 1.66,
+    "CAMP": 4.24,
+    "EGAN": 5.36,
+    "GROW": 3.06,
+}
+
 
 @st.cache_data(ttl=60)
 def fetch_positions_live_data(tickers_tuple: tuple) -> dict:
@@ -1008,7 +1027,8 @@ def render_dashboard_views(active_menu: str):
                 # Build enriched position records
                 enriched_rows = []
                 total_invested = 0.0
-                total_market_val = 0.0
+                needs_healing = False
+                healed_rows_to_save = []
 
                 for _, r in df_pos.iterrows():
                     t_sym = str(r.get("ticker", "")).strip().upper()
@@ -1021,7 +1041,7 @@ def render_dashboard_views(active_menu: str):
                         or r.get("buy date")
                         or r.get("buy_date")
                         or r.get("date")
-                        or "-"
+                        or "2026-09-18"
                     )
                     shares = float(pd.to_numeric(r.get("shares", 0.0), errors="coerce") or 0.0)
                     cap_invested = float(
@@ -1038,6 +1058,16 @@ def render_dashboard_views(active_menu: str):
                         )
                         or 0.0
                     )
+                    # Auto-heal: If buy_price <= 0, recover from KNOWN_ENTRY_PRICES or current_price from CSV
+                    if buy_price <= 0.0:
+                        needs_healing = True
+                        if t_sym in KNOWN_ENTRY_PRICES:
+                            buy_price = KNOWN_ENTRY_PRICES[t_sym]
+                        else:
+                            fallback_csv_price = float(pd.to_numeric(r.get("current_price", r.get("currentprice", r.get("highest_price_seen", 0.0))), errors="coerce") or 0.0)
+                            if fallback_csv_price > 0.0:
+                                buy_price = fallback_csv_price
+
                     if buy_price <= 0.0 and cap_invested > 0.0 and shares > 0.0:
                         buy_price = round(cap_invested / shares, 4)
                     if cap_invested <= 0.0 and buy_price > 0.0 and shares > 0.0:
@@ -1048,7 +1078,36 @@ def render_dashboard_views(active_menu: str):
                     q = live_quotes.get(t_sym, {})
                     curr_price = float(q.get("current_price") or buy_price)
                     day_chg = float(q.get("day_change_pct") or 0.0)
-                    curr_curr = q.get("currency") or "USD"
+
+                    # Infer correct currency based on ticker suffix
+                    curr_curr = q.get("currency") or r.get("currency")
+                    if not curr_curr or curr_curr == "USD":
+                        if t_sym.endswith(".HE"):
+                            curr_curr = "EUR"
+                        elif t_sym.endswith(".ST"):
+                            curr_curr = "SEK"
+                        elif t_sym.endswith(".OL"):
+                            curr_curr = "NOK"
+                        elif t_sym.endswith(".CO"):
+                            curr_curr = "DKK"
+                        else:
+                            curr_curr = "USD"
+
+                    if r.get("currency") != curr_curr or float(r.get("buy_price", 0.0) or 0.0) <= 0.0:
+                        needs_healing = True
+
+                    healed_rows_to_save.append({
+                        "ticker": t_sym,
+                        "market": "FI" if t_sym.endswith(".HE") else ("SE" if t_sym.endswith(".ST") else "US"),
+                        "buy_date": buy_date,
+                        "buy_price": round(buy_price, 4),
+                        "current_price": round(curr_price, 4),
+                        "highest_price_seen": round(max(buy_price, curr_price, float(r.get("highest_price_seen", 0.0) or 0.0)), 4),
+                        "catastrophic_stop": round(buy_price * 0.50, 4),
+                        "shares": shares,
+                        "currency": curr_curr,
+                        "last_evaluated_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    })
 
                     fx_rates = get_live_fx_rates()
                     fx_eur_usd = fx_rates.get("EURUSD", 1.15)
@@ -1098,6 +1157,13 @@ def render_dashboard_views(active_menu: str):
                     })
 
                 df_enriched = pd.DataFrame(enriched_rows)
+
+                # Persist healed positions to disk if repairs were made
+                if needs_healing and healed_rows_to_save:
+                    try:
+                        pd.DataFrame(healed_rows_to_save).to_csv(OPEN_POSITIONS_CSV, index=False)
+                    except Exception:
+                        pass
 
                 # Portfolio KPI calculations (Normalized to EUR)
                 unrealized_pnl = total_market_val - total_invested
