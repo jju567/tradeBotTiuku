@@ -803,13 +803,17 @@ def render_dashboard_views(active_menu: str):
                 avg_ret = df_enriched["pnl_pct"].mean() if not df_enriched.empty else 0.0
                 med_ret = df_enriched["pnl_pct"].median() if not df_enriched.empty else 0.0
 
-                best_stock_str = "-"
-                worst_stock_str = "-"
+                best_stock_label = "-"
+                best_stock_delta = None
+                worst_stock_label = "-"
+                worst_stock_delta = None
                 if not df_enriched.empty:
                     b_row = df_enriched.loc[df_enriched["pnl_pct"].idxmax()]
                     w_row = df_enriched.loc[df_enriched["pnl_pct"].idxmin()]
-                    best_stock_str = f"{b_row['ticker']} ({b_row['pnl_pct']:+.2f}%, {b_row['pnl_abs_eur']:+.2f} €)"
-                    worst_stock_str = f"{w_row['ticker']} ({w_row['pnl_pct']:+.2f}%, {w_row['pnl_abs_eur']:+.2f} €)"
+                    best_stock_label = f"{b_row['ticker']} ({b_row['pnl_pct']:+.2f}%)"
+                    best_stock_delta = f"{b_row['pnl_abs_eur']:+.2f} €"
+                    worst_stock_label = f"{w_row['ticker']} ({w_row['pnl_pct']:+.2f}%)"
+                    worst_stock_delta = f"{w_row['pnl_abs_eur']:+.2f} €"
 
                 # Render Top KPI Cards (Row 1: Salkun Arvo & PnL)
                 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
@@ -839,15 +843,15 @@ def render_dashboard_views(active_menu: str):
                 # Render Top KPI Cards (Row 2: Tilastollinen Yhteenveto)
                 stat1, stat2, stat3, stat4, stat5 = st.columns(5)
                 with stat1:
-                    st.metric("Voittoprosentti (Win Rate)", f"{win_rate:.1f}%")
+                    st.metric("Voitolliset (Win Rate)", f"{win_rate:.1f}%", f"{win_count} / {len(df_enriched)} kpl")
                 with stat2:
                     st.metric("Keskimääräinen Tuotto", f"{avg_ret:+.2f}%")
                 with stat3:
                     st.metric("Mediaanituotto", f"{med_ret:+.2f}%")
                 with stat4:
-                    st.metric("Paras Positio", best_stock_str)
+                    st.metric("Paras Positio", best_stock_label, best_stock_delta)
                 with stat5:
-                    st.metric("Heikoin Positio", worst_stock_str)
+                    st.metric("Heikoin Positio", worst_stock_label, worst_stock_delta)
 
                 st.divider()
 
