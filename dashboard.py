@@ -1027,6 +1027,7 @@ def render_dashboard_views(active_menu: str):
                 # Build enriched position records
                 enriched_rows = []
                 total_invested = 0.0
+                total_market_val = 0.0
                 needs_healing = False
                 healed_rows_to_save = []
 
