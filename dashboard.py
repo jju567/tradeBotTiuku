@@ -238,9 +238,9 @@ with st.sidebar:
     menu = st.radio(
         "Navigation",
         [
+            "💰 Paper Trading Portfolio",
             "📊 Live Screener Results",
             "👀 Turnaround Watchlist",
-            "💰 Paper Trading Portfolio",
             "🧪 Live Ticker Scanner",
         ],
         index=0,
