@@ -8,8 +8,13 @@
 
 ## 🌟 Tärkeimmät Ominaisuudet
 
-### 1. 🖥️ Interaktiivinen Streamlit-Hallintapaneeli (`dashboard.py`)
-- **Käyttöliittymä**: Käynnistettävissä komennolla `streamlit run dashboard.py`.
+### 1. 🖥️ Interaktiivinen Streamlit-Hallintapaneeli & Yhdistetty Käynnistys
+- **Yhdistetty Pikakäynnistys (UI + Paper Trader)**:
+  - `start_all.bat` tai `.\start_all.ps1` tai `python start_all.py`
+  - Käynnistää sekä Streamlit-hallintapaneelin että reaaliaikaisen Paper Trader -daemonin yhdellä komennolla ja hallitsee molempien prosessien siistiä sammutusta (`Ctrl+C`).
+  - *Parametrit*: `--interval-hours <h>` (oletus: 4.0h), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8501).
+- **Pelkkä Käyttöliittymä**: `streamlit run dashboard.py`
+- **Pelkkä Paper Trader Daemon**: `python main_controller.py --loop --interval-hours 4`
 - **Reaaliaikainen Massa-ajojen Seuranta**: Taustalla pyörivä asynkroninen prosessi, reaaliaikainen edistymispalkki (`completed / total`) ja automaattinen taustapäivitys ilman koko sivun uudelleenlatausta (`@st.fragment`).
 - **Selkeät Välilehdet**:
   - 📋 **Seulonnan Tulokset**: Suodatettava ja haettava taulukko analysoiduista raporteista, Suomen aikavyöhykkeen aikaleimoilla (`DD.MM.YYYY HH:MM:SS`), profiileilla ja tuomioilla (🔥 *STRONG BUY*, 👀 *WATCH_TURNAROUND*, 🟡 *HOLD*, ❌ *REJECT*).
