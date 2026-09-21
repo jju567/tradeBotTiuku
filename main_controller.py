@@ -98,6 +98,7 @@ MIN_BROKER_FEE = 9.00               # Flat minimum broker commission ($9.00 / �
 VARIABLE_BROKER_FEE_PCT = 0.002     # 0.20% variable broker commission
 MAX_PORTFOLIO_EQUITY_PCT = 0.10     # Max 10% of portfolio equity per position
 MAX_ADV_ALLOCATION_PCT = 0.10       # Max 10% of 20-day ADV to protect order book liquidity
+REENTRY_COOLDOWN_DAYS = 30          # 30-day anti-whipsaw cooldown after selling a position
 SLIPPAGE_PENALTY_PCT = 0.005        # Kept for backwards compatibility
 
 
@@ -361,6 +362,21 @@ class LiveTradingDaemon:
                 trade["Exit Reason"],
             ])
 
+    def load_trade_history(self) -> List[Dict[str, Any]]:
+        """Reads closed trades from trade_history.csv."""
+        if not self.trade_history_path.exists():
+            return []
+        trades: List[Dict[str, Any]] = []
+        try:
+            with open(self.trade_history_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ticker = (row.get("Ticker") or row.get("ticker") or "").strip().upper()
+                    if ticker:
+                        trades.append(row)
+        except Exception as e:
+            logger.debug(f"Could not read {self.trade_history_path}: {e}")
+        return trades
 
     def fetch_live_price(self, ticker: str) -> Optional[float]:
         """Fetches latest real-time closing price via yfinance."""
@@ -607,10 +623,33 @@ class LiveTradingDaemon:
 
         new_buys = 0
 
+        # Build set of tickers currently on re-entry cooldown (Wash-trade / Whipsaw Guard)
+        today = datetime.now(timezone.utc).date()
+        cooldown_tickers: Dict[str, Any] = {}
+        for trade in self.load_trade_history():
+            t_sym = (trade.get("Ticker") or trade.get("ticker") or "").strip().upper()
+            s_date_str = trade.get("Sell Date") or trade.get("sell_date") or trade.get("exitdate")
+            if t_sym and s_date_str:
+                try:
+                    s_dt = datetime.strptime(str(s_date_str)[:10], "%Y-%m-%d").date()
+                    if t_sym not in cooldown_tickers or s_dt > cooldown_tickers[t_sym]:
+                        cooldown_tickers[t_sym] = s_dt
+                except Exception:
+                    pass
+
         for idx, row in u_df.iterrows():
             ticker = str(row["ticker"]).strip().upper()
             if ticker in held_tickers:
                 continue
+
+            # Anti-Whipsaw Cooldown: Never rebuy a recently exited position within 30 days
+            if ticker in cooldown_tickers:
+                days_since_exit = (today - cooldown_tickers[ticker]).days
+                if days_since_exit < REENTRY_COOLDOWN_DAYS:
+                    logger.info(
+                        f"⏳ {ticker}: In post-exit cooldown ({days_since_exit}d < {REENTRY_COOLDOWN_DAYS}d). Skipping rebuy to protect capital."
+                    )
+                    continue
 
             if self.account.cash_balance < (MIN_BROKER_FEE + 10.0):
                 logger.info("Cash balance depleted (< min fee + buffer). Ending market screening cycle.")
@@ -630,6 +669,26 @@ class LiveTradingDaemon:
 
             if not is_profile_b:
                 continue
+
+            # Pre-Entry Exit Validation: Never buy if candidate already violates exit criteria!
+            financials_payload = {
+                "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
+                "cash_runway_months": hard_facts.get("cash_runway_months"),
+                "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
+            }
+            cand_price = self.fetch_live_price(ticker) or float(row.get("current_price", 0.0) or 0.0)
+            if cand_price > 0:
+                exit_action, exit_reason = evaluate_position(
+                    position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
+                    current_price=cand_price,
+                    latest_news_judgment="HOLD",
+                    latest_financials=financials_payload,
+                )
+                if exit_action == "SELL":
+                    logger.warning(
+                        f"⚠️ {ticker}: Candidate rejected — entry violates exit criteria ({exit_reason})."
+                    )
+                    continue
 
             # Data Freshness Guard: Skip companies with stale statements (>120 days)
             dq = hard_facts.get("data_quality", {})
@@ -679,8 +738,8 @@ class LiveTradingDaemon:
                 logger.debug(f"  • {ticker}: Investable cash <= 0 after fee deduction. Skipping.")
                 continue
 
-            # 4. Fetch Current Live Price
-            current_price = self.fetch_live_price(ticker) or float(row.get("current_price", 0.0) or 0.0)
+            # 4. Use Validated Live Price
+            current_price = cand_price
             if current_price <= 0:
                 logger.warning(f"Could not determine valid price for {ticker}. Skipping buy.")
                 continue

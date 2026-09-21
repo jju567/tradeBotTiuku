@@ -283,3 +283,84 @@ def test_swedish_stock_buy_fx_conversion(temp_daemon_env):
         # Cash remaining = 10,000 - 982.45 = ~9,017.55 EUR.
         assert 9000.0 < daemon.account.cash_balance < 9050.0
 
+
+def test_reentry_cooldown_prevents_whipsaw(temp_daemon_env):
+    """
+    Ensures that a stock sold within the last 30 days is NOT immediately rebought,
+    preventing commission bleeding and churn.
+    """
+    daemon, tmp_path = temp_daemon_env
+    daemon.account.cash_balance = 10_000.0
+
+    # Simulate stock sold today in trade_history.csv
+    daemon.append_trade_history({
+        "Ticker": "JUST_SOLD",
+        "Buy Date": "2026-09-01",
+        "Sell Date": "2026-09-21",
+        "Buy Price": 10.0,
+        "Sell Price": 12.0,
+        "Shares": 100,
+        "Capital Invested": 1000.0,
+        "Gross Sale Value": 1200.0,
+        "Transaction Fee": 9.0,
+        "Net Return": 1191.0,
+        "Net PnL": 191.0,
+        "Exit Reason": "FUNDAMENTAL_DETERIORATION",
+    })
+
+    # Universe contains JUST_SOLD which matches Profile B
+    universe_content = (
+        "ticker,market,market_cap_usd,market_cap_local,currency,current_price,adv_20d_local,adv_20d_usd\n"
+        "JUST_SOLD,US,50000000.0,50000000.0,USD,12.0,100000.0,100000.0\n"
+    )
+    daemon.clean_universe_path.write_text(universe_content, encoding="utf-8")
+
+    def mock_eval_profiles(facts):
+        return {"is_profile_b": True, "is_profile_a": False, "signal": "BUY_PROFILE_B"}
+
+    with patch("main_controller.get_hard_financials", return_value={}), \
+         patch("main_controller.evaluate_profiles", side_effect=mock_eval_profiles), \
+         patch.object(daemon, "fetch_live_price", return_value=12.0):
+
+        new_buys = daemon.execute_market_screening()
+        # MUST BE 0: JUST_SOLD is in cooldown!
+        assert new_buys == 0
+        assert len(daemon.load_open_positions()) == 0
+
+
+def test_pre_entry_exit_validation_rejects_failing_candidate(temp_daemon_env):
+    """
+    Ensures that a candidate whose fundamentals would trigger an immediate exit
+    (e.g., negative YoY revenue growth) is REJECTED at entry, preventing immediate roundtrips.
+    """
+    daemon, tmp_path = temp_daemon_env
+    daemon.account.cash_balance = 10_000.0
+
+    universe_content = (
+        "ticker,market,market_cap_usd,market_cap_local,currency,current_price,adv_20d_local,adv_20d_usd\n"
+        "SHRINKING,US,50000000.0,50000000.0,USD,10.0,100000.0,100000.0\n"
+    )
+    daemon.clean_universe_path.write_text(universe_content, encoding="utf-8")
+
+    # Hard facts with negative revenue growth
+    failing_facts = {
+        "ticker": "SHRINKING",
+        "net_cash": 10_000_000.0,
+        "revenue_growth_yoy_pct": -12.5,  # Revenue shrank 12.5%
+        "operating_cash_flow_ttm": 500_000.0,
+        "cash_runway_months": 24.0,
+    }
+
+    def mock_eval_profiles(facts):
+        return {"is_profile_b": True, "is_profile_a": False, "signal": "BUY_PROFILE_B"}
+
+    with patch("main_controller.get_hard_financials", return_value=failing_facts), \
+         patch("main_controller.evaluate_profiles", side_effect=mock_eval_profiles), \
+         patch.object(daemon, "fetch_live_price", return_value=10.0):
+
+        new_buys = daemon.execute_market_screening()
+        # MUST BE 0: Candidate fails exit criteria on day 1!
+        assert new_buys == 0
+        assert len(daemon.load_open_positions()) == 0
+
+

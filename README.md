@@ -100,6 +100,8 @@
   - Korvaa kapeat ja kohina-alttiit mekaaniset trailing stopit, jolloin multibaggereiden nousupotentiaali säilyy katkeamattomana.
 - **⚡ Nolla-Token Markkinavahti & PnL-Hystereesi (`MarketMonitor`)**: Valvoo salkun hintoja 15 min välein 0 tokenin kulutuksella. Älykäs PnL-hystereesi estää toistuvat hälytykset samasta staattisesta tuottotasosta.
 - **🔇 Sähköpostihälytysten Älykäs Esto & 24h Cooldown (`sent_alerts`)**: Tallentaa lähetetyt hälytykset SQLite-tietokantaan (`data/processed_news.db`). Estää saman yhtiön (`FARON.HE` / `FARON`) toistuvat spämmisähköpostit 24 tunnin jäähdytysajalla.
+- **⏳ Anti-Whipsaw & Uudelleenoston 30 pv Cooldown (`REENTRY_COOLDOWN_DAYS = 30`)**: Estää myydyn osakkeen välittömän takaisinoston (churn/wash-trade) 30 päivän kuluessa myynnistä, säästäen kaupankäyntikulut. Lisäksi seulonnassa suoritetaan **Pre-Entry Exit Validation**, joka hylkää kandidaatin heti, jos sen fundamentit laukaisisivat exit-säännön (esim. YoY supistuva liikevaihto).
+
 
 ---
 
