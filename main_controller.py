@@ -492,6 +492,11 @@ class LiveTradingDaemon:
         open_positions = self.load_open_positions()
         held_tickers = {p["Ticker"] for p in open_positions}
 
+        MAX_OPEN_POSITIONS = 11
+        if len(open_positions) >= MAX_OPEN_POSITIONS:
+            logger.info(f"🛑 [PORTFOLIO FULL] Maximum positions reached ({len(open_positions)}/{MAX_OPEN_POSITIONS}). Skipping new buys.")
+            return 0
+
         # Calculate Total Invested Capital in open positions
         open_capital = sum(float(p.get("Capital Invested", p["Shares"] * p["Buy Price"])) for p in open_positions)
         logger.info(
