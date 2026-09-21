@@ -324,29 +324,11 @@ class ScreenerPipelineController:
         if not ticker:
             return False
 
-        MAX_PORTFOLIO_CAPITAL = 10_000.0
-        MAX_POSITIONS_LIMIT = 11
-
         open_positions = self.exit_manager.load_open_positions()
         existing_tickers = {p["Ticker"].upper() for p in open_positions}
 
         if ticker in existing_tickers:
             logger.info(f"[EXISTS] Position already open for {ticker}. Skipping duplicate position recording.")
-            return False
-
-        if len(open_positions) >= MAX_POSITIONS_LIMIT:
-            logger.warning(
-                f"🛑 [PORTFOLIO FULL] Max positions limit reached ({len(open_positions)}/{MAX_POSITIONS_LIMIT}). "
-                f"Cannot buy {ticker}. Free up a slot by selling first."
-            )
-            return False
-
-        current_total_invested = sum(float(p.get("PositionValue", 0.0) or 0.0) for p in open_positions)
-        if current_total_invested + position_value > MAX_PORTFOLIO_CAPITAL:
-            logger.warning(
-                f"🛑 [CAPITAL LIMIT] Portfolio capital limit exceeded: current {current_total_invested:,.2f}€ + "
-                f"new {position_value:,.2f}€ > max {MAX_PORTFOLIO_CAPITAL:,.2f}€. Skipping buy for {ticker}."
-            )
             return False
 
         today_str = date.today().strftime("%Y-%m-%d")
