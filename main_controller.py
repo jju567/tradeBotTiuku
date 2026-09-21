@@ -90,6 +90,8 @@ DEFAULT_PAPER_ACCOUNT_JSON = BASE_DIR / "data" / "paper_account.json"
 DEFAULT_OPEN_POSITIONS_CSV = BASE_DIR / "data" / "open_positions.csv"
 DEFAULT_TRADE_HISTORY_CSV = BASE_DIR / "data" / "trade_history.csv"
 DEFAULT_CLEAN_UNIVERSE_CSV = BASE_DIR / "data" / "clean_microcap_universe.csv"
+DEFAULT_PORTFOLIO_HISTORY_JSON = BASE_DIR / "data" / "portfolio_history.json"
+
 
 # Strict Account & Hyper-Realistic Fee Configuration
 STARTING_BALANCE = 10_000.0         # Exactly 10,000 USD/EUR Paper Trading Starting Capital
@@ -243,12 +245,14 @@ class LiveTradingDaemon:
         open_positions_path: Path | str = DEFAULT_OPEN_POSITIONS_CSV,
         trade_history_path: Path | str = DEFAULT_TRADE_HISTORY_CSV,
         clean_universe_path: Path | str = DEFAULT_CLEAN_UNIVERSE_CSV,
+        portfolio_history_path: Path | str = DEFAULT_PORTFOLIO_HISTORY_JSON,
         starting_balance: float = STARTING_BALANCE,
     ):
         self.account_path = Path(account_path)
         self.open_positions_path = Path(open_positions_path)
         self.trade_history_path = Path(trade_history_path)
         self.clean_universe_path = Path(clean_universe_path)
+        self.portfolio_history_path = Path(portfolio_history_path)
 
         self.account = PaperAccountManager(self.account_path, starting_balance)
         self.ensure_files_exist()
@@ -793,6 +797,71 @@ class LiveTradingDaemon:
         return new_buys
 
 
+    def record_portfolio_snapshot(self) -> None:
+        """Calculates total portfolio equity and saves an equity snapshot to portfolio_history.json."""
+        positions = self.load_open_positions()
+        stock_val_eur = 0.0
+        fx_rates = get_live_fx_rates()
+        fx_eur_usd = fx_rates.get("EURUSD", 1.08)
+        fx_eur_sek = fx_rates.get("EURSEK", 11.30)
+
+        for p in positions:
+            ticker = str(p.get("ticker", "")).strip().upper()
+            shares = float(p.get("shares", 0.0) or 0.0)
+            if shares <= 0:
+                continue
+            cand_price = self.fetch_live_price(ticker) or float(p.get("buy_price", 0.0) or 0.0)
+            if "." not in ticker:
+                fx = 1.0 / fx_eur_usd
+            elif ticker.endswith(".ST"):
+                fx = 1.0 / fx_eur_sek
+            else:
+                fx = 1.0
+            stock_val_eur += shares * cand_price * fx
+
+        total_equity = self.account.cash_balance + stock_val_eur
+
+        history = []
+        if self.portfolio_history_path.exists():
+            try:
+                with open(self.portfolio_history_path, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+            except Exception:
+                history = []
+
+        now_dt = datetime.now(timezone.utc)
+        should_append = True
+        if history:
+            last = history[-1]
+            last_dt_str = last.get("timestamp")
+            try:
+                last_dt = datetime.fromisoformat(str(last_dt_str))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                if abs((now_dt - last_dt).total_seconds()) < 60 and abs(float(last.get("total_equity", 0.0)) - total_equity) < 0.50:
+                    should_append = False
+            except Exception:
+                pass
+
+        if should_append:
+            snapshot = {
+                "timestamp": now_dt.isoformat(),
+                "total_equity": round(total_equity, 2),
+                "cash_balance": round(self.account.cash_balance, 2),
+                "total_stock_value": round(stock_val_eur, 2),
+                "total_return": round(total_equity - self.account.starting_balance, 2),
+                "total_return_pct": round((total_equity - self.account.starting_balance) / self.account.starting_balance * 100.0, 2) if self.account.starting_balance > 0 else 0.0,
+            }
+            history.append(snapshot)
+            if len(history) > 10000:
+                history = history[-10000:]
+            try:
+                with open(self.portfolio_history_path, "w", encoding="utf-8") as f:
+                    json.dump(history, f, indent=2, ensure_ascii=False)
+                logger.info(f"Recorded equity snapshot: {total_equity:,.2f} EUR (Cash: {self.account.cash_balance:,.2f} EUR)")
+            except Exception as e:
+                logger.debug(f"Failed to save snapshot to {self.portfolio_history_path}: {e}")
+
     def run_daily_cycle(self) -> Tuple[int, int]:
         """Runs full daily workflow: Phase 1 (Exit Check) + Phase 2 (Screening)."""
         print("\n" + "=" * 90)
@@ -801,6 +870,8 @@ class LiveTradingDaemon:
 
         sold_count = self.execute_portfolio_management()
         bought_count = self.execute_market_screening()
+        self.record_portfolio_snapshot()
+
 
         curr_sym = "€" if self.account.currency == "EUR" else "$"
         print("\n" + "-" * 90)

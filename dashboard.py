@@ -33,6 +33,7 @@ SCREENER_ALERTS_CSV = DATA_DIR / "screener_alerts.csv"
 TRADE_HISTORY_CSV = DATA_DIR / "trade_history.csv"
 BATCH_STATUS_JSON = DATA_DIR / "batch_status.json"
 PAPER_ACCOUNT_JSON = DATA_DIR / "paper_account.json"
+PORTFOLIO_HISTORY_JSON = DATA_DIR / "portfolio_history.json"
 
 # Page Configuration
 st.set_page_config(
@@ -148,6 +149,22 @@ st.markdown("""
         border-radius: 6px;
         font-weight: 700;
     }
+    /* Estä Streamlitin harmaantuminen ja latauspeite päivitysten aikana (Anti-Dimming Overlay) */
+    .stApp[data-test-script-state="running"] [data-testid="stMain"],
+    .stApp[data-test-script-state="running"] [data-testid="stSidebar"],
+    .stApp[data-test-script-state="running"] div[data-testid="stAppViewBlockContainer"],
+    .stApp[data-test-script-state="running"] div[data-testid="stVerticalBlock"] {
+        opacity: 1 !important;
+        filter: none !important;
+        transition: none !important;
+    }
+    div[data-testid="stAppViewBlockContainer"] {
+        opacity: 1 !important;
+        filter: none !important;
+    }
+    div[data-testid="stStatusWidget"] {
+        visibility: hidden !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -225,6 +242,298 @@ def fetch_ticker_history(ticker: str, period: str = "3mo") -> tuple:
         return df_hist, t_clean
     except Exception:
         return pd.DataFrame(), t_clean
+
+
+def record_portfolio_snapshot(
+    total_equity: float,
+    cash_balance: float,
+    stock_value: float,
+    starting_balance: float = 10_000.0,
+    history_file: Path = PORTFOLIO_HISTORY_JSON,
+) -> None:
+    """Records a new equity snapshot if sufficient time or value delta has occurred."""
+    if total_equity <= 0:
+        return
+    history = []
+    if history_file.exists():
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            history = []
+
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+
+    should_append = True
+    if history:
+        last = history[-1]
+        last_dt_str = last.get("timestamp")
+        try:
+            last_dt = datetime.fromisoformat(str(last_dt_str))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            seconds_diff = abs((now_dt - last_dt).total_seconds())
+            val_diff = abs(float(last.get("total_equity", 0.0)) - float(total_equity))
+            # Don't flood: only append if >= 30s have elapsed or equity moved >= 0.50 EUR
+            if seconds_diff < 30 and val_diff < 0.50:
+                should_append = False
+        except Exception:
+            pass
+
+    if should_append:
+        tot_ret = round(total_equity - starting_balance, 2)
+        tot_ret_pct = round((tot_ret / starting_balance * 100.0), 2) if starting_balance > 0 else 0.0
+        snapshot = {
+            "timestamp": now_iso,
+            "total_equity": round(total_equity, 2),
+            "cash_balance": round(cash_balance, 2),
+            "total_stock_value": round(stock_value, 2),
+            "total_return": tot_ret,
+            "total_return_pct": tot_ret_pct,
+        }
+        history.append(snapshot)
+        if len(history) > 10000:
+            history = history[-10000:]
+        try:
+            with open(history_file, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+
+def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, starting_capital: float = 10_000.0):
+    """Renders interactive Plotly equity performance chart with multi-interval and metric controls."""
+    if not history_file.exists():
+        st.info("📊 Salkun historiaa kerätään... Ensimmäinen mittauspiste tallennettu.")
+        return
+
+    try:
+        with open(history_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = []
+
+    if not data:
+        st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
+        return
+
+    df_hist = pd.DataFrame(data)
+    if "timestamp" not in df_hist.columns or "total_equity" not in df_hist.columns:
+        st.info("📊 Salkun historiadata alustetaan...")
+        return
+
+    try:
+        helsinki_tz = zoneinfo.ZoneInfo("Europe/Helsinki")
+    except Exception:
+        helsinki_tz = timezone.utc
+
+    df_hist["dt"] = pd.to_datetime(df_hist["timestamp"], format="ISO8601", utc=True, errors="coerce")
+    df_hist = df_hist.dropna(subset=["dt"])
+    if df_hist.empty:
+        return
+
+    df_hist["dt_local"] = df_hist["dt"].dt.tz_convert(helsinki_tz)
+    df_hist = df_hist.sort_values("dt_local").set_index("dt_local")
+
+    for col in ["cash_balance", "total_stock_value"]:
+        if col not in df_hist.columns:
+            df_hist[col] = 0.0
+
+    df_hist["total_equity"] = pd.to_numeric(df_hist["total_equity"], errors="coerce").fillna(starting_capital)
+    df_hist["cash_balance"] = pd.to_numeric(df_hist["cash_balance"], errors="coerce").fillna(0.0)
+    df_hist["total_stock_value"] = pd.to_numeric(df_hist["total_stock_value"], errors="coerce").fillna(0.0)
+    df_hist["total_return"] = df_hist["total_equity"] - starting_capital
+    df_hist["total_return_pct"] = (df_hist["total_return"] / starting_capital * 100.0) if starting_capital > 0 else 0.0
+
+    st.markdown("### 📈 Salkun Kokonaistuloksen ja Varallisuuden Kehitys")
+    st.caption("Interaktiivinen seuranta salkun kokonaisarvon, tuoton ja varallisuuserien kehityksestä eri aikaväleillä.")
+
+    # Controls row
+    c_time, c_interval, c_metric = st.columns([1.2, 1.2, 1.6])
+    with c_time:
+        timeframe_sel = st.selectbox(
+            "Aikaväli (Haarukka):",
+            [
+                "Kaikki historia",
+                "Viimeiset 24 tuntia",
+                "Viimeiset 7 päivää",
+                "Viimeiset 30 päivää",
+                "Viimeiset 3 kuukautta",
+            ],
+            index=0,
+            key="equity_timeframe_select"
+        )
+    with c_interval:
+        interval_sel = st.selectbox(
+            "Resoluutio / Aggregointi:",
+            [
+                "Kaikki mittauspisteet",
+                "Tunti (1h)",
+                "Päivä (1d)",
+                "Viikko (1vk)",
+                "Kuukausi (1kk)",
+            ],
+            index=1 if timeframe_sel == "Viimeiset 24 tuntia" else 2,
+            key="equity_interval_select"
+        )
+    with c_metric:
+        metric_sel = st.selectbox(
+            "Näkymä / Mittari:",
+            [
+                "Salkun Kokonaisarvo (€)",
+                "Kokonaistuotto (€ ja %)",
+                "Varallisuuden jakautuma (Käteinen vs. Osakkeet)",
+            ],
+            index=0,
+            key="equity_metric_select"
+        )
+
+    # Filter Timeframe
+    now_local = datetime.now(helsinki_tz)
+    if timeframe_sel == "Viimeiset 24 tuntia":
+        cutoff = now_local - pd.Timedelta(hours=24)
+        df_filtered = df_hist[df_hist.index >= cutoff]
+    elif timeframe_sel == "Viimeiset 7 päivää":
+        cutoff = now_local - pd.Timedelta(days=7)
+        df_filtered = df_hist[df_hist.index >= cutoff]
+    elif timeframe_sel == "Viimeiset 30 päivää":
+        cutoff = now_local - pd.Timedelta(days=30)
+        df_filtered = df_hist[df_hist.index >= cutoff]
+    elif timeframe_sel == "Viimeiset 3 kuukautta":
+        cutoff = now_local - pd.Timedelta(days=90)
+        df_filtered = df_hist[df_hist.index >= cutoff]
+    else:
+        df_filtered = df_hist
+
+    if df_filtered.empty:
+        df_filtered = df_hist.iloc[-1:]
+
+    # Apply Aggregation / Resampling
+    cols_to_resample = ["total_equity", "cash_balance", "total_stock_value", "total_return", "total_return_pct"]
+    if interval_sel == "Tunti (1h)":
+        df_plot = df_filtered[cols_to_resample].resample("1h").last().ffill().dropna()
+    elif interval_sel == "Päivä (1d)":
+        df_plot = df_filtered[cols_to_resample].resample("1D").last().ffill().dropna()
+    elif interval_sel == "Viikko (1vk)":
+        df_plot = df_filtered[cols_to_resample].resample("1W").last().ffill().dropna()
+    elif interval_sel == "Kuukausi (1kk)":
+        df_plot = df_filtered[cols_to_resample].resample("1ME").last().ffill().dropna()
+    else:
+        df_plot = df_filtered[cols_to_resample]
+
+    if df_plot.empty:
+        df_plot = df_filtered[cols_to_resample]
+
+    # Build Plotly Figure
+    fig = go.Figure()
+
+    custom_data = list(zip(
+        df_plot["cash_balance"],
+        df_plot["total_stock_value"],
+        df_plot["total_return"],
+        df_plot["total_return_pct"],
+    ))
+
+    if metric_sel == "Salkun Kokonaisarvo (€)":
+        latest_val = df_plot["total_equity"].iloc[-1]
+        line_color = "#10b981" if latest_val >= starting_capital else "#f43f5e"
+        fill_color = "rgba(16, 185, 129, 0.15)" if latest_val >= starting_capital else "rgba(244, 63, 94, 0.15)"
+
+        fig.add_trace(go.Scatter(
+            x=df_plot.index,
+            y=df_plot["total_equity"],
+            mode="lines+markers" if len(df_plot) <= 30 else "lines",
+            name="Salkun Kokonaisarvo",
+            line=dict(color=line_color, width=2.5),
+            fill="tozeroy",
+            fillcolor=fill_color,
+            customdata=custom_data,
+            hovertemplate=(
+                "<b>Aika:</b> %{x|%d.%m.%Y %H:%M}<br>"
+                "<b>Kokonaisarvo:</b> %{y:,.2f} €<br>"
+                "<b>Käteinen:</b> %{customdata[0]:,.2f} €<br>"
+                "<b>Osakesalkku:</b> %{customdata[1]:,.2f} €<br>"
+                "<b>Kumulatiivinen Tuotto:</b> %{customdata[2]:+,.2f} € (%{customdata[3]:+.2f}%)"
+                "<extra></extra>"
+            ),
+        ))
+
+        # Benchmark line for starting capital
+        fig.add_hline(
+            y=starting_capital,
+            line_dash="dash",
+            line_color="#94a3b8",
+            annotation_text=f"Lähtöpääoma ({starting_capital:,.0f} €)",
+            annotation_position="bottom right",
+            annotation_font_color="#94a3b8",
+        )
+
+        fig.update_layout(
+            title=f"💼 Salkun Kokonaisarvon Kehitys ({interval_sel})",
+            yaxis=dict(title="Euroa (€)", tickformat=",.0f", gridcolor="#334155"),
+        )
+
+    elif metric_sel == "Kokonaistuotto (€ ja %)":
+        fig.add_trace(go.Scatter(
+            x=df_plot.index,
+            y=df_plot["total_return"],
+            mode="lines+markers" if len(df_plot) <= 30 else "lines",
+            name="Tuotto (€)",
+            line=dict(color="#38bdf8", width=2.5),
+            customdata=custom_data,
+            hovertemplate=(
+                "<b>Aika:</b> %{x|%d.%m.%Y %H:%M}<br>"
+                "<b>Tuotto (€):</b> %{y:+,.2f} €<br>"
+                "<b>Tuotto (%):</b> %{customdata[3]:+.2f}%<br>"
+                "<b>Salkun arvo:</b> %{customdata[0] + customdata[1]:,.2f} €"
+                "<extra></extra>"
+            ),
+        ))
+        fig.add_hline(y=0.0, line_dash="solid", line_color="#64748b", line_width=1.5)
+        fig.update_layout(
+            title=f"📊 Kumulatiivinen Tuotto (€)",
+            yaxis=dict(title="Tuotto (€)", tickformat="+,.0f", gridcolor="#334155"),
+        )
+
+    elif metric_sel == "Varallisuuden jakautuma (Käteinen vs. Osakkeet)":
+        fig.add_trace(go.Scatter(
+            x=df_plot.index,
+            y=df_plot["cash_balance"],
+            mode="lines",
+            name="Vapaa Käteinen (€)",
+            line=dict(width=0.5, color="#38bdf8"),
+            stackgroup="one",
+            fillcolor="rgba(56, 189, 248, 0.4)",
+            hovertemplate="<b>Käteinen:</b> %{y:,.2f} €<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_plot.index,
+            y=df_plot["total_stock_value"],
+            mode="lines",
+            name="Osakeomistukset (€)",
+            line=dict(width=0.5, color="#10b981"),
+            stackgroup="one",
+            fillcolor="rgba(16, 185, 129, 0.4)",
+            hovertemplate="<b>Osakkeet:</b> %{y:,.2f} €<extra></extra>",
+        ))
+        fig.update_layout(
+            title=f"🍰 Varallisuusjakauma (Käteinen vs. Osakkeet)",
+            yaxis=dict(title="Euroa (€)", tickformat=",.0f", gridcolor="#334155"),
+        )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#1e293b",
+        plot_bgcolor="#0f172a",
+        height=380,
+        margin=dict(l=60, r=30, t=40, b=30),
+        xaxis=dict(gridcolor="#334155"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
 
 
 # ----------------------------------------------------------------------
@@ -797,6 +1106,14 @@ def render_dashboard_views(active_menu: str):
                 portfolio_total_return = total_equity - starting_capital
                 portfolio_total_return_pct = (portfolio_total_return / starting_capital * 100.0) if starting_capital > 0 else 0.0
 
+                # Automatically record continuous equity snapshot for history tracking
+                record_portfolio_snapshot(
+                    total_equity=total_equity,
+                    cash_balance=free_cash,
+                    stock_value=total_market_val,
+                    starting_balance=starting_capital,
+                )
+
                 win_count = sum(1 for row in enriched_rows if row["pnl_pct"] > 0)
                 loss_count = sum(1 for row in enriched_rows if row["pnl_pct"] < 0)
                 win_rate = (win_count / len(enriched_rows) * 100.0) if enriched_rows else 0.0
@@ -852,6 +1169,11 @@ def render_dashboard_views(active_menu: str):
                     st.metric("Paras Positio", best_stock_label, best_stock_delta)
                 with stat5:
                     st.metric("Heikoin Positio", worst_stock_label, worst_stock_delta)
+
+                st.divider()
+
+                # Visual 0: Interactive Portfolio Total Equity Performance Chart
+                render_portfolio_equity_chart(history_file=PORTFOLIO_HISTORY_JSON, starting_capital=starting_capital)
 
                 st.divider()
 
@@ -1172,11 +1494,41 @@ def render_dashboard_views(active_menu: str):
                     st.write(doc_res.get("reasoning", "N/A"))
 
 
+# ----------------------------------------------------------------------
+# STATIC FRAGMENT WRAPPERS (Module-level for zero dimming / gray-out)
+# ----------------------------------------------------------------------
+@st.fragment(run_every=10)
+def _fragment_view_10(active_menu: str):
+    render_dashboard_views(active_menu)
+
+@st.fragment(run_every=30)
+def _fragment_view_30(active_menu: str):
+    render_dashboard_views(active_menu)
+
+@st.fragment(run_every=60)
+def _fragment_view_60(active_menu: str):
+    render_dashboard_views(active_menu)
+
+@st.fragment(run_every=300)
+def _fragment_view_300(active_menu: str):
+    render_dashboard_views(active_menu)
+
+@st.fragment
+def _fragment_view_manual(active_menu: str):
+    render_dashboard_views(active_menu)
+
+
 # Execute fragment renderer
 if auto_refresh:
-    @st.fragment(run_every=int(refresh_interval))
-    def live_fragment():
-        render_dashboard_views(menu)
-    live_fragment()
+    interval_val = int(refresh_interval) if refresh_interval else 30
+    if interval_val <= 10:
+        _fragment_view_10(menu)
+    elif interval_val <= 30:
+        _fragment_view_30(menu)
+    elif interval_val <= 60:
+        _fragment_view_60(menu)
+    else:
+        _fragment_view_300(menu)
 else:
-    render_dashboard_views(menu)
+    _fragment_view_manual(menu)
+
