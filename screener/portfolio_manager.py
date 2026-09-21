@@ -15,7 +15,7 @@ import csv
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Tuple
 
@@ -67,9 +67,10 @@ def evaluate_position(
     current_price: float,
     latest_news_judgment: Optional[str] = None,
     latest_financials: Optional[Dict[str, Any]] = None,
+    current_date: Optional[Union[datetime, date, str]] = None,
 ) -> Tuple[str, str]:
     """
-    Evaluates an open position using the Tri-Layer Fundamental Exit Strategy.
+    Evaluates an open position using the Tri-Layer Fundamental Exit Strategy + Dead Money Timer.
 
     Parameters:
         position: Dict containing at least 'buy_price' and 'ticker' (plus optional 'buy_date').
@@ -79,6 +80,7 @@ def evaluate_position(
             - 'revenue_growth_yoy': float (percentage or decimal YoY growth)
             - 'cash_runway_months': float (estimated runway in months)
             - 'operating_cash_flow': float (TTM or quarterly OCF)
+        current_date: Optional date/datetime/string for evaluation time (defaults to current UTC date).
 
     Returns:
         (action, reason):
@@ -86,6 +88,8 @@ def evaluate_position(
             reason: Specific trigger reason string:
                 - 'CATASTROPHIC_STOP': Daily drop >= 50% from buy price
                 - 'LLM_NEWS_REJECT': Fatal news detected (e.g. kontrollbalansräkning, toxic dilution)
+                - 'LLM_NEWS_WARN_CONFIRMED': Warning news confirmed by price breakdown
+                - 'TIME_STOP_DEAD_MONEY': Position held > 180 days with <= +5% gain (opportunity cost release)
                 - 'FUNDAMENTAL_DETERIORATION': Revenue contraction or imminent cash crisis
                 - 'HOLD': No exit condition met
     """
@@ -120,6 +124,45 @@ def evaluate_position(
                     f"({current_price:.2f}) confirmed structural warning ({clean_news})."
                 )
                 return "SELL", "LLM_NEWS_WARN_CONFIRMED"
+
+    # Time-Based Exit: Dead Money Timer (Held > 180 days and gain <= +5%)
+    raw_buy_date = position.get("buy_date") or position.get("entry_date") or position.get("entrydate")
+    if raw_buy_date:
+        try:
+            if isinstance(raw_buy_date, datetime):
+                buy_dt = raw_buy_date.date()
+            elif isinstance(raw_buy_date, date):
+                buy_dt = raw_buy_date
+            elif isinstance(raw_buy_date, str):
+                clean_bd_str = raw_buy_date.split("T")[0].strip()
+                buy_dt = datetime.strptime(clean_bd_str, "%Y-%m-%d").date()
+            else:
+                buy_dt = None
+
+            if current_date is None:
+                curr_dt = datetime.now(timezone.utc).date()
+            elif isinstance(current_date, datetime):
+                curr_dt = current_date.date()
+            elif isinstance(current_date, date):
+                curr_dt = current_date
+            elif isinstance(current_date, str):
+                clean_cd_str = current_date.split("T")[0].strip()
+                curr_dt = datetime.strptime(clean_cd_str, "%Y-%m-%d").date()
+            else:
+                curr_dt = datetime.now(timezone.utc).date()
+
+            if buy_dt and curr_dt:
+                holding_days = (curr_dt - buy_dt).days
+                dead_money_threshold = buy_price * 1.05
+                if holding_days > 180 and current_price <= dead_money_threshold:
+                    logger.warning(
+                        f"⏰ [TIME STOP - DEAD MONEY] {position.get('ticker')}: Held {holding_days} days (>180) "
+                        f"with current price {current_price:.4f} <= threshold {dead_money_threshold:.4f} "
+                        f"(<= +5% gain). Releasing capital for new opportunities."
+                    )
+                    return "SELL", "TIME_STOP_DEAD_MONEY"
+        except Exception as e:
+            logger.warning(f"Could not calculate holding days for {position.get('ticker')}: {e}")
 
     # Layer 3: Fundamental Deterioration (Quarterly Check)
     if latest_financials and isinstance(latest_financials, dict):

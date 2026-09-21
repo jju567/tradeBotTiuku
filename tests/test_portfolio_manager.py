@@ -262,3 +262,77 @@ def test_update_portfolio_triggers_news_and_fundamental_exits(mock_price, mock_y
         assert reasons["POSA"] == "LLM_NEWS_REJECT"
         assert reasons["POSB"] == "FUNDAMENTAL_DETERIORATION"
 
+
+def test_evaluate_position_dead_money_timer():
+    # 1. Position held > 180 days with <= +5% gain -> Triggers TIME_STOP_DEAD_MONEY
+    pos_stagnant = {
+        "ticker": "SLEEPY",
+        "buy_price": 10.0,
+        "buy_date": "2026-01-01",
+    }
+    # Exactly +5% gain at 10.50 after 181 days
+    action, reason = evaluate_position(
+        pos_stagnant,
+        current_price=10.50,
+        current_date="2026-07-02",  # 182 days
+    )
+    assert action == "SELL"
+    assert reason == "TIME_STOP_DEAD_MONEY"
+
+    # Flat return (0%) at 10.00 after 200 days -> Triggers TIME_STOP_DEAD_MONEY
+    action, reason = evaluate_position(
+        pos_stagnant,
+        current_price=10.00,
+        current_date="2026-07-20",  # 200 days
+    )
+    assert action == "SELL"
+    assert reason == "TIME_STOP_DEAD_MONEY"
+
+    # Small loss (-10%) at 9.00 after 190 days -> Triggers TIME_STOP_DEAD_MONEY
+    action, reason = evaluate_position(
+        pos_stagnant,
+        current_price=9.00,
+        current_date="2026-07-15",
+    )
+    assert action == "SELL"
+    assert reason == "TIME_STOP_DEAD_MONEY"
+
+    # 2. Position held > 180 days but RUNNING (> +5% gain) -> Does NOT trigger TIME_STOP_DEAD_MONEY
+    # Price is 10.51 (> 10.50) after 200 days -> Let winners run!
+    action, reason = evaluate_position(
+        pos_stagnant,
+        current_price=10.51,
+        current_date="2026-07-20",
+    )
+    assert action == "HOLD"
+    assert reason == "HOLD"
+
+    # Big winner at 15.00 (+50%) after 200 days -> HOLD
+    action, reason = evaluate_position(
+        pos_stagnant,
+        current_price=15.00,
+        current_date="2026-07-20",
+    )
+    assert action == "HOLD"
+    assert reason == "HOLD"
+
+    # 3. Position held <= 180 days (young position) -> Does NOT trigger TIME_STOP_DEAD_MONEY even if flat
+    # 60 days in
+    action, reason = evaluate_position(
+        pos_stagnant,
+        current_price=10.00,
+        current_date="2026-03-02",
+    )
+    assert action == "HOLD"
+    assert reason == "HOLD"
+
+    # Exactly 180 days
+    action, reason = evaluate_position(
+        pos_stagnant,
+        current_price=10.00,
+        current_date="2026-06-30",  # 180 days
+    )
+    assert action == "HOLD"
+    assert reason == "HOLD"
+
+
