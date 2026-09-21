@@ -256,7 +256,8 @@ class WebSearchVerifier:
         self, 
         ticker: str, 
         company_name: str = "", 
-        market: Optional[str] = None
+        market: Optional[str] = None,
+        max_results: Optional[int] = None,
     ) -> List[str]:
         """
         Market-aware multi-source search router:
@@ -329,6 +330,8 @@ class WebSearchVerifier:
             ddg_query = f"{ticker} {search_name} stock news"
             snippets = self.search_duckduckgo(ddg_query, max_results=5)
 
+        if max_results and max_results > 0:
+            return snippets[:max_results]
         return snippets
 
     def rule_based_check(self, snippets: List[str]) -> Dict[str, Any]:
@@ -481,17 +484,20 @@ Respond ONLY with valid JSON in the following format:
         self, 
         ticker: str, 
         company_name: str = "", 
-        market: Optional[str] = None
+        market: Optional[str] = None,
+        max_results: Optional[int] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Main entry point for Web Search Verification.
         Queries live news across Nordic & US markets and evaluates red flags & turnaround catalysts.
         """
         detected_mkt = detect_market(ticker, market)
-        snippets = self.fetch_snippets(ticker, company_name, market=detected_mkt)
+        snippets = self.fetch_snippets(ticker, company_name, market=detected_mkt, max_results=max_results)
 
         if not snippets:
             return {
+                "passed": True,
                 "passed_web_check": True,
                 "red_flags_found": [],
                 "turnaround_catalyst_detected": False,
@@ -501,11 +507,14 @@ Respond ONLY with valid JSON in the following format:
             }
 
         rule_res = self.rule_based_check(snippets)
+        rule_res["passed"] = rule_res.get("passed_web_check", True)
         if not rule_res["passed_web_check"]:
             return rule_res
 
         if self.client:
-            return self.llm_judge_check(ticker, company_name, snippets, market=detected_mkt)
+            llm_res = self.llm_judge_check(ticker, company_name, snippets, market=detected_mkt)
+            llm_res["passed"] = llm_res.get("passed_web_check", True)
+            return llm_res
         
         return rule_res
 

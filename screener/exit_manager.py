@@ -406,7 +406,7 @@ class ExitManager:
             return True, detail
         return False, ""
 
-    def check_exits(self) -> Dict[str, Any]:
+    def check_exits(self, dry_run: bool = False) -> Dict[str, Any]:
         """
         Main execution routine:
         1. Reads open positions from `data/open_positions.csv`.
@@ -469,9 +469,12 @@ class ExitManager:
                 surviving_positions.append(updated_pos)
 
         # Update persistent CSV files
-        self.save_open_positions(surviving_positions)
-        if closed_trades:
-            self.append_to_trade_history(closed_trades)
+        if not dry_run:
+            self.save_open_positions(surviving_positions)
+            if closed_trades:
+                self.append_to_trade_history(closed_trades)
+        else:
+            logger.info("DRY RUN: Skipping persistent save to open_positions and trade_history.")
 
         logger.info(
             f"Exit check cycle completed. Active positions: {len(surviving_positions)}, "
@@ -490,13 +493,14 @@ class ExitManager:
 def check_exits(
     open_positions_path: Optional[str | Path] = None,
     trade_history_path: Optional[str | Path] = None,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Convenience functional wrapper for check_exits."""
     manager = ExitManager(
         open_positions_path=open_positions_path,
         trade_history_path=trade_history_path,
     )
-    return manager.check_exits()
+    return manager.check_exits(dry_run=dry_run)
 
 
 def main():

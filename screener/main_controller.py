@@ -865,7 +865,7 @@ class ScreenerPipelineController:
                 comp_name = item.get("company_name", "").strip()
                 try:
                     res = self.web_verifier.verify(ticker=ticker, company_name=comp_name, max_results=3)
-                    if res.get("passed") and res.get("positive_catalysts_found"):
+                    if (res.get("passed") or res.get("passed_web_check")) and res.get("positive_catalysts_found"):
                         logger.info(f"🔥 WATCHLIST ALERT: Found positive catalyst for {ticker} ({comp_name}): {res.get('positive_catalysts_found')}")
                 except Exception as ex:
                     logger.warning(f"Error checking watchlist catalyst for {ticker}: {ex}")
