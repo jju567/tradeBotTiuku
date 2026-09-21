@@ -1,0 +1,246 @@
+{
+  "categories": [
+    {
+      "id": "core",
+      "name": "Maailma-indeksit (Ydinsalkku / Core)",
+      "description": "Laajasti hajautetut globaalit indeksirahastot pitkäaikaiseen säästämiseen.",
+      "items": [
+        {
+          "symbol": "EUNL.DE",
+          "name": "iShares Core MSCI World UCITS ETF (EUR / Xetra)",
+          "nordnet_name": "iShares Core MSCI World UCITS ETF USD (Acc)",
+          "category": "core",
+          "ter_percent": 0.20,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 2.0,
+          "notes": "Kehittyneet markkinat, matalat kulut, osingot uudelleensijoittava (Acc). Tunnetaan myös nimellä IWDA."
+        },
+        {
+          "symbol": "VWCE.DE",
+          "name": "Vanguard FTSE All-World UCITS ETF (EUR)",
+          "nordnet_name": "Vanguard FTSE All-World UCITS ETF USD Acc",
+          "category": "core",
+          "ter_percent": 0.22,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 2.0,
+          "notes": "Kehittyneet markkinat + kehittyvät markkinat (Emerging Markets) yhdellä lapulla."
+        },
+        {
+          "symbol": "SPPW.DE",
+          "name": "SPDR MSCI World UCITS ETF",
+          "nordnet_name": "SPDR MSCI World UCITS ETF (Acc)",
+          "category": "core",
+          "ter_percent": 0.12,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 2.0,
+          "notes": "Erittäin edullinen vaihdoehto kehittyneiden maiden maailma-indeksille."
+        },
+        {
+          "symbol": "IS3N.DE",
+          "name": "iShares Core MSCI Emerging Markets IMI UCITS ETF",
+          "nordnet_name": "iShares Core MSCI Emerging Markets IMI UCITS ETF (Acc)",
+          "category": "core",
+          "ter_percent": 0.18,
+          "target_rsi_dip": 38.0,
+          "sma_dip_below_pct": 3.0,
+          "notes": "Kehittyvät markkinat erikseen (Aasia, LatAm jne.), jos haluaa lisätä painoa kehittyviin talouksiin."
+        }
+      ]
+    },
+    {
+      "id": "us_north_america",
+      "name": "USA & Pohjois-Amerikka (Markkinaveturit)",
+      "description": "Yhdysvaltain johtavat indeksi- ja teknologiarahastot.",
+      "items": [
+        {
+          "symbol": "SXR8.DE",
+          "name": "iShares Core S&P 500 UCITS ETF (EUR / Acc)",
+          "nordnet_name": "iShares Core S&P 500 UCITS ETF USD (Acc)",
+          "category": "us_north_america",
+          "ter_percent": 0.07,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 2.0,
+          "notes": "S&P 500 -indeksi (Yhdysvaltain 500 suurinta pörssiyhtiötä), osingot uudelleensijoittava euroversio Xetrasta."
+        },
+        {
+          "symbol": "VUSA.DE",
+          "name": "Vanguard S&P 500 UCITS ETF (EUR / Dist)",
+          "nordnet_name": "Vanguard S&P 500 UCITS ETF USD Dist",
+          "category": "us_north_america",
+          "ter_percent": 0.07,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 2.0,
+          "notes": "Vanguardin suosittu matalakuluinen S&P 500 -vaihtoehto osingonmaksulla."
+        },
+        {
+          "symbol": "EQQQ.DE",
+          "name": "Invesco EQQQ Nasdaq-100 UCITS ETF",
+          "nordnet_name": "Invesco EQQQ Nasdaq-100 UCITS ETF",
+          "category": "us_north_america",
+          "ter_percent": 0.30,
+          "target_rsi_dip": 38.0,
+          "sma_dip_below_pct": 3.5,
+          "notes": "Nasdaq-100 eli Yhdysvaltain 100 suurinta teknologiaPainotteista jättiyhtiötä."
+        }
+      ]
+    },
+    {
+      "id": "regional",
+      "name": "Eurooppa & Pohjoismaat (Kotimarkkina & Lähialueet)",
+      "description": "Euroopan ja Pohjoismaiden suuryhtiöihin keskittyvät rahastot.",
+      "items": [
+        {
+          "symbol": "EXSA.DE",
+          "name": "iShares Core MSCI Europe UCITS ETF (EUR)",
+          "nordnet_name": "iShares Core MSCI Europe UCITS ETF EUR (Acc)",
+          "category": "regional",
+          "ter_percent": 0.12,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 3.0,
+          "notes": "Laaja hajautus Euroopan suuriin ja keskisuuriin yhtiöihin (IMEU / EXSA)."
+        },
+        {
+          "symbol": "XACT-NORDEN.ST",
+          "name": "XACT Norden UCITS ETF",
+          "nordnet_name": "XACT Norden (UCITS ETF)",
+          "category": "regional",
+          "ter_percent": 0.15,
+          "target_rsi_dip": 42.0,
+          "sma_dip_below_pct": 2.5,
+          "notes": "Pohjoismaisiin suuryhtiöihin keskittyvä suosittu pohjoismainen rahasto."
+        },
+        {
+          "symbol": "EXV1.DE",
+          "name": "iShares STOXX Europe 600 UCITS ETF",
+          "nordnet_name": "iShares STOXX Europe 600 UCITS ETF (DE)",
+          "category": "regional",
+          "ter_percent": 0.20,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 3.0,
+          "notes": "Erittäin laaja otanta Euroopan 600 suurimmasta pörssiyhtiöstä."
+        }
+      ]
+    },
+    {
+      "id": "dividend_value",
+      "name": "Osinko- ja Arvosijoittaminen (Dividend / Value)",
+      "description": "Korkeaa osinkotuottoa ja arvoyhtiöitä painottavat indeksit.",
+      "items": [
+        {
+          "symbol": "VHYL.L",
+          "name": "Vanguard FTSE All-World High Dividend Yield UCITS ETF",
+          "nordnet_name": "Vanguard FTSE All-World High Dividend Yield UCITS ETF Dist",
+          "category": "dividend_value",
+          "ter_percent": 0.29,
+          "target_rsi_dip": 38.0,
+          "sma_dip_below_pct": 3.0,
+          "notes": "Globaalisti korkeaa osinkoa maksavat yhtiöt (VHYL)."
+        },
+        {
+          "symbol": "TDIV.AS",
+          "name": "VanEck Morningstar Developed Markets Dividend Leaders UCITS ETF",
+          "nordnet_name": "VanEck Morningstar Developed Markets Dividend Leaders",
+          "category": "dividend_value",
+          "ter_percent": 0.38,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 3.0,
+          "notes": "Laatuyhtiöt ja vakaat osingonmaksajat globaalisti (tunnetaan myös koodilla IGWD / WDIV)."
+        },
+        {
+          "symbol": "EXSH.DE",
+          "name": "iShares Euro Dividend UCITS ETF",
+          "nordnet_name": "iShares Euro Dividend UCITS ETF EUR (Dist)",
+          "category": "dividend_value",
+          "ter_percent": 0.40,
+          "target_rsi_dip": 38.0,
+          "sma_dip_below_pct": 3.0,
+          "notes": "Keskittyy eurooppalaisiin korkean osinkotuoton osakkeisiin (IDVY)."
+        }
+      ]
+    },
+    {
+      "id": "sector_theme",
+      "name": "Teema- ja Sektorirahastot (Mausteet / Kasvualat)",
+      "description": "Syklisemmät ja korkeamman volatiliteetin sektori- ja teema-ETF:t.",
+      "items": [
+        {
+          "symbol": "QDVE.DE",
+          "name": "iShares S&P 500 Information Technology Sector UCITS ETF",
+          "nordnet_name": "iShares S&P 500 Information Technology Sector UCITS ETF",
+          "category": "sector_theme",
+          "ter_percent": 0.15,
+          "target_rsi_dip": 40.0,
+          "sma_dip_below_pct": 3.0,
+          "notes": "Puhtaasti US-teknologia- ja ohjelmistosektoriin (Apple, Microsoft, Nvidia jne.) keskittyvä sektori-ETF (IITV)."
+        },
+        {
+          "symbol": "IQQH.DE",
+          "name": "iShares Global Clean Energy UCITS ETF (EUR)",
+          "nordnet_name": "iShares Global Clean Energy UCITS ETF USD (Dist)",
+          "category": "sector_theme",
+          "ter_percent": 0.65,
+          "target_rsi_dip": 35.0,
+          "sma_dip_below_pct": 5.0,
+          "notes": "Puhtaan energian ja uusiutuvan teknologian teema - korkeampi volatiliteetti ja syklisyys."
+        },
+        {
+          "symbol": "INRG.L",
+          "name": "iShares Global Clean Energy UCITS ETF (USD / London)",
+          "nordnet_name": "iShares Global Clean Energy UCITS ETF USD Dist (INRG)",
+          "category": "sector_theme",
+          "ter_percent": 0.65,
+          "target_rsi_dip": 35.0,
+          "sma_dip_below_pct": 5.0,
+          "notes": "Sama puhtaan energian teema Lontoon pörssin dollarinoteerauksena (vaihtoehtoinen pörssipaikka)."
+        },
+        {
+          "symbol": "2B7K.DE",
+          "name": "iShares Automation & Robotics UCITS ETF",
+          "nordnet_name": "iShares Automation & Robotics UCITS ETF USD (Acc)",
+          "category": "sector_theme",
+          "ter_percent": 0.40,
+          "target_rsi_dip": 37.0,
+          "sma_dip_below_pct": 4.0,
+          "notes": "Robotiikka, tekoäly ja automaatioteollisuus globaalisti (RBOT)."
+        },
+        {
+          "symbol": "ISPY.L",
+          "name": "iShares Healthcare Innovation UCITS ETF",
+          "nordnet_name": "iShares Healthcare Innovation UCITS ETF USD (Acc)",
+          "category": "sector_theme",
+          "ter_percent": 0.40,
+          "target_rsi_dip": 38.0,
+          "sma_dip_below_pct": 3.5,
+          "notes": "Terveysteknologian, genomitutkimuksen ja lääketieteen innovaatiot (ISPY)."
+        }
+      ]
+    },
+    {
+      "id": "bonds_fixed_income",
+      "name": "Korkorahastot (Turva / Matalampi riski)",
+      "description": "Valtionlainat ja yrityslainat riskien hallintaan ja salkun tasapainotukseen.",
+      "items": [
+        {
+          "symbol": "IB01.L",
+          "name": "iShares $ Treasury Bond 0-1yr UCITS ETF",
+          "nordnet_name": "iShares $ Treasury Bond 0-1yr UCITS ETF USD (Acc)",
+          "category": "bonds_fixed_income",
+          "ter_percent": 0.07,
+          "target_rsi_dip": 45.0,
+          "sma_dip_below_pct": 1.0,
+          "notes": "Erittäin lyhyen maturiteetin Yhdysvaltain valtionlainat (korkea likviditeetti ja matala korkoriski)."
+        },
+        {
+          "symbol": "EUNB.DE",
+          "name": "iShares Core € Corp Bond UCITS ETF",
+          "nordnet_name": "iShares Core € Corp Bond UCITS ETF EUR (Dist)",
+          "category": "bonds_fixed_income",
+          "ter_percent": 0.20,
+          "target_rsi_dip": 45.0,
+          "sma_dip_below_pct": 1.5,
+          "notes": "Eurooppalaisia investment grade -yrityslainoja maltillisella riskillä ja tasaisella tuotolla (SEGA / EUNB)."
+        }
+      ]
+    }
+  ]
+}

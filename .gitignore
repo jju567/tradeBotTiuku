@@ -43,6 +43,10 @@ logs/*
 data/*
 !data/.gitkeep
 !data/nordnet_universe.csv
+!data/clean_microcap_universe.csv
+!data/clean_microcap_pit_fundamentals.csv
+!data/watchlist_turnarounds.csv
+!data/etf_watchlist.json
 screener/data/*
 *.db
 *.sqlite
