@@ -101,9 +101,73 @@ MAX_ADV_ALLOCATION_PCT = 0.10       # Max 10% of 20-day ADV to protect order boo
 SLIPPAGE_PENALTY_PCT = 0.005        # Kept for backwards compatibility
 
 
-def calculate_transaction_fee(gross_value: float) -> float:
-    """Calculates realistic transaction fee: max(Gross Value * 0.20%, 9.00 flat minimum)."""
-    return max(gross_value * VARIABLE_BROKER_FEE_PCT, MIN_BROKER_FEE)
+def get_live_fx_rates() -> Dict[str, float]:
+    """Fetches live FX rates EURUSD and EURSEK from Yahoo Finance with fallbacks."""
+    fx_dict = {"EURUSD": 1.08, "EURSEK": 11.30}
+    try:
+        t_usd = yf.Ticker("EURUSD=X").history(period="5d")
+        if not t_usd.empty:
+            fx_dict["EURUSD"] = float(t_usd["Close"].dropna().iloc[-1])
+    except Exception:
+        pass
+    try:
+        t_sek = yf.Ticker("EURSEK=X").history(period="5d")
+        if not t_sek.empty:
+            fx_dict["EURSEK"] = float(t_sek["Close"].dropna().iloc[-1])
+    except Exception:
+        pass
+    return fx_dict
+
+
+def get_ticker_currency(ticker: str, known_currency: Optional[str] = None) -> str:
+    """Resolves local currency for ticker: EUR (.HE), SEK (.ST), or USD."""
+    if known_currency and isinstance(known_currency, str) and known_currency.strip():
+        return known_currency.strip().upper()
+    t_clean = str(ticker).strip().upper()
+    if t_clean.endswith(".HE"):
+        return "EUR"
+    if t_clean.endswith(".ST"):
+        return "SEK"
+    return "USD"
+
+
+def get_fx_to_account(ticker_currency: str, account_currency: str = "EUR", fx_rates: Optional[Dict[str, float]] = None) -> float:
+    """
+    Returns multiplier to convert an amount in ticker_currency to account_currency.
+    amount_in_account_currency = amount_in_ticker_currency * fx_to_account
+    """
+    ticker_curr = ticker_currency.strip().upper()
+    acc_curr = account_currency.strip().upper()
+    if ticker_curr == acc_curr:
+        return 1.0
+
+    rates = fx_rates or get_live_fx_rates()
+    eur_usd = rates.get("EURUSD", 1.08)
+    eur_sek = rates.get("EURSEK", 11.30)
+
+    # First convert ticker_currency to EUR
+    if ticker_curr == "EUR":
+        to_eur = 1.0
+    elif ticker_curr == "USD":
+        to_eur = 1.0 / eur_usd
+    elif ticker_curr == "SEK":
+        to_eur = 1.0 / eur_sek
+    else:
+        to_eur = 1.0
+
+    if acc_curr == "EUR":
+        return to_eur
+    elif acc_curr == "USD":
+        return to_eur * eur_usd
+    elif acc_curr == "SEK":
+        return to_eur * eur_sek
+
+    return to_eur
+
+
+def calculate_transaction_fee(gross_value: float, min_fee: float = MIN_BROKER_FEE) -> float:
+    """Calculates realistic transaction fee: max(Gross Value * 0.20%, min_fee)."""
+    return max(gross_value * VARIABLE_BROKER_FEE_PCT, min_fee)
 
 
 class PaperAccountManager:
@@ -113,11 +177,12 @@ class PaperAccountManager:
         self,
         account_path: Path | str = DEFAULT_PAPER_ACCOUNT_JSON,
         starting_balance: float = STARTING_BALANCE,
+        currency: str = "USD",
     ):
         self.account_path = Path(account_path)
         self.starting_balance = float(starting_balance)
         self.cash_balance = self.starting_balance
-        self.currency = "USD"
+        self.currency = currency
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.updated_at = self.created_at
         self.load()
@@ -129,10 +194,11 @@ class PaperAccountManager:
                 with open(self.account_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self.cash_balance = float(data.get("cash_balance", self.starting_balance))
-                    self.currency = data.get("currency", "USD")
+                    self.currency = data.get("currency", self.currency)
                     self.created_at = data.get("created_at", self.created_at)
                     self.updated_at = data.get("updated_at", self.updated_at)
-                    logger.info(f"Loaded Paper Account: Cash Balance = ${self.cash_balance:,.2f} {self.currency}")
+                    curr_sym = "€" if self.currency == "EUR" else "$"
+                    logger.info(f"Loaded Paper Account: Cash Balance = {curr_sym}{self.cash_balance:,.2f} {self.currency}")
                     return
             except Exception as e:
                 logger.warning(f"Could not read {self.account_path}: {e}. Reinitializing.")
@@ -424,12 +490,20 @@ class LiveTradingDaemon:
 
             if action == "SELL":
                 gross_sale_value = shares * current_price
-                transaction_fee = calculate_transaction_fee(gross_sale_value)
+                ticker_curr = get_ticker_currency(ticker)
+                fx_to_acc = get_fx_to_account(ticker_curr, self.account.currency)
+                fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+                transaction_fee = calculate_transaction_fee(gross_sale_value, min_fee=min_fee_local)
                 net_return = gross_sale_value - transaction_fee
                 net_pnl = net_return - capital_invested
 
+                # Convert net_return to account currency (EUR) before crediting cash balance
+                net_return_acc = net_return * fx_to_acc
+
                 # Update cash balance
-                self.account.cash_balance += net_return
+                self.account.cash_balance += net_return_acc
                 self.account.save()
 
                 # Archive trade
@@ -450,22 +524,30 @@ class LiveTradingDaemon:
                 self.append_trade_history(trade_record)
                 closed_count += 1
 
+                curr_sym = "€" if self.account.currency == "EUR" else "$"
                 logger.info(
                     f"🚨 [SELL TRIGGERED] {ticker} | Exit: {reason} | "
-                    f"Shares: {shares} @ ${current_price:.2f} | Gross: ${gross_sale_value:.2f} | "
-                    f"Fee: ${transaction_fee:.2f} | Net Proceeds: ${net_return:.2f} | "
-                    f"Net PnL: ${net_pnl:+.2f} | Remaining Cash: ${self.account.cash_balance:,.2f}"
+                    f"Shares: {shares} @ {current_price:.2f} {ticker_curr} | "
+                    f"Gross: {gross_sale_value:.2f} {ticker_curr} | "
+                    f"Fee: {transaction_fee:.2f} {ticker_curr} | Net Proceeds: {net_return:.2f} {ticker_curr} "
+                    f"({net_return_acc:,.2f} {self.account.currency}) | "
+                    f"Net PnL: {net_pnl:+.2f} {ticker_curr} | Remaining Cash: {curr_sym}{self.account.cash_balance:,.2f}"
                 )
             else:
                 unrealized_gross = shares * current_price
-                unrealized_fee = calculate_transaction_fee(unrealized_gross)
+                ticker_curr = get_ticker_currency(ticker)
+                fx_to_acc = get_fx_to_account(ticker_curr, self.account.currency)
+                fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+
+                unrealized_fee = calculate_transaction_fee(unrealized_gross, min_fee=min_fee_local)
                 unrealized_net = unrealized_gross - unrealized_fee
                 unrealized_pnl = unrealized_net - capital_invested
                 pnl_pct = (unrealized_pnl / capital_invested) * 100.0 if capital_invested > 0 else 0.0
 
                 logger.info(
-                    f"  • {ticker}: HOLD | Px: ${current_price:.2f} | "
-                    f"Val: ${unrealized_gross:,.2f} | PnL: ${unrealized_pnl:+.2f} ({pnl_pct:+.1f}%) | "
+                    f"  • {ticker}: HOLD | Px: {current_price:.2f} {ticker_curr} | "
+                    f"Val: {unrealized_gross:,.2f} {ticker_curr} | PnL: {unrealized_pnl:+.2f} {ticker_curr} ({pnl_pct:+.1f}%) | "
                     f"News: {news_verdict} | Runway: {financials_payload.get('cash_runway_months')}m"
                 )
                 retained_positions.append(pos)
@@ -479,7 +561,7 @@ class LiveTradingDaemon:
         Phase 2: Market Scanning (Profile B Only & Small Account Sizing).
         Reads clean_microcap_universe.csv, evaluates PROFILE_B only,
         enforces 1,000.0 target allocation, checks 10% 20d ADV liquidity,
-        deducts 9.00 buy fee, and routes whole shares only (math.floor).
+        deducts buy fee, and routes whole shares only (math.floor).
         Returns count of new positions opened.
         """
         if not self.clean_universe_path.exists():
@@ -492,11 +574,19 @@ class LiveTradingDaemon:
         open_positions = self.load_open_positions()
         held_tickers = {p["Ticker"] for p in open_positions}
 
-        # Calculate Total Invested Capital in open positions
-        open_capital = sum(float(p.get("Capital Invested", p["Shares"] * p["Buy Price"])) for p in open_positions)
+        # Calculate Total Invested Capital in open positions (converted to account currency)
+        open_capital = 0.0
+        for p in open_positions:
+            p_tick = p["Ticker"]
+            p_curr = get_ticker_currency(p_tick)
+            p_fx = get_fx_to_account(p_curr, self.account.currency)
+            p_cap = float(p.get("Capital Invested", p["Shares"] * p["Buy Price"]))
+            open_capital += p_cap * p_fx
+
+        curr_sym = "€" if self.account.currency == "EUR" else "$"
         logger.info(
-            f"📊 Portfolio Status: Cash = ${self.account.cash_balance:,.2f} | "
-            f"Active Capital = ${open_capital:,.2f} | Target Allocation/Stock = ${POSITION_ALLOCATION:,.2f}"
+            f"📊 Portfolio Status: Cash = {curr_sym}{self.account.cash_balance:,.2f} | "
+            f"Active Capital = {curr_sym}{open_capital:,.2f} | Target Allocation/Stock = {curr_sym}{POSITION_ALLOCATION:,.2f}"
         )
 
         new_buys = 0
@@ -534,30 +624,42 @@ class LiveTradingDaemon:
                 )
                 continue
 
-            # 1. Target Allocation = 1000.0 (Strictly 10% of the 10k starting balance)
+            # 1. Target Allocation in Account Currency = 1,000.0 (Strictly 10% of starting balance)
+            target_allocation_acc = POSITION_ALLOCATION
+            if target_allocation_acc > self.account.cash_balance:
+                target_allocation_acc = self.account.cash_balance
 
-            target_allocation = POSITION_ALLOCATION
-            if target_allocation > self.account.cash_balance:
-                target_allocation = self.account.cash_balance
+            # Convert target allocation & minimum fee to local ticker currency
+            ticker_curr = get_ticker_currency(ticker, row.get("currency"))
+            fx_to_acc = get_fx_to_account(ticker_curr, self.account.currency)
+            fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+            target_allocation_local = target_allocation_acc * fx_acc_to_local
+            min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
 
             # 2. Check Liquidity: Ensure Target Allocation <= 0.10 * 20d_ADV
-            adv_20d_usd = float(row.get("adv_20d_usd", 0.0) or 0.0)
-            max_adv_allowed = adv_20d_usd * MAX_ADV_ALLOCATION_PCT if adv_20d_usd > 0 else 0.0
+            adv_20d_local = float(row.get("adv_20d_local", 0.0) or 0.0)
+            if adv_20d_local <= 0.0:
+                adv_20d_usd = float(row.get("adv_20d_usd", 0.0) or 0.0)
+                fx_usd_to_local = get_fx_to_account("USD", ticker_curr)
+                adv_20d_local = adv_20d_usd * fx_usd_to_local
 
-            if max_adv_allowed > 0 and target_allocation > max_adv_allowed:
+            max_adv_allowed = adv_20d_local * MAX_ADV_ALLOCATION_PCT if adv_20d_local > 0 else 0.0
+
+            if max_adv_allowed > 0 and target_allocation_local > max_adv_allowed:
                 logger.warning(
-                    f"⚠️ {ticker}: Target allocation ${target_allocation:,.2f} exceeds 10% of 20d ADV "
-                    f"(${max_adv_allowed:,.2f}). Capping to ADV limit."
+                    f"⚠️ {ticker}: Target allocation {target_allocation_local:,.2f} {ticker_curr} exceeds 10% of 20d ADV "
+                    f"({max_adv_allowed:,.2f} {ticker_curr}). Capping to ADV limit."
                 )
-                target_allocation = max_adv_allowed
+                target_allocation_local = max_adv_allowed
 
-            if target_allocation < (MIN_BROKER_FEE + 10.0):
-                logger.debug(f"  • {ticker}: Allocation ${target_allocation:.2f} too small after liquidity check. Skipping.")
+            if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
+                logger.debug(f"  • {ticker}: Allocation {target_allocation_local:.2f} {ticker_curr} too small after liquidity check. Skipping.")
                 continue
 
-            # 3. Deduct Buy Fee to determine Investable Cash
-            investable_cash = target_allocation - MIN_BROKER_FEE
-            if investable_cash <= 0:
+            # 3. Deduct Buy Fee to determine Investable Cash in local currency
+            investable_cash_local = target_allocation_local - min_fee_local
+            if investable_cash_local <= 0:
                 logger.debug(f"  • {ticker}: Investable cash <= 0 after fee deduction. Skipping.")
                 continue
 
@@ -568,22 +670,26 @@ class LiveTradingDaemon:
                 continue
 
             # 5. Whole Shares Only via math.floor
-            shares_to_buy = math.floor(investable_cash / current_price)
+            shares_to_buy = math.floor(investable_cash_local / current_price)
             if shares_to_buy <= 0:
                 logger.debug(
-                    f"  • {ticker}: Investable cash ${investable_cash:.2f} cannot afford 1 whole share @ ${current_price:.2f}"
+                    f"  • {ticker}: Investable cash {investable_cash_local:.2f} {ticker_curr} cannot afford 1 whole share @ {current_price:.2f} {ticker_curr}"
                 )
                 continue
 
-            # 6. Deduct Total Cost (Shares * Price + 9.00) from cash
+            # 6. Deduct Total Cost (Shares * Price + Fee) from cash in account currency
             actual_gross_buy = shares_to_buy * current_price
-            total_cost = actual_gross_buy + MIN_BROKER_FEE
+            actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
+            total_cost_local = actual_gross_buy + actual_fee
+            total_cost_acc = total_cost_local * fx_to_acc
 
-            if total_cost > self.account.cash_balance:
-                logger.warning(f"Total cost ${total_cost:.2f} exceeds cash ${self.account.cash_balance:.2f}. Skipping.")
+            if total_cost_acc > self.account.cash_balance:
+                logger.warning(
+                    f"Total cost {total_cost_acc:.2f} {self.account.currency} exceeds cash {self.account.cash_balance:.2f} {self.account.currency}. Skipping."
+                )
                 continue
 
-            self.account.cash_balance -= total_cost
+            self.account.cash_balance -= total_cost_acc
             self.account.save()
 
             new_pos = {
@@ -591,7 +697,7 @@ class LiveTradingDaemon:
                 "Buy Date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "Buy Price": current_price,
                 "Shares": shares_to_buy,
-                "Capital Invested": round(total_cost, 2),
+                "Capital Invested": round(total_cost_local, 2),
                 "Strategy": "PROFILE_B",
             }
             open_positions.append(new_pos)
@@ -600,9 +706,10 @@ class LiveTradingDaemon:
 
             logger.info(
                 f"🎯 [BUY TRIGGERED] {ticker} (Profile B Value) | "
-                f"Bought {shares_to_buy} whole shares @ ${current_price:.2f} | "
-                f"Gross: ${actual_gross_buy:.2f} | Fee: ${MIN_BROKER_FEE:.2f} | "
-                f"Total Cost: ${total_cost:,.2f} | Remaining Cash: ${self.account.cash_balance:,.2f}"
+                f"Bought {shares_to_buy} whole shares @ {current_price:.2f} {ticker_curr} | "
+                f"Gross: {actual_gross_buy:.2f} {ticker_curr} | Fee: {actual_fee:.2f} {ticker_curr} | "
+                f"Total Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {self.account.currency}) | "
+                f"Remaining Cash: {curr_sym}{self.account.cash_balance:,.2f}"
             )
 
         if new_buys > 0:
@@ -620,9 +727,10 @@ class LiveTradingDaemon:
         sold_count = self.execute_portfolio_management()
         bought_count = self.execute_market_screening()
 
+        curr_sym = "€" if self.account.currency == "EUR" else "$"
         print("\n" + "-" * 90)
         print(f"✅ CYCLE SUMMARY: {sold_count} position(s) closed | {bought_count} position(s) opened")
-        print(f"💰 CURRENT CASH BALANCE: ${self.account.cash_balance:,.2f} {self.account.currency}")
+        print(f"💰 CURRENT CASH BALANCE: {curr_sym}{self.account.cash_balance:,.2f} {self.account.currency}")
         print("-" * 90 + "\n")
 
         return sold_count, bought_count

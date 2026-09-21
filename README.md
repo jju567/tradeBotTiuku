@@ -194,7 +194,7 @@ python -m screener.main_controller --mass-scan
 
 ### 6. 🚀 Live Forward-Testing Daemon (`main_controller.py`)
 Juuritason päädaemon reaaliaikaiseen paperisalkun hallintaan ja Profile B -mikroyhtiöseulontaan:
-- **Paperisalkun hallinta**: $10,000 käteissaldo (`data/paper_account.json`), aktiiviset positiot (`data/open_positions.csv`) ja kauppahistoria (`data/trade_history.csv`).
+- **Paperisalkun hallinta & automaattinen FX-valuuttamuunnos (Multi-Currency)**: 10,000 € käteissaldo (`data/paper_account.json`), aktiiviset positiot (`data/open_positions.csv`) ja kauppahistoria (`data/trade_history.csv`). Sisältää täyden EUR/SEK/USD-valuuttakurssimuunnoksen: ruotsalaiset (`.ST`) ja yhdysvaltalaiset osakkeet arvotetaan ja ostetaan paikallisessa valuutassa, ja käteisvarojen veloitus ja myyntituotot tilitetään reaaliaikaisilla valuuttakursseilla suoraan salkun perusvaluuttaan (EUR) estäen saldon vääristymisen.
 - **Vaihe 1: Tri-Layer Fundamental Exit**:
   - *Taso 1: Katastrofisuoja (-50 %)*: Välitön myynti puolittumisesta.
   - *Taso 2: LLM News Radar*: Skannaa reaaliaikaiset tiedotteet/uutiset (`Ticker.news`) ja suorittaa hätämyynnin punaisista lipuista (diluutio, saneeraus).

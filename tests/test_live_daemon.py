@@ -207,3 +207,79 @@ def test_run_daily_cycle_end_to_end(temp_daemon_env):
         sold, bought = daemon.run_daily_cycle()
         assert sold == 0
         assert bought == 2
+
+
+def test_swedish_stock_sell_fx_conversion(temp_daemon_env):
+    """
+    Critical regression test:
+    Selling a Swedish stock (SEK) must NOT credit SEK directly 1:1 into EUR cash balance!
+    10,000 SEK must convert to ~885 EUR (with EURSEK=11.30).
+    """
+    daemon, tmp_path = temp_daemon_env
+    daemon.account.currency = "EUR"
+    daemon.account.cash_balance = 500.0  # Starting with 500 EUR
+
+    # Position: 42 shares of STIL.ST bought at 241.50 SEK (invested ~10,163 SEK)
+    daemon.save_open_positions([
+        {"Ticker": "STIL.ST", "Buy Date": "2026-09-01", "Buy Price": 241.50, "Shares": 42, "Capital Invested": 10163.29, "Strategy": "PROFILE_B"}
+    ])
+
+    # Sell at 255.50 SEK.
+    # Gross SEK = 42 * 255.50 = 10,731.0 SEK.
+    # Fee in SEK = max(10,731 * 0.002, 9.0 * 11.30) = max(21.46, 101.7) = 101.7 SEK.
+    # Net proceeds SEK = 10,731.0 - 101.7 = 10,629.3 SEK.
+    # Converted to EUR @ EURSEK 11.30: 10,629.3 / 11.30 = 940.65 EUR.
+    # Cash should be: 500.0 + 940.65 = ~1,440.65 EUR (NOT 500 + 10,629 = 11,129 EUR!).
+    with patch.object(daemon, "fetch_live_price", return_value=255.50), \
+         patch.object(daemon, "evaluate_news_radar", return_value=("REJECT", "Deterioration")), \
+         patch("main_controller.get_hard_financials", return_value={}), \
+         patch("main_controller.get_live_fx_rates", return_value={"EURUSD": 1.08, "EURSEK": 11.30}):
+
+        closed = daemon.execute_portfolio_management()
+        assert closed == 1
+
+        # Check cash balance: MUST be around ~1,440 EUR, NOT inflated to ~11,000 EUR!
+        assert 1400.0 < daemon.account.cash_balance < 1500.0
+
+
+def test_swedish_stock_buy_fx_conversion(temp_daemon_env):
+    """
+    Buying a Swedish stock with target allocation of 1,000 EUR
+    must convert to ~11,300 SEK, buy proper whole shares, and deduct ~1,000 EUR from EUR cash.
+    """
+    daemon, tmp_path = temp_daemon_env
+    daemon.account.currency = "EUR"
+    daemon.account.cash_balance = 10_000.0
+
+    universe_content = (
+        "ticker,market,market_cap_usd,market_cap_local,currency,current_price,adv_20d_local,adv_20d_usd\n"
+        "SWED_B.ST,SE,50000000.0,550000000.0,SEK,250.0,1000000.0,90000.0\n"
+    )
+    daemon.clean_universe_path.write_text(universe_content, encoding="utf-8")
+
+    def mock_eval_profiles(facts):
+        return {"is_profile_b": True, "is_profile_a": False, "signal": "BUY_PROFILE_B"}
+
+    with patch("main_controller.get_hard_financials", return_value={}), \
+         patch("main_controller.evaluate_profiles", side_effect=mock_eval_profiles), \
+         patch.object(daemon, "fetch_live_price", return_value=250.0), \
+         patch("main_controller.get_live_fx_rates", return_value={"EURUSD": 1.08, "EURSEK": 11.30}):
+
+        new_buys = daemon.execute_market_screening()
+        assert new_buys == 1
+
+        open_pos = daemon.load_open_positions()
+        assert len(open_pos) == 1
+        pos = open_pos[0]
+        assert pos["Ticker"] == "SWED_B.ST"
+
+        # 1,000 EUR = 11,300 SEK. Min fee = 9 EUR * 11.30 = 101.7 SEK.
+        # Investable SEK = 11,300 - 101.7 = 11,198.3 SEK.
+        # Shares @ 250 SEK = floor(11,198.3 / 250) = 44 shares!
+        assert pos["Shares"] == 44
+
+        # Total cost SEK = 44 * 250 + 101.7 = 11,101.7 SEK.
+        # EUR deducted = 11,101.7 / 11.30 = ~982.45 EUR.
+        # Cash remaining = 10,000 - 982.45 = ~9,017.55 EUR.
+        assert 9000.0 < daemon.account.cash_balance < 9050.0
+

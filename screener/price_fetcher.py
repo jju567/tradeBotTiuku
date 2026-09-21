@@ -166,7 +166,7 @@ def get_realtime_data(ticker: str, market: Optional[str] = None) -> Dict[str, An
         # Populate success result
         result["current_price"] = float(price)
         result["market_cap"] = float(market_cap) if market_cap else None
-        result["currency"] = str(currency).upper() if currency else ("EUR" if norm_ticker.endswith(".HE") else "USD")
+        result["currency"] = str(currency).upper() if currency else ("EUR" if norm_ticker.endswith(".HE") else ("SEK" if norm_ticker.endswith(".ST") else "USD"))
         result["previous_close"] = float(prev_close) if prev_close else None
         result["day_change_pct"] = day_change_pct
         result["status"] = "SUCCESS"
