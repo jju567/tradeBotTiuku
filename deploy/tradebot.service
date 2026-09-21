@@ -1,0 +1,18 @@
+[Unit]
+Description=tradeBotTiuku Unified Service (Streamlit UI + Paper Trader Daemon)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/tradeBotTiuku
+Environment="PATH=/opt/tradeBotTiuku/venv/bin:/usr/local/bin:/usr/bin"
+EnvironmentFile=-/opt/tradeBotTiuku/.env
+ExecStart=/opt/tradeBotTiuku/venv/bin/python start_all.py --interval-hours 4
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

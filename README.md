@@ -15,6 +15,7 @@
   - *Parametrit*: `--interval-hours <h>` (oletus: 4.0h), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8501).
 - **Pelkkä Käyttöliittymä**: `streamlit run dashboard.py`
 - **Pelkkä Paper Trader Daemon**: `python main_controller.py --loop --interval-hours 4`
+- 🐧 **Linux-palvelinasennus & systemd-daemon**: Täydellinen asennusopas ja valmiit palvelupohjat löytyvät dokumentista: [LINUX_DAEMON_OHJEET.md](LINUX_DAEMON_OHJEET.md).
 - **Reaaliaikainen Massa-ajojen Seuranta**: Taustalla pyörivä asynkroninen prosessi, reaaliaikainen edistymispalkki (`completed / total`) ja automaattinen taustapäivitys ilman koko sivun uudelleenlatausta (`@st.fragment`).
 - **Selkeät Välilehdet**:
   - 📋 **Seulonnan Tulokset**: Suodatettava ja haettava taulukko analysoiduista raporteista, Suomen aikavyöhykkeen aikaleimoilla (`DD.MM.YYYY HH:MM:SS`), profiileilla ja tuomioilla (🔥 *STRONG BUY*, 👀 *WATCH_TURNAROUND*, 🟡 *HOLD*, ❌ *REJECT*).
