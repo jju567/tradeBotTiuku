@@ -188,6 +188,26 @@ def fetch_positions_live_data(tickers_tuple: tuple) -> dict:
     return live_map
 
 
+@st.cache_data(ttl=300)
+def get_live_fx_rates() -> dict:
+    """Fetches live FX rates EURUSD and EURSEK from Yahoo Finance."""
+    import yfinance as yf
+    fx_dict = {"EURUSD": 1.15, "EURSEK": 11.30}
+    try:
+        t_usd = yf.Ticker("EURUSD=X").history(period="5d")
+        if not t_usd.empty:
+            fx_dict["EURUSD"] = float(t_usd["Close"].dropna().iloc[-1])
+    except Exception:
+        pass
+    try:
+        t_sek = yf.Ticker("EURSEK=X").history(period="5d")
+        if not t_sek.empty:
+            fx_dict["EURSEK"] = float(t_sek["Close"].dropna().iloc[-1])
+    except Exception:
+        pass
+    return fx_dict
+
+
 @st.cache_data(ttl=180)
 def fetch_ticker_history(ticker: str, period: str = "3mo") -> tuple:
     """Fetches historical OHLCV data for charts with suffix fallback."""
@@ -721,14 +741,32 @@ def render_dashboard_views(active_menu: str):
                     day_chg = float(q.get("day_change_pct") or 0.0)
                     curr_curr = q.get("currency") or "USD"
 
+                    fx_rates = get_live_fx_rates()
+                    fx_eur_usd = fx_rates.get("EURUSD", 1.15)
+                    fx_eur_sek = fx_rates.get("EURSEK", 11.30)
+
+                    # FX conversion to EUR
+                    if curr_curr == "EUR":
+                        fx_to_eur = 1.0
+                    elif curr_curr == "USD":
+                        fx_to_eur = 1.0 / fx_eur_usd
+                    elif curr_curr == "SEK":
+                        fx_to_eur = 1.0 / fx_eur_sek
+                    else:
+                        fx_to_eur = 1.0
+
                     pos_mkt_val = shares * curr_price
                     pos_pnl_abs = pos_mkt_val - cap_invested
                     pos_pnl_pct = ((curr_price - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
                     cat_stop = buy_price * 0.50
                     stop_dist_pct = ((curr_price - cat_stop) / curr_price * 100.0) if curr_price > 0 else 0.0
 
-                    total_invested += cap_invested
-                    total_market_val += pos_mkt_val
+                    invested_eur = cap_invested * fx_to_eur
+                    market_val_eur = pos_mkt_val * fx_to_eur
+                    pnl_abs_eur = pos_pnl_abs * fx_to_eur
+
+                    total_invested += invested_eur
+                    total_market_val += market_val_eur
 
                     enriched_rows.append({
                         "ticker": t_sym,
@@ -741,6 +779,9 @@ def render_dashboard_views(active_menu: str):
                         "market_value": pos_mkt_val,
                         "pnl_abs": pos_pnl_abs,
                         "pnl_pct": pos_pnl_pct,
+                        "invested_eur": invested_eur,
+                        "market_val_eur": market_val_eur,
+                        "pnl_abs_eur": pnl_abs_eur,
                         "cat_stop": cat_stop,
                         "stop_dist_pct": stop_dist_pct,
                         "strategy": strategy,
@@ -749,7 +790,7 @@ def render_dashboard_views(active_menu: str):
 
                 df_enriched = pd.DataFrame(enriched_rows)
 
-                # Portfolio KPI calculations
+                # Portfolio KPI calculations (Normalized to EUR)
                 unrealized_pnl = total_market_val - total_invested
                 unrealized_pnl_pct = (unrealized_pnl / total_invested * 100.0) if total_invested > 0 else 0.0
                 total_equity = free_cash + total_market_val
@@ -758,25 +799,36 @@ def render_dashboard_views(active_menu: str):
 
                 win_count = sum(1 for row in enriched_rows if row["pnl_pct"] > 0)
                 loss_count = sum(1 for row in enriched_rows if row["pnl_pct"] < 0)
+                win_rate = (win_count / len(enriched_rows) * 100.0) if enriched_rows else 0.0
+                avg_ret = df_enriched["pnl_pct"].mean() if not df_enriched.empty else 0.0
+                med_ret = df_enriched["pnl_pct"].median() if not df_enriched.empty else 0.0
 
-                # Render Top KPI Cards
+                best_stock_str = "-"
+                worst_stock_str = "-"
+                if not df_enriched.empty:
+                    b_row = df_enriched.loc[df_enriched["pnl_pct"].idxmax()]
+                    w_row = df_enriched.loc[df_enriched["pnl_pct"].idxmin()]
+                    best_stock_str = f"{b_row['ticker']} ({b_row['pnl_pct']:+.2f}%, {b_row['pnl_abs_eur']:+.2f} €)"
+                    worst_stock_str = f"{w_row['ticker']} ({w_row['pnl_pct']:+.2f}%, {w_row['pnl_abs_eur']:+.2f} €)"
+
+                # Render Top KPI Cards (Row 1: Salkun Arvo & PnL)
                 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
                 with kpi1:
                     st.metric(
                         "Salkun Kokonaisarvo",
-                        f"${total_equity:,.2f}",
-                        f"{portfolio_total_return:+,.2f} ({portfolio_total_return_pct:+.2f}%)",
+                        f"{total_equity:,.2f} €",
+                        f"{portfolio_total_return:+,.2f} € ({portfolio_total_return_pct:+.2f}%)",
                     )
                 with kpi2:
-                    st.metric("Sijoitettu Pääoma", f"${total_invested:,.2f}")
+                    st.metric("Sijoitettu Pääoma", f"{total_invested:,.2f} €")
                 with kpi3:
                     st.metric(
                         "Avoin Tuotto (PnL)",
-                        f"${unrealized_pnl:+,.2f}",
+                        f"{unrealized_pnl:+,.2f} €",
                         f"{unrealized_pnl_pct:+.2f}%",
                     )
                 with kpi4:
-                    st.metric("Vapaa Käteinen", f"${free_cash:,.2f}")
+                    st.metric("Vapaa Käteinen", f"{free_cash:,.2f} €")
                 with kpi5:
                     st.metric(
                         "Avoimet Positiot",
@@ -784,13 +836,26 @@ def render_dashboard_views(active_menu: str):
                         f"{win_count} 🟢 / {loss_count} 🔴",
                     )
 
+                # Render Top KPI Cards (Row 2: Tilastollinen Yhteenveto)
+                stat1, stat2, stat3, stat4, stat5 = st.columns(5)
+                with stat1:
+                    st.metric("Voittoprosentti (Win Rate)", f"{win_rate:.1f}%")
+                with stat2:
+                    st.metric("Keskimääräinen Tuotto", f"{avg_ret:+.2f}%")
+                with stat3:
+                    st.metric("Mediaanituotto", f"{med_ret:+.2f}%")
+                with stat4:
+                    st.metric("Paras Positio", best_stock_str)
+                with stat5:
+                    st.metric("Heikoin Positio", worst_stock_str)
+
                 st.divider()
 
                 # Action buttons row
                 act_col1, act_col2, act_col3 = st.columns([2, 1, 1])
                 with act_col1:
                     st.markdown("##### 📈 Reaaliaikainen Osakekehitys & Tri-Layer Stopit")
-                    st.caption("Kurssit noudetaan suoraan markkinarajapinnasta. Tuottoluvut ja arvot päivittyvät reaaliajassa.")
+                    st.caption(f"Kurssit noudetaan suoraan markkinalta. Valuutat muunnettu euroiksi (1 EUR = {fx_eur_usd:.2f} $ | 1 EUR = {fx_eur_sek:.2f} SEK).")
                 with act_col2:
                     if st.button("🔄 Päivitä Kurssit Nyt", width="stretch"):
                         st.cache_data.clear()
@@ -843,16 +908,16 @@ def render_dashboard_views(active_menu: str):
                 table_display["Ostohinta"] = table_display.apply(lambda r: f"{r['buy_price']:,.2f} {r['currency']}", axis=1)
                 table_display["Nykykurssi"] = table_display.apply(lambda r: f"{r['curr_price']:,.2f} {r['currency']}", axis=1)
                 table_display["Päivämuutos"] = table_display["day_change_pct"].apply(lambda v: f"{v:+.2f}%")
-                table_display["Hankinta-arvo"] = table_display.apply(lambda r: f"${r['cap_invested']:,.2f}", axis=1)
-                table_display["Markkina-arvo"] = table_display.apply(lambda r: f"${r['market_value']:,.2f}", axis=1)
-                table_display["Voitto/Tappio"] = table_display.apply(lambda r: f"${r['pnl_abs']:+,.2f}", axis=1)
+                table_display["Hankinta-arvo (€)"] = table_display.apply(lambda r: f"{r['invested_eur']:,.2f} €", axis=1)
+                table_display["Markkina-arvo (€)"] = table_display.apply(lambda r: f"{r['market_val_eur']:,.2f} €", axis=1)
+                table_display["Tulos (€)"] = table_display.apply(lambda r: f"{r['pnl_abs_eur']:+,.2f} €", axis=1)
                 table_display["Tuotto %"] = table_display["pnl_pct"].apply(lambda v: f"{v:+.2f}%")
                 table_display["Stop-loss (-50%)"] = table_display.apply(lambda r: f"{r['cat_stop']:,.2f} {r['currency']}", axis=1)
                 table_display["Puskuri stoppiin"] = table_display["stop_dist_pct"].apply(lambda v: f"{v:.1f}%")
 
                 final_cols = [
                     "ticker", "buy_date", "Ostohinta", "Nykykurssi", "Päivämuutos",
-                    "shares", "Hankinta-arvo", "Markkina-arvo", "Voitto/Tappio", "Tuotto %",
+                    "shares", "Hankinta-arvo (€)", "Markkina-arvo (€)", "Tulos (€)", "Tuotto %",
                     "Stop-loss (-50%)", "Puskuri stoppiin", "strategy"
                 ]
                 final_renames = {

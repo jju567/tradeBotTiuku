@@ -15,7 +15,7 @@
   - 📋 **Seulonnan Tulokset**: Suodatettava ja haettava taulukko analysoiduista raporteista, Suomen aikavyöhykkeen aikaleimoilla (`DD.MM.YYYY HH:MM:SS`), profiileilla ja tuomioilla (🔥 *STRONG BUY*, 👀 *WATCH_TURNAROUND*, 🟡 *HOLD*, ❌ *REJECT*).
   - 👀 **Turnaround-Seurantalista (`watchlist_turnarounds.csv`)**: Yhtiöt, joissa on havaittu reaaliaikaisia positiivisia käännekatalyyttejä (*suurtilaukset, yrityskaupat, velkajärjestelyt, uusi johto*).
   - 📊 **ETF-Seuranta**: Buy the Dip -indikaattorit ja kuukausisäästön allokaatio.
-  - 💼 **Salkun Yhteenveto & Paper Trading Portfolio (`data/open_positions.csv`)**: Reaaliaikaiset spot-hinnat, avoin PnL (€/$ ja %), salkun kokonaisarvo ja käteissaldo, vaakapalkkikaavio tuotoista sekä interaktiivinen Plotly-kurssikehityskäyrä ostotasoilla ja -50 % katastrofistopilla.
+  - 💼 **Salkun Yhteenveto & Paper Trading Portfolio (`data/open_positions.csv`)**: Reaaliaikaiset spot-hinnat, automaattiset FX-valuuttakurssimuunnokset (EUR), avoin PnL (€ ja %), salkun kokonaisarvo ja käteissaldo, tilastollinen KPI-yhteenveto (Win Rate %, ka. tuotto %, mediaanituotto %, parhaat ja heikoimmat positiot euroina ja prosentteina), vaakapalkkikaavio tuotoista sekä interaktiivinen Plotly-kurssikehityskäyrä ostotasoilla ja -50 % katastrofistopilla.
   - 🪙 **Token-Laskuri & Kustannusseuranta**: Reaaliaikainen syöte-/tuotostokenien laskenta, pyyntömäärät, arvioitu dollarikulu ja jäljellä oleva analyysikapasiteetti.
   - ⚙️ **Massa-ajon Hallinta**: Suora käynnistyspainike raporteille valinnaisella reaaliaikaisella web-uutistarkistuksella.
 
