@@ -262,14 +262,30 @@ class LiveTradingDaemon:
                 writer = csv.writer(f)
                 writer.writerow(["Ticker", "Buy Date", "Buy Price", "Shares", "Capital Invested", "Strategy"])
 
+        standard_history_header = [
+            "Ticker", "Buy Date", "Sell Date", "Buy Price", "Sell Price",
+            "Shares", "Capital Invested", "Gross Sale Value", "Transaction Fee",
+            "Net Return", "Net PnL", "Exit Reason"
+        ]
         if not self.trade_history_path.exists():
             with open(self.trade_history_path, "w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow([
-                    "Ticker", "Buy Date", "Sell Date", "Buy Price", "Sell Price",
-                    "Shares", "Capital Invested", "Gross Sale Value", "Transaction Fee",
-                    "Net Return", "Net PnL", "Exit Reason"
-                ])
+                writer.writerow(standard_history_header)
+        else:
+            try:
+                with open(self.trade_history_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                if lines:
+                    first_cols = [c.strip() for c in lines[0].strip().split(",")]
+                    if len(first_cols) != len(standard_history_header) and len(lines) > 1:
+                        data_cols = [c.strip() for c in lines[1].strip().split(",")]
+                        if len(data_cols) == len(standard_history_header):
+                            lines[0] = ",".join(standard_history_header) + "\n"
+                            with open(self.trade_history_path, "w", encoding="utf-8") as f:
+                                f.writelines(lines)
+                            logger.info(f"Fixed mismatched header in {self.trade_history_path.name}")
+            except Exception as e:
+                logger.warning(f"Could not inspect/fix {self.trade_history_path.name} header: {e}")
 
     def load_open_positions(self) -> List[Dict[str, Any]]:
         """Reads open positions from CSV, normalizing legacy headers."""

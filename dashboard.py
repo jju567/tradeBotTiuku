@@ -1060,16 +1060,43 @@ def render_dashboard_views(active_menu: str):
                     st.warning(f"Positiota ei voitu avata (ehkä jo avoinna tai kurssidatan nouto epäonnistui).")
 
         with tab3:
+            trade_cols = [
+                "Ticker", "Buy Date", "Sell Date", "Buy Price", "Sell Price",
+                "Shares", "Capital Invested", "Gross Sale Value", "Transaction Fee",
+                "Net Return", "Net PnL", "Exit Reason"
+            ]
+
+            # Auto-repair mismatched header in trade_history.csv (e.g. 9 headers vs 12 data columns)
+            if TRADE_HISTORY_CSV.exists():
+                try:
+                    with open(TRADE_HISTORY_CSV, "r", encoding="utf-8") as f_th:
+                        th_lines = f_th.readlines()
+                    if th_lines:
+                        h_parts = [p.strip() for p in th_lines[0].strip().split(",")]
+                        if len(h_parts) != len(trade_cols) and len(th_lines) > 1:
+                            d_parts = [p.strip() for p in th_lines[1].strip().split(",")]
+                            if len(d_parts) == len(trade_cols):
+                                th_lines[0] = ",".join(trade_cols) + "\n"
+                                with open(TRADE_HISTORY_CSV, "w", encoding="utf-8") as f_out:
+                                    f_out.writelines(th_lines)
+                except Exception:
+                    pass
+
             df_trades = load_csv_safely(TRADE_HISTORY_CSV)
             if df_trades.empty:
                 st.info("Ei toteutuneita kauppoja tiedostossa `data/trade_history.csv`.")
             else:
-                for col in ["timestamp", "entrydate", "exitdate", "date"]:
+                for col in ["timestamp", "entrydate", "exitdate", "date", "buy date", "sell date"]:
                     if col in df_trades.columns:
                         df_trades[col] = df_trades[col].apply(to_helsinki_time)
-                
+
                 # Check realized PnL column
-                pnl_col = "realized_pnl" if "realized_pnl" in df_trades.columns else ("netpnl_eur" if "netpnl_eur" in df_trades.columns else None)
+                pnl_col = None
+                for candidate in ["net pnl", "net_pnl", "realized_pnl", "netpnleur", "net_pnl_eur", "pnl_absolute"]:
+                    if candidate in df_trades.columns:
+                        pnl_col = candidate
+                        break
+
                 if pnl_col:
                     total_pnl = pd.to_numeric(df_trades[pnl_col], errors="coerce").fillna(0.0).sum()
                     st.metric("Kokonais PnL (Realisoitunut)", f"{total_pnl:+,.2f} EUR")
