@@ -686,11 +686,35 @@ def render_dashboard_views(active_menu: str):
                     if not t_sym:
                         continue
                     
-                    buy_date = r.get("buy date", r.get("buy_date", r.get("date", "-")))
-                    buy_price = float(pd.to_numeric(r.get("buy price", r.get("buy_price", 0.0)), errors="coerce") or 0.0)
+                    buy_date = (
+                        r.get("entrydate")
+                        or r.get("entry_date")
+                        or r.get("buy date")
+                        or r.get("buy_date")
+                        or r.get("date")
+                        or "-"
+                    )
                     shares = float(pd.to_numeric(r.get("shares", 0.0), errors="coerce") or 0.0)
-                    cap_invested = float(pd.to_numeric(r.get("capital invested", r.get("capital_invested", buy_price * shares)), errors="coerce") or (buy_price * shares))
-                    strategy = r.get("strategy", "PROFILE_B")
+                    cap_invested = float(
+                        pd.to_numeric(
+                            r.get("positionvalue", r.get("position_value", r.get("capital invested", r.get("capital_invested", 0.0)))),
+                            errors="coerce",
+                        )
+                        or 0.0
+                    )
+                    buy_price = float(
+                        pd.to_numeric(
+                            r.get("entryprice", r.get("entry_price", r.get("buy price", r.get("buy_price", 0.0)))),
+                            errors="coerce",
+                        )
+                        or 0.0
+                    )
+                    if buy_price <= 0.0 and cap_invested > 0.0 and shares > 0.0:
+                        buy_price = round(cap_invested / shares, 4)
+                    if cap_invested <= 0.0 and buy_price > 0.0 and shares > 0.0:
+                        cap_invested = round(buy_price * shares, 2)
+
+                    strategy = r.get("strategy_type", r.get("strategy", "SATELLITE"))
 
                     q = live_quotes.get(t_sym, {})
                     curr_price = float(q.get("current_price") or buy_price)
