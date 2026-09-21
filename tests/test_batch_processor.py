@@ -99,7 +99,7 @@ def test_batch_processor_statefulness_and_csv_append(tmp_path):
     assert results_csv.exists()
     rows = list(csv.reader(results_csv.read_text(encoding="utf-8").splitlines()))
     assert len(rows) == 3  # Header + 2 rows
-    assert rows[0] == ["Filename", "Ticker", "Year", "Quarter", "Matched_Profile", "Verdict", "Reasoning"]
+    assert [c.lower() for c in rows[0]] == ["timestamp", "filename", "ticker", "year", "quarter", "matched_profile", "verdict", "reasoning"]
 
     # Verify log content
     assert log_file.exists()
@@ -107,7 +107,21 @@ def test_batch_processor_statefulness_and_csv_append(tmp_path):
     assert "KEMIRA.HE_2024_Q3.txt" in logged
     assert "QTCOM.HE_2024_Q1.txt" in logged
 
-    # Run again - should skip all
+    # Run again - should skip all when skip_processed=True
     processor.run()
     rows_after = list(csv.reader(results_csv.read_text(encoding="utf-8").splitlines()))
     assert len(rows_after) == 3
+
+    # Run with skip_processed=False - should reprocess all files
+    processor_reprocess = BatchProcessor(
+        reports_dir=reports_dir,
+        processed_log_path=log_file,
+        results_csv_path=results_csv,
+        api_key="",
+        throttle_seconds=0.0,
+        skip_processed=False,
+    )
+    processor_reprocess.run()
+    rows_reprocessed = list(csv.reader(results_csv.read_text(encoding="utf-8").splitlines()))
+    assert len(rows_reprocessed) == 5  # Header + 2 initial + 2 reprocessed
+

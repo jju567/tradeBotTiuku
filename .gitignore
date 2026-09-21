@@ -43,6 +43,7 @@ logs/*
 data/*
 !data/.gitkeep
 !data/nordnet_universe.csv
+screener/data/*
 *.db
 *.sqlite
 *.sqlite3
@@ -65,3 +66,6 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Scratch and Temporary Development Files
+scratch/

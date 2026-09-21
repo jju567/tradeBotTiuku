@@ -52,72 +52,96 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_REPORTS_DIR = BASE_DIR / "data" / "historical_reports"
 DEFAULT_PROCESSED_LOG = BASE_DIR / "data" / "processed_files.log"
 DEFAULT_RESULTS_CSV = BASE_DIR / "data" / "batch_results.csv"
+DEFAULT_STATUS_JSON = BASE_DIR / "data" / "batch_status.json"
 
 # OpenRouter Constants
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3-8b-instruct:free")
+DEFAULT_FREE_MODEL = os.getenv("OPENROUTER_FREE_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+DEFAULT_PAID_MODEL = os.getenv("OPENROUTER_PAID_MODEL", "google/gemini-2.5-flash")
+DEFAULT_OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", DEFAULT_FREE_MODEL)
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 60.0
 THROTTLE_DELAY_SECONDS = 7.0
 
 # Dual-Lens Core System Prompt
-CORE_SYSTEM_PROMPT = """You are an expert quantitative equity analyst evaluating Nordic and US micro/small-cap companies from Earnings Reports (10-Q/10-K, Osavuosikatsaukset).
-You must evaluate the company through TWO distinct investment lenses simultaneously:
-- Profile A (High-Margin Growth / Tenbagger Compounder)
-- Profile B (Deep Value / Turnaround Setup)
+CORE_SYSTEM_PROMPT = """You are an elite quantitative micro/small-cap equity analyst and risk officer specializing in global equities (US NASDAQ/NYSE under $300M market cap, and Nordic markets .HE, .ST, .OL, .CO). Your task is to evaluate financial documents (10-Q, 10-K, interim reports, regulatory filings) and recent news headlines/PR snippets.
 
-EVALUATION CRITERIA & RULES:
+Your primary directive is CAPITAL PRESERVATION: rigorously identify and reject toxic financing, ongoing dilution, unsustainable cash burn, and structural value traps before hunting for asymmetric upside.
 
-1. FINANCIAL SAFETY (Absolute Mandatory Gatekeeper - Instant REJECT if ANY are True):
-   - "going_concern_risk": Set to TRUE if there is evidence of severe insolvency, going concern uncertainty ('toiminnan jatkuvuus'), negative equity, or debt covenant breaches.
-   - "dilution_risk_detected": Set to TRUE if there are mentions of "reverse stock split" / share consolidation ('käänteinen split', 'osakkeiden yhdistäminen'), continuous massive dilutive share issuances, death-spiral convertible notes, or toxic equity lines destroying shareholder value.
-   - "unsustainable_cash_burn": Set to TRUE if the company has negative operating cash flow and its existing cash balance will be entirely consumed within less than 4 quarters (12 months runway) without near-term breakeven or non-dilutive financing.
-   - "erratic_pivots_detected": Set to TRUE if the company has opportunistically changed its core business model across unrelated industries (e.g., from beverages/skincare to crypto/blockchain/AI/mining/drones/shells).
-   * MANDATORY ENFORCEMENT: If ANY of going_concern_risk, dilution_risk_detected, unsustainable_cash_burn, or erratic_pivots_detected is TRUE, the verdict MUST be "REJECT" and matched_profile MUST be "NONE".
+---
 
-2. PROFILE A (High-Margin Growth):
-   - "gross_margin_over_40": Set to TRUE if Gross Margin ('myyntikate' / 'bruttokate') > 40.0%, or if scalable software/IP business with low COGS.
-   - "rule_of_40_passed": Set to TRUE if (Revenue Growth YoY % + Operating Profit Margin / EBIT %) >= 40.0%.
-   - "recurring_revenue_mentioned": Set to TRUE if SaaS, subscription models, ARR, recurring maintenance, or long-term contracts ('toistuva liikevaihto', 'jatkuvalaskutteinen').
-   - "organic_growth_confirmed": Set to TRUE if revenue growth is driven by core organic product/customer traction rather than artificial shell acquisitions or one-time accounting gains.
+# SECTION 1: MANDATORY HARD FILTERS (INSTANT REJECT)
+If ANY of the following conditions are met, the stock MUST receive a verdict of "REJECT", regardless of net cash position or potential narrative:
 
-3. PROFILE B (Deep Value / Turnaround):
-   - "strong_net_cash_position": Set to TRUE if company has significant cash reserves and minimal/zero debt (net cash positive balance sheet).
-   - "positive_operating_cash_flow": Set to TRUE if core operations generate positive cash flow ('liiketoiminnan rahavirta positiivinen').
-   - "turnaround_indicators": Set to TRUE if significant cost cuts, restructuring taking effect, sequential margin expansion, or returning to profitability.
+1. DILUTION & CAPITAL DESTRUCTION:
+   - Mentions of past or pending reverse stock splits (e.g., 1-for-5, 1-for-20).
+   - Usage of toxic debt, death-spiral financing, or aggressive Equity Lines of Credit (ELOC, SEPA) that dilute existing common shares.
+   - Frequent dilutive share issuances, heavy warrant overhangs, or ATM (At-The-Market) continuous offerings.
+   - Local Nordic terms indicating dilutive rights issues or emergency financing: "nyemission", "företrädesemission", "suunnattu anti" (if dilutive to common equity without clear accretive M&A).
 
-4. VERDICT DETAILS:
-   - "matched_profile": "GROWTH" if meets Profile A criteria; "VALUE" if meets Profile B criteria; "NONE" if neither or fails financial safety.
-   - "verdict": "STRONG BUY" if matched_profile is "GROWTH" or "VALUE" AND all financial_safety flags are FALSE.
-               "HOLD" if viable business but incomplete criteria.
-               "REJECT" if ANY financial_safety flag is TRUE or fundamentally weak.
-   - "reasoning": Concise 2-sentence summary explaining the logic and key drivers/risks.
+2. UNSUSTAINABLE CASH BURN & RUNWAY RISK:
+   - Operating cash flow is deeply negative, and total cash / liquid equivalents will be exhausted in less than 4 quarters (12 months) at the current burn rate.
+   - Explicit "Going Concern" warnings or acute liquidity covenants default warnings.
 
-OUTPUT FORMAT:
-Output strictly a valid JSON object with no markdown fences or preamble:
+3. ERRATIC STRATEGIC PIVOTS / SHELL RISKS:
+   - Sudden, unrelated business model pivots (e.g., pivot from cosmetics/retail to AI, blockchain, biotech, or mining within a short timeframe).
+   - SPAC empty shells without commercial operating assets.
+
+4. NEGATIVE SHAREHOLDERS' EQUITY:
+   - Stock has deeply negative book equity resulting from cumulative operational losses, unless explicitly offset by non-recourse project structures.
+
+5. SWEDISH LEGAL LANDMINES:
+   - If the market is Sweden (.ST), instantly REJECT if the text mentions "kontrollbalansräkning" or "rekonstruktion".
+
+---
+
+# SECTION 2: DUAL-LENS INVESTMENT PROFILES
+Only stocks passing ALL Section 1 filters can be evaluated for Profile A or Profile B:
+
+### PROFILE A: HIGH-MARGIN COMPOUNDER (GROWTH / SAAS)
+- Gross Margin > 40% (preferably > 60%).
+- Organic revenue growth YoY (> 15% preferred).
+- High recurring revenue (SaaS, subscriptions, software maintenance) or expanding high-margin hardware/product footprint.
+- Clear path to or already positive operating cash flow.
+
+### PROFILE B: DEEP VALUE / OPERATIONAL TURNAROUND
+- Pristine or highly defended balance sheet (Net Cash positive or Debt/Equity <= 0.3).
+- Positive operating cash flow OR demonstrable narrowing of operating losses via structural cost reductions.
+- STRICT ANTI-SHRINKING RULE: A zero-debt balance sheet alone is INSUFFICIENT. If core business metrics, revenue, or active users/customers are contracting year-over-year without an active operational fix, DO NOT award STRONG BUY.
+- Catalyst Requirement: If past quarters were unprofitable, there must be a tangible operational catalyst (tier-1 management replacement, divesting of money-losing segments, or strategic accretive contracts).
+
+---
+
+# SECTION 3: REAL-TIME DIVERGENCE & VERDICT ROUTING
+1. "STRONG BUY": Passes all Section 1 safety filters, satisfies Profile A or B, and web news confirms clean operational momentum.
+2. "HOLD": Financially solvent and safe, but lacks growth momentum, high margins, or compelling catalysts.
+3. "REJECT": Fails any Section 1 hard filter, OR Web News reveals active red flags.
+4. "WATCH_TURNAROUND": Document analysis yields poor historical figures, BUT recent verified web news reveals a major turnaround catalyst (CEO/insider buying, multi-million contracts, structural restructuring).
+
+---
+
+# SECTION 4: OUTPUT FORMAT SPECIFICATION
+Respond exclusively with a valid, parseable JSON object matching this schema:
 {
-  "profile_A_growth": {
-    "gross_margin_over_40": bool,
-    "rule_of_40_passed": bool,
-    "recurring_revenue_mentioned": bool,
-    "organic_growth_confirmed": bool
-  },
-  "profile_B_value": {
-    "strong_net_cash_position": bool,
-    "positive_operating_cash_flow": bool,
-    "turnaround_indicators": bool
-  },
-  "financial_safety": {
-    "going_concern_risk": bool,
+  "ticker": "string",
+  "market": "US" | "FI" | "SE" | "OTHER",
+  "profile": "PROFILE_A" | "PROFILE_B" | "NONE",
+  "verdict": "STRONG BUY" | "HOLD" | "REJECT" | "WATCH_TURNAROUND",
+  "flags": {
     "dilution_risk_detected": bool,
     "unsustainable_cash_burn": bool,
-    "erratic_pivots_detected": bool
+    "erratic_pivots_detected": bool,
+    "shrinking_business": bool,
+    "organic_growth_confirmed": bool,
+    "passed_web_sanity_check": bool
   },
-  "verdict_details": {
-    "matched_profile": "GROWTH" | "VALUE" | "NONE",
-    "verdict": "STRONG BUY" | "HOLD" | "REJECT",
-    "reasoning": string
-  }
+  "metrics": {
+    "gross_margin_pct": number_or_null,
+    "revenue_growth_yoy_pct": number_or_null,
+    "cash_runway_quarters": number_or_null,
+    "net_cash_positive": bool
+  },
+  "pedagogical_reasoning": "Concise, fact-based rationale (2-4 sentences) outlining exact balance sheet conditions, cash burn figures, and the impact of the latest news snippets. ALWAYS refer to the company by its FULL formal corporate name (e.g. 'Atomera Incorporated', 'Vivid Seats Inc.', 'Faron Pharmaceuticals Oyj') rather than bare ticker symbols."
 }"""
 
 # ANSI Color codes
@@ -174,6 +198,10 @@ def parse_metadata_from_filename(filename: str) -> Tuple[str, str, str]:
         ticker = parts[0] if parts else stem
 
     return ticker or "UNKNOWN", year, quarter
+
+
+# Alias for convenience
+parse_filename_details = parse_metadata_from_filename
 
 
 def extract_text_from_file(file_path: Path, max_pages: int = 10, max_words: int = 3000) -> str:
@@ -243,30 +271,59 @@ def extract_json_response(raw_text: str) -> Optional[Dict[str, Any]]:
 def call_llm_dual_lens(
     text: str,
     api_key: str,
-    model: str = DEFAULT_OPENROUTER_MODEL,
+    ticker: Optional[str] = None,
+    hard_financials: Optional[Dict[str, Any]] = None,
+    model: str = DEFAULT_FREE_MODEL,
+    fallback_model: Optional[str] = DEFAULT_PAID_MODEL,
     max_retries: int = MAX_RETRIES,
     retry_backoff: float = RETRY_BACKOFF_SECONDS,
 ) -> Optional[Dict[str, Any]]:
     """
-    Calls OpenRouter LLM API with dual-lens prompt, with retries on 429/502 errors.
+    Calls OpenRouter LLM API with intelligent 2-Tier cascading:
+    1. Primary: Tries Free Model (e.g. meta-llama/llama-3.3-70b-instruct:free, 0.00 $ cost).
+    2. Fallback: If free tier is overloaded (HTTP 429/502), cascades seamlessly to Paid Model (Gemini 2.5 Flash).
+    3. Emergency: Returns None to trigger deterministic rule-based evaluation if all API calls fail.
     """
+    if hard_financials is None and ticker:
+        try:
+            from screener.financial_metrics_engine import get_hard_financials
+            hard_financials = get_hard_financials(ticker)
+        except Exception as e:
+            logger.debug(f"Could not retrieve hard financials for {ticker}: {e}")
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/jju567/tradeBotTiuku",
         "X-Title": "tradeBotTiuku Batch Processor",
     }
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": CORE_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Analyze this earnings report text:\n\n{text}"},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 700,
-    }
+    
+    current_model = model
+    progressive_delays = [2.0, 5.0, 10.0]
+
+    facts_block = ""
+    if hard_financials:
+        facts_block = (
+            "[HARD FINANCIAL FACTS - DO NOT RECALCULATE]\n"
+            f"{json.dumps(hard_financials, indent=2)}\n\n"
+            "INSTRUCTION: Treat the provided Hard Financial Facts as absolute truth. "
+            "Base your 'Section 1' survival analysis strictly on these provided numbers, "
+            "and use the text document ONLY for qualitative context (management commentary, restructurings, M&A).\n\n"
+        )
+
+    user_content = f"{facts_block}Analyze this earnings report text:\n\n{text}"
 
     for attempt in range(1, max_retries + 1):
+        payload = {
+            "model": current_model,
+            "messages": [
+                {"role": "system", "content": CORE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 350,
+        }
+
         try:
             response = requests.post(
                 OPENROUTER_API_URL,
@@ -275,27 +332,64 @@ def call_llm_dual_lens(
                 timeout=45.0,
             )
 
-            # Rate limit or server error backoff
+            # Credit limit reached (402 Payment Required) -> Fallback immediately
+            if response.status_code == 402:
+                logger.info("OpenRouter credit balance depleted (HTTP 402). Switching to deterministic rule-based analysis.")
+                return None
+
+            # Free model rate limited (429) or busy (502/503) -> Cascade to Paid Model immediately!
+            if (response.status_code in [429, 502, 503, 504]) and current_model.endswith(":free") and fallback_model:
+                logger.info(f"⚡ Free model '{current_model}' busy ({response.status_code}). Seamlessly cascading to paid tier '{fallback_model}'...")
+                current_model = fallback_model
+                time.sleep(1.0)
+                continue
+
             if response.status_code == 429 or response.status_code == 502 or 500 <= response.status_code < 600:
+                delay = progressive_delays[min(attempt - 1, len(progressive_delays) - 1)]
                 logger.warning(
                     f"⚠️ Received HTTP {response.status_code} ({response.reason}) on attempt {attempt}/{max_retries}. "
-                    f"Rate limit / gateway breach. Sleeping {retry_backoff}s before retry..."
+                    f"Sleeping {delay}s before retry..."
                 )
-                time.sleep(retry_backoff)
+                time.sleep(delay)
                 continue
 
             response.raise_for_status()
             res_json = response.json()
+            
+            # Record Token Usage
+            usage = res_json.get("usage", {})
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            if prompt_tokens > 0 or completion_tokens > 0:
+                try:
+                    from core.token_tracker import record_tokens
+                    record_tokens(prompt_tokens, completion_tokens, model=current_model, source="batch_nlp")
+                except Exception:
+                    pass
+
             content = res_json.get("choices", [{}])[0].get("message", {}).get("content", "")
             parsed = extract_json_response(content)
             if parsed:
                 return parsed
 
         except Exception as e:
-            logger.error(f"Error calling OpenRouter API (attempt {attempt}/{max_retries}): {e}")
+            err_str = str(e)
+            if "402" in err_str:
+                logger.info("OpenRouter credits depleted. Falling back to rule-based analysis.")
+                return None
+            
+            # If free model timed out or errored, switch to paid model
+            if current_model.endswith(":free") and fallback_model:
+                logger.info(f"⚡ Free model request failed ({e}). Cascading to paid model '{fallback_model}'...")
+                current_model = fallback_model
+                time.sleep(1.0)
+                continue
+
+            logger.error(f"Error calling OpenRouter API ({current_model}) attempt {attempt}/{max_retries}: {e}")
             if attempt < max_retries:
-                logger.warning(f"Sleeping {retry_backoff}s before retry...")
-                time.sleep(retry_backoff)
+                delay = progressive_delays[min(attempt - 1, len(progressive_delays) - 1)]
+                logger.warning(f"Sleeping {delay}s before retry...")
+                time.sleep(delay)
 
     return None
 
@@ -421,31 +515,71 @@ class BatchProcessor:
         reports_dir: Path = DEFAULT_REPORTS_DIR,
         processed_log_path: Path = DEFAULT_PROCESSED_LOG,
         results_csv_path: Path = DEFAULT_RESULTS_CSV,
+        status_json_path: Path = DEFAULT_STATUS_JSON,
         api_key: Optional[str] = None,
         model: str = DEFAULT_OPENROUTER_MODEL,
         throttle_seconds: float = THROTTLE_DELAY_SECONDS,
+        limit: Optional[int] = None,
+        enable_web_check: bool = False,
+        skip_processed: bool = True,
+        only_latest: bool = True,
     ):
         self.reports_dir = Path(reports_dir)
         self.processed_log_path = Path(processed_log_path)
         self.results_csv_path = Path(results_csv_path)
+        self.status_json_path = Path(status_json_path)
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
         self.model = model
         self.throttle_seconds = throttle_seconds
+        self.limit = limit
+        self.enable_web_check = enable_web_check
+        self.skip_processed = skip_processed
+        self.only_latest = only_latest
 
         # Ensure directories exist
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.processed_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.results_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self.status_json_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize CSV header if file doesn't exist or is empty
         self.init_csv_headers()
+
+    def update_status(
+        self,
+        is_running: bool,
+        current_file: str = "",
+        current_ticker: str = "",
+        completed: int = 0,
+        total: int = 0,
+    ) -> None:
+        """Writes live execution status to JSON file for UI consumption."""
+        try:
+            from datetime import datetime, timezone
+            status = {
+                "is_running": is_running,
+                "current_file": current_file,
+                "current_ticker": current_ticker,
+                "completed_count": completed,
+                "total_count": total,
+                "pid": os.getpid(),
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+            with open(self.status_json_path, "w", encoding="utf-8") as f:
+                json.dump(status, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Failed to update batch status json: {e}")
+
+    def clear_status(self) -> None:
+        """Marks batch status as completed."""
+        self.update_status(is_running=False)
 
     def init_csv_headers(self) -> None:
         """Ensures results CSV has correct headers."""
         if not self.results_csv_path.exists() or self.results_csv_path.stat().st_size == 0:
             with open(self.results_csv_path, "w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["Filename", "Ticker", "Year", "Quarter", "Matched_Profile", "Verdict", "Reasoning"])
+                writer.writerow(["timestamp", "filename", "ticker", "year", "quarter", "matched_profile", "verdict", "reasoning"])
 
     def load_processed_files(self) -> Set[str]:
         """Loads already processed filenames from log file."""
@@ -468,28 +602,57 @@ class BatchProcessor:
         matched_profile: str,
         verdict: str,
         reasoning: str,
+        timestamp: Optional[str] = None,
     ) -> None:
-        """Appends an individual evaluation row to CSV."""
+        """Appends an individual evaluation row to CSV with standard 8 columns."""
+        from datetime import datetime, timezone
+        if not timestamp:
+            timestamp = datetime.now(timezone.utc).isoformat()
         with open(self.results_csv_path, "a", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([filename, ticker, year, quarter, matched_profile, verdict, reasoning])
+            writer.writerow([timestamp, filename, ticker, year, quarter, matched_profile, verdict, reasoning])
 
     def run(self) -> None:
         """Main execution loop over report files (including subdirectories like 'us/')."""
-        processed_set = self.load_processed_files()
-        all_files = sorted(
+        processed_set = self.load_processed_files() if self.skip_processed else set()
+        raw_files = sorted(
             [f for f in self.reports_dir.rglob("*") if f.is_file() and f.suffix.lower() in (".pdf", ".txt")]
         )
-        total_files = len(all_files)
+        
+        # If only_latest is enabled, keep only the single newest report per ticker
+        if self.only_latest:
+            ticker_latest_map: Dict[str, Path] = {}
+            for f in raw_files:
+                tick, yr, qtr = parse_metadata_from_filename(f.name)
+                # Sort key based on year and quarter rank
+                q_rank = 5 if "FY" in qtr else (4 if "Q4" in qtr else (3 if "Q3" in qtr else (2 if "Q2" in qtr else (1 if "Q1" in qtr else 0))))
+                yr_val = int(yr) if yr.isdigit() else 2000
+                current_score = yr_val * 10 + q_rank
 
-        logger.info(f"Total report files found: {total_files}")
-        logger.info(f"Already processed files: {len(processed_set)}")
+                if tick not in ticker_latest_map:
+                    ticker_latest_map[tick] = (f, current_score)
+                else:
+                    prev_f, prev_score = ticker_latest_map[tick]
+                    if current_score >= prev_score:
+                        ticker_latest_map[tick] = (f, current_score)
+            all_files = sorted([pair[0] for pair in ticker_latest_map.values()], key=lambda x: x.name)
+            logger.info(f"Deduplicated to latest report per ticker: {len(all_files)} unique tickers (from {len(raw_files)} total files).")
+        else:
+            all_files = raw_files
+
+        total_files = len(all_files)
+        logger.info(f"Total report files to evaluate: {total_files}")
+        logger.info(f"Already processed files: {len(processed_set)} (skip_processed={self.skip_processed})")
 
         unprocessed = [f for f in all_files if f.name not in processed_set]
+        if self.limit and len(unprocessed) > self.limit:
+            unprocessed = unprocessed[:self.limit]
+            
         logger.info(f"Files to process in this run: {len(unprocessed)}")
 
         if not unprocessed:
             print(f"\n{COLOR_GREEN}✅ All {total_files} files in {self.reports_dir} are already processed!{COLOR_RESET}\n")
+            self.clear_status()
             return
 
         print("\n" + "=" * 80)
@@ -499,88 +662,156 @@ class BatchProcessor:
         print(f"Processed State Log:  {self.processed_log_path}")
         print(f"Model:                {self.model}")
         print(f"API Key:              {'CONFIGURED (' + self.api_key[:6] + '...)' if self.api_key else 'NONE (Rule-based)'}")
+        print(f"Live Web Check:       {'ENABLED' if self.enable_web_check else 'DISABLED'}")
+        if self.limit:
+            print(f"Batch Limit:          {self.limit}")
         print("=" * 80 + "\n")
 
-        for idx, file_path in enumerate(all_files, 1):
-            filename = file_path.name
+        self.update_status(
+            is_running=True,
+            current_file="",
+            current_ticker="",
+            completed=len(processed_set),
+            total=len(unprocessed),
+        )
 
-            # 1. Check statefulness
-            if filename in processed_set:
-                continue
+        verifier = None
+        if self.enable_web_check:
+            try:
+                from screener.web_verifier import WebSearchVerifier
+                verifier = WebSearchVerifier()
+            except Exception as e:
+                logger.warning(f"Could not initialize WebSearchVerifier: {e}")
 
-            ticker, year, quarter = parse_metadata_from_filename(filename)
-            progress_prefix = f"[{idx} / {total_files}]"
+        completed_count = 0
+        try:
+            for idx, file_path in enumerate(unprocessed, 1):
+                filename = file_path.name
 
-            # 2. Extract Text
-            text = extract_text_from_file(file_path)
-            if not text:
-                logger.warning(f"{progress_prefix} ⚠️ Skipped {filename} (Empty or unreadable text).")
+                ticker, year, quarter = parse_metadata_from_filename(filename)
+                progress_prefix = f"[{idx} / {len(unprocessed)}]"
+
+                self.update_status(
+                    is_running=True,
+                    current_file=filename,
+                    current_ticker=ticker,
+                    completed=completed_count,
+                    total=len(unprocessed),
+                )
+
+                # 2. Extract Text
+                text = extract_text_from_file(file_path)
+                if not text:
+                    logger.warning(f"{progress_prefix} ⚠️ Skipped {filename} (Empty or unreadable text).")
+                    self.mark_file_processed(filename)
+                    processed_set.add(filename)
+                    completed_count += 1
+                    continue
+
+                # 3. Call LLM or Fallback
+                parsed: Optional[Dict[str, Any]] = None
+                if self.api_key:
+                    parsed = call_llm_dual_lens(text=text, api_key=self.api_key, ticker=ticker, model=self.model)
+
+                if not parsed:
+                    parsed = rule_based_fallback_evaluation(text)
+
+                # 4. Extract Verdict Details & Enforce Financial Safety Gatekeeper
+                safety = parsed.get("financial_safety", {})
+                flags = parsed.get("flags", {})
+                metrics = parsed.get("metrics", {})
+
+                going_concern = bool(safety.get("going_concern_risk", False))
+                dilution_risk = bool(safety.get("dilution_risk_detected", flags.get("dilution_risk_detected", False)))
+                unsustainable_cash_burn = bool(safety.get("unsustainable_cash_burn", flags.get("unsustainable_cash_burn", False)))
+                erratic_pivots = bool(safety.get("erratic_pivots_detected", flags.get("erratic_pivots_detected", False)))
+                safety_failed = going_concern or dilution_risk or unsustainable_cash_burn or erratic_pivots
+
+                verdict_info = parsed.get("verdict_details", {})
+                raw_profile = str(parsed.get("profile", verdict_info.get("matched_profile", "NONE"))).upper().strip()
+                if "PROFILE_A" in raw_profile or "GROWTH" in raw_profile:
+                    matched_profile = "GROWTH"
+                elif "PROFILE_B" in raw_profile or "VALUE" in raw_profile:
+                    matched_profile = "VALUE"
+                else:
+                    matched_profile = "NONE"
+
+                verdict = str(parsed.get("verdict", verdict_info.get("verdict", "HOLD"))).upper().strip()
+                reasoning = str(parsed.get("pedagogical_reasoning", verdict_info.get("reasoning", parsed.get("reasoning", "")))).strip()
+
+                prof_b = parsed.get("profile_B_value", {})
+                turnaround = bool(prof_b.get("turnaround_indicators", False))
+                rev_shrinking = bool(prof_b.get("revenue_shrinking", flags.get("shrinking_business", False)))
+
+                if rev_shrinking and not turnaround:
+                    if matched_profile == "VALUE" and verdict == "STRONG BUY":
+                        verdict = "HOLD"
+                        matched_profile = "NONE"
+
+                if safety_failed:
+                    matched_profile = "NONE"
+                    verdict = "REJECT"
+
+                # Optional live web verification
+                if verifier and verdict in ["STRONG BUY", "BUY", "HOLD"]:
+                    try:
+                        web_res = verifier.verify(ticker)
+                        if not web_res.get("passed_web_check", True):
+                            verdict = "REJECT"
+                            reasoning += f" [Web Check Failed: {', '.join(web_res.get('red_flags_found', []))}]"
+                        elif verdict in ["HOLD", "REJECT"] and web_res.get("turnaround_catalyst_detected", False):
+                            verdict = "👀 WATCH_TURNAROUND"
+                            reasoning += f" [Turnaround Catalyst: {', '.join(web_res.get('positive_catalysts_found', []))}]"
+                    except Exception as e:
+                        logger.debug(f"Web verification error for {ticker}: {e}")
+
+                # 5. Append immediately to CSV & Mark Log
+                self.append_result_to_csv(
+                    filename=filename,
+                    ticker=ticker,
+                    year=year or "",
+                    quarter=quarter or "",
+                    matched_profile=matched_profile,
+                    verdict=verdict,
+                    reasoning=reasoning,
+                )
                 self.mark_file_processed(filename)
                 processed_set.add(filename)
-                continue
+                completed_count += 1
+                self.update_status(
+                    is_running=True,
+                    current_file=filename,
+                    current_ticker=ticker,
+                    completed=completed_count,
+                    total=len(unprocessed),
+                )
 
-            # 3. Call LLM or Fallback
-            parsed: Optional[Dict[str, Any]] = None
-            if self.api_key:
-                parsed = call_llm_dual_lens(text=text, api_key=self.api_key, model=self.model)
+                # 6. Console UI Output
+                if verdict == "STRONG BUY":
+                    color = COLOR_GREEN
+                    icon = "🔥 STRONG BUY"
+                elif verdict == "HOLD":
+                    color = COLOR_YELLOW
+                    icon = "🟡 HOLD"
+                else:
+                    color = COLOR_RED
+                    icon = "❌ REJECT"
 
-            if not parsed:
-                parsed = rule_based_fallback_evaluation(text)
+                print(
+                    f"{progress_prefix} {COLOR_BOLD}{ticker:<12}{COLOR_RESET} "
+                    f"({year or 'N/A':<4} {quarter or 'N/A':<4}) -> "
+                    f"{color}{icon:<14} [{matched_profile:<6}]{COLOR_RESET} | {reasoning[:70]}..."
+                )
 
-            # 4. Extract Verdict Details & Enforce Financial Safety Gatekeeper
-            safety = parsed.get("financial_safety", {})
-            going_concern = bool(safety.get("going_concern_risk", False))
-            dilution_risk = bool(safety.get("dilution_risk_detected", False))
-            unsustainable_cash_burn = bool(safety.get("unsustainable_cash_burn", False))
-            erratic_pivots = bool(safety.get("erratic_pivots_detected", False))
-            safety_failed = going_concern or dilution_risk or unsustainable_cash_burn or erratic_pivots
+                # 7. Rate Limiting Sleep
+                if self.api_key and self.throttle_seconds > 0:
+                    time.sleep(self.throttle_seconds)
 
-            verdict_info = parsed.get("verdict_details", {})
-            matched_profile = str(verdict_info.get("matched_profile", "NONE")).upper().strip()
-            verdict = str(verdict_info.get("verdict", "HOLD")).upper().strip()
-            reasoning = str(verdict_info.get("reasoning", "")).strip()
-
-            if safety_failed:
-                matched_profile = "NONE"
-                verdict = "REJECT"
-
-            # 5. Append immediately to CSV & Mark Log
-            self.append_result_to_csv(
-                filename=filename,
-                ticker=ticker,
-                year=year,
-                quarter=quarter,
-                matched_profile=matched_profile,
-                verdict=verdict,
-                reasoning=reasoning,
-            )
-            self.mark_file_processed(filename)
-            processed_set.add(filename)
-
-            # 6. Console UI Output
-            if verdict == "STRONG BUY":
-                color = COLOR_GREEN
-                icon = "🔥 STRONG BUY"
-            elif verdict == "HOLD":
-                color = COLOR_YELLOW
-                icon = "🟡 HOLD"
-            else:
-                color = COLOR_RED
-                icon = "❌ REJECT"
-
-            print(
-                f"{progress_prefix} {COLOR_BOLD}{ticker:<12}{COLOR_RESET} "
-                f"({year or 'N/A':<4} {quarter or 'N/A':<4}) -> "
-                f"{color}{icon:<14} [{matched_profile:<6}]{COLOR_RESET} | {reasoning[:70]}..."
-            )
-
-            # 7. Rate Limiting Sleep
-            if self.api_key and self.throttle_seconds > 0:
-                time.sleep(self.throttle_seconds)
-
-        print("\n" + "=" * 80)
-        print(f"{COLOR_BOLD}{COLOR_GREEN}🎉 Batch Processing Complete! Consolidated results saved to {self.results_csv_path}{COLOR_RESET}")
-        print("=" * 80 + "\n")
+            print("\n" + "=" * 80)
+            print(f"{COLOR_BOLD}{COLOR_GREEN}🎉 Batch Processing Complete! Consolidated results saved to {self.results_csv_path}{COLOR_RESET}")
+            print("=" * 80 + "\n")
+        finally:
+            self.clear_status()
 
 
 def main():
@@ -590,6 +821,10 @@ def main():
     parser.add_argument("--results-csv", type=str, default=str(DEFAULT_RESULTS_CSV), help="Path to results CSV")
     parser.add_argument("--model", type=str, default=DEFAULT_OPENROUTER_MODEL, help="OpenRouter model")
     parser.add_argument("--throttle", type=float, default=THROTTLE_DELAY_SECONDS, help="Delay between calls in seconds")
+    parser.add_argument("--limit", type=int, default=None, help="Maximum number of files to process")
+    parser.add_argument("--web-check", action="store_true", help="Enable Google News live sanity check")
+    parser.add_argument("--reprocess-all", action="store_true", help="Reprocess all files without skipping previously processed ones")
+    parser.add_argument("--all-historical", action="store_true", help="Process all historical quarters instead of only the single latest report per ticker")
     args = parser.parse_args()
 
     processor = BatchProcessor(
@@ -598,6 +833,10 @@ def main():
         results_csv_path=Path(args.results_csv),
         model=args.model,
         throttle_seconds=args.throttle,
+        limit=args.limit,
+        enable_web_check=args.web_check,
+        skip_processed=not args.reprocess_all,
+        only_latest=not args.all_historical,
     )
     processor.run()
 

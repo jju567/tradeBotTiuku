@@ -1,50 +1,52 @@
 """
-Main Orchestration Controller for Nordic Micro-Cap Stock Screener & Trading Bot.
+main_controller.py - Central Live Daemon for Forward-Testing & Paper Portfolio Management.
 
-Dual-Pipeline "Core & Satellite" Production MVP Daemon:
-1. Initialization:
-   - Ingests master Nordic micro/small-cap universe (MarketCap <= 300M EUR) from `data/nordnet_universe.csv`.
-   - Initializes SQLite state database (`data/screener_state.db`).
-   - Configures and verifies SMTP email alerts (`EmailClient`).
-   - Initializes strategy-aware `ExitManager` for tracking paper positions.
-
-2. Screening Execution Loop (Every 15 minutes during market hours / scheduled interval):
-   - Step A (Scrape): Ingests latest regulatory filings and PRs across Nordic wires.
-   - Step B (Route): Intelligently routes documents to TRASH, CORE, or SATELLITE.
-   - Step C (NLP Analysis): Evaluates LLM prompt (Risk Screen -> Quality/Catalyst check).
-   - Step D (Quant Filter & Sizing): Verifies bid-ask spread (< 4.0%), liquidity, and calculates
-     Fractional Half-Kelly (Satellite) vs Equal Weight Conviction (Core) position sizing.
-   - Step E (Execute & Alert):
-     * Opens paper position in `data/open_positions.csv`.
-     * Logs alert to `data/screener_alerts.csv`.
-     * Dispatches structured HTML/plain-text `[CORE ALERT]` or `[SATELLITE ALERT]` email.
-
-3. End-of-Day (EOD) Maintenance (Runs daily at 19:00):
-   - Calls `exit_manager.check_exits()` to evaluate all active positions.
-   - SATELLITE: Executes on +25% Take Profit, 15% Trailing Stop, 15% Hard Stop, 45d Time Decay.
-   - CORE: Bypasses daily volatility; exits only on quarterly fundamental breakdown.
-   - Archives closed trades to `data/trade_history.csv` and dispatches `[SELL ALERT]` emails.
+Orchestrates realistic live forward-testing (paper trading) for tradeBotTiuku:
+1. Realistic State Management:
+   - Initial virtual balance of exactly STARTING_BALANCE = 10,000.0 USD/EUR.
+   - Active holdings tracked in data/open_positions.csv (Ticker, Buy Date, Buy Price, Shares, Capital Invested).
+   - Closed trades archived in data/trade_history.csv with realistic broker fee mechanics.
+2. Phase 1: Portfolio Management (Tri-Layer Fundamental Exit & Real Costs):
+   - Layer 1: Catastrophic Failsafe (Daily): current_price <= buy_price * 0.50 -> CATASTROPHIC_STOP
+   - Layer 2: LLM News Radar (Event-Driven via nlp_analyzer.py): latest_news_judgment == "REJECT" -> LLM_NEWS_REJECT
+   - Layer 3: Fundamental Deterioration (Quarterly via financial_metrics_engine.py): rev_growth_yoy < 0 OR (runway < 12 and OCF < 0) -> FUNDAMENTAL_DETERIORATION
+   - SELL Execution:
+     * Gross Sale Value = Shares * Current Price
+     * Transaction Fee = max(Gross Sale Value * 0.002, 9.00)  (0.20% variable or 9.00 flat minimum fee)
+     * Net Return (Proceeds) = Gross Sale Value - Transaction Fee
+     * Updates cash balance, removes position, archives trade.
+3. Phase 2: Market Scanning (Profile B Only & Small Account Sizing):
+   - Ingests data/clean_microcap_universe.csv (106 liquid micro-caps).
+   - Evaluates deterministic financial metrics (financial_metrics_engine.py).
+   - Profile A is strictly disabled based on N=240 empirical backtest findings.
+   - Accepts only verified PROFILE_B (Deep Value & Anti-Shrinking) signals.
+   - Sizing:
+     * Target Allocation = 1,000.0 (Strictly 10% of the 10k starting balance).
+     * Liquidity Check: Ensure Target Allocation <= 0.10 * 20d_ADV.
+     * Deduct Buy Fee: Investable Cash = Target Allocation - 9.00.
+     * Whole Shares: Shares to Buy = math.floor(Investable Cash / Current Price).
+     * Deduct Total Cost (Shares * Price + 9.00) from cash, record to open_positions.csv.
 """
+
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
+import math
 import os
-import re
 import sys
 import time
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+from typing import Dict, List, Optional, Any, Tuple
 
-from dotenv import load_dotenv
+import pandas as pd
+import yfinance as yf
 
-# Load .env variables
-load_dotenv()
-
-# Reconfigure stdout/stderr for cross-platform encoding compatibility (Windows cp1252 fix)
+# Configure cross-platform terminal encoding (Windows cp1252 fix)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -56,762 +58,615 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-# Ensure parent directory is in sys.path
+# Ensure workspace root is in sys.path
 _current_dir = Path(__file__).resolve().parent
 BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_dir
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from screener.config import ScreenerConfig, get_dynamic_interval
-from screener.models import FeedItem, StrategyType, DocumentPayload
-from screener.scraper_module import NasdaqHelsinkiScraper, fetch_latest_releases
-from screener.state_manager import init_db, is_processed, mark_as_processed
-from screener.nlp_analyzer import (
-    analyze_text,
-    analyze_core_fundamentals,
-    analyze_satellite_catalysts,
-    route_document,
-    classify_release_strategy,
-    FinancialNLPAnalyzer,
-)
-from screener.quant_engine import QuantitativeRiskEngine, check_liquidity_and_spread
-from screener.exit_manager import ExitManager
-from clients.email_client import EmailClient, send_alert, send_sell_alert
+from screener.financial_metrics_engine import get_hard_financials, evaluate_profiles
+from screener.portfolio_manager import evaluate_position
+from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
+from screener.web_verifier import RED_FLAG_PATTERNS, FATAL_RED_FLAG_PATTERNS, WARN_PATTERNS
 
-# Logging configuration
+# Backwards compatibility exports for legacy modules/tests
+try:
+    from screener.main_controller import (
+        load_nordnet_universe,
+        match_universe_item,
+        ScreenerPipelineController,
+    )
+except ImportError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("screener.main_controller")
+logger = logging.getLogger("live_daemon")
 
-DEFAULT_ALERTS_CSV = BASE_DIR / "data" / "screener_alerts.csv"
-DEFAULT_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_universe.csv"
+DEFAULT_PAPER_ACCOUNT_JSON = BASE_DIR / "data" / "paper_account.json"
 DEFAULT_OPEN_POSITIONS_CSV = BASE_DIR / "data" / "open_positions.csv"
 DEFAULT_TRADE_HISTORY_CSV = BASE_DIR / "data" / "trade_history.csv"
+DEFAULT_CLEAN_UNIVERSE_CSV = BASE_DIR / "data" / "clean_microcap_universe.csv"
+
+# Strict Account & Hyper-Realistic Fee Configuration
+STARTING_BALANCE = 10_000.0         # Exactly 10,000 USD/EUR Paper Trading Starting Capital
+POSITION_ALLOCATION = 1_000.0       # Exactly 10% of starting balance per position (1,000 USD)
+MIN_BROKER_FEE = 9.00               # Flat minimum broker commission ($9.00 / €9.00)
+VARIABLE_BROKER_FEE_PCT = 0.002     # 0.20% variable broker commission
+MAX_PORTFOLIO_EQUITY_PCT = 0.10     # Max 10% of portfolio equity per position
+MAX_ADV_ALLOCATION_PCT = 0.10       # Max 10% of 20-day ADV to protect order book liquidity
+SLIPPAGE_PENALTY_PCT = 0.005        # Kept for backwards compatibility
 
 
-def load_nordnet_universe(csv_path: Optional[Path | str] = None) -> Dict[str, Any]:
-    """
-    Loads master Nordic micro/small-cap universe generated by universe_builder.py.
-    Provides fast indexed lookups by Ticker_YF, base ticker, and company name.
-    """
-    path = Path(csv_path or DEFAULT_UNIVERSE_CSV)
-    universe_map: Dict[str, Dict[str, Any]] = {}
-    base_ticker_map: Dict[str, Dict[str, Any]] = {}
-    name_map: Dict[str, Dict[str, Any]] = {}
-
-    if not path.exists():
-        logger.warning(f"Nordnet universe CSV not found at {path}. Operating without pre-filtered universe constraints.")
-        return {
-            "by_ticker_yf": {},
-            "by_base_ticker": {},
-            "by_name": {},
-            "total_count": 0,
-            "path": str(path),
-        }
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                ticker_yf = row.get("Ticker_YF", "").strip().upper()
-                name = row.get("Name", "").strip()
-                market = row.get("Market", "").strip()
-                market_cap = float(row.get("MarketCap_EUR", 0.0) or 0.0)
-
-                if not ticker_yf:
-                    continue
-
-                entry = {
-                    "Ticker_YF": ticker_yf,
-                    "Name": name,
-                    "Market": market,
-                    "MarketCap_EUR": market_cap,
-                }
-
-                universe_map[ticker_yf] = entry
-
-                # Map base ticker (e.g. "FARON" from "FARON.HE")
-                base_ticker = ticker_yf.split(".")[0]
-                base_ticker_map[base_ticker] = entry
-
-                # Map normalized company name
-                if name:
-                    clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|inc)\b", "", name, flags=re.IGNORECASE).strip().lower()
-                    name_map[clean_name] = entry
-                    name_map[name.lower()] = entry
-
-        logger.info(f"Loaded master universe with {len(universe_map)} stocks from {path}")
-    except Exception as e:
-        logger.error(f"Error loading universe from {path}: {e}")
-
-    return {
-        "by_ticker_yf": universe_map,
-        "by_base_ticker": base_ticker_map,
-        "by_name": name_map,
-        "total_count": len(universe_map),
-        "path": str(path),
-    }
+def calculate_transaction_fee(gross_value: float) -> float:
+    """Calculates realistic transaction fee: max(Gross Value * 0.20%, 9.00 flat minimum)."""
+    return max(gross_value * VARIABLE_BROKER_FEE_PCT, MIN_BROKER_FEE)
 
 
-def match_universe_item(
-    item: FeedItem,
-    universe_data: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """
-    Matches a scraped news item against the loaded master universe.
-    Returns matched universe record or None if the stock is not in the tradable micro-cap pool.
-    """
-    if not universe_data or universe_data.get("total_count", 0) == 0:
-        return {
-            "Ticker_YF": item.ticker or "",
-            "Name": item.company_name or item.title,
-            "Market": "Unknown",
-            "MarketCap_EUR": 0.0,
-        }
-
-    by_ticker_yf = universe_data.get("by_ticker_yf", {})
-    by_base_ticker = universe_data.get("by_base_ticker", {})
-    by_name = universe_data.get("by_name", {})
-
-    # 1. Match by item.ticker
-    if item.ticker:
-        tick_upper = item.ticker.upper().strip()
-        if tick_upper in by_ticker_yf:
-            return by_ticker_yf[tick_upper]
-        base_tick = tick_upper.split(".")[0]
-        if base_tick in by_base_ticker:
-            return by_base_ticker[base_tick]
-
-    # 2. Match by item.company_name
-    if item.company_name:
-        comp_clean = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|inc)\b", "", item.company_name, flags=re.IGNORECASE).strip().lower()
-        if comp_clean in by_name:
-            return by_name[comp_clean]
-        if item.company_name.lower().strip() in by_name:
-            return by_name[item.company_name.lower().strip()]
-
-    # 3. Match title with word boundary regex
-    title_lower = (item.title or "").lower()
-    for name_key, entry in by_name.items():
-        if len(name_key) >= 4:
-            pattern = rf"\b{re.escape(name_key)}\b"
-            if re.search(pattern, title_lower):
-                return entry
-
-    for base_tick, entry in by_base_ticker.items():
-        if len(base_tick) >= 3:
-            pattern = rf"(?:\[|\(|\b){re.escape(base_tick.lower())}(?:\]|\)|\b|:)"
-            if re.search(pattern, title_lower):
-                return entry
-
-    return None
-
-
-class ScreenerPipelineController:
-    """Production MVP Orchestration Daemon for Core & Satellite Trading System."""
+class PaperAccountManager:
+    """Manages virtual paper trading cash, total portfolio equity, and persistence."""
 
     def __init__(
         self,
-        config: Optional[ScreenerConfig] = None,
-        alerts_csv_path: Optional[Path | str] = None,
-        universe_csv_path: Optional[Path | str] = None,
-        open_positions_path: Optional[Path | str] = None,
-        trade_history_path: Optional[Path | str] = None,
-        openrouter_api_key: Optional[str] = None,
-        total_portfolio_eur: float = 10_000.0,
-        enforce_universe: bool = True,
-        email_client: Optional[EmailClient] = None,
+        account_path: Path | str = DEFAULT_PAPER_ACCOUNT_JSON,
+        starting_balance: float = STARTING_BALANCE,
     ):
-        self.config = config or ScreenerConfig.from_env()
-        self.alerts_csv_path = Path(alerts_csv_path or DEFAULT_ALERTS_CSV)
-        self.alerts_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        self.universe_csv_path = Path(universe_csv_path or DEFAULT_UNIVERSE_CSV)
-        self.open_positions_path = Path(open_positions_path or DEFAULT_OPEN_POSITIONS_CSV)
-        self.trade_history_path = Path(trade_history_path or DEFAULT_TRADE_HISTORY_CSV)
-        self.enforce_universe = enforce_universe
-        self.total_portfolio_eur = float(os.getenv("PORTFOLIO_TOTAL_CAPITAL_EUR", str(total_portfolio_eur)))
+        self.account_path = Path(account_path)
+        self.starting_balance = float(starting_balance)
+        self.cash_balance = self.starting_balance
+        self.currency = "USD"
+        self.created_at = datetime.now(timezone.utc).isoformat()
+        self.updated_at = self.created_at
+        self.load()
 
-        if openrouter_api_key is not None:
-            self.api_key = openrouter_api_key
-        else:
-            self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-
-        # 1. Initialize SQLite State Database
-        init_db(self.config.db_path)
-        logger.info(f"State database initialized at {self.config.db_path}")
-
-        # 2. Check API key status
-        if not self.api_key:
-            logger.warning("OPENROUTER_API_KEY is not set. Operating with deterministic Finnish keyword NLP engine.")
-        else:
-            logger.info("OpenRouter API key detected and loaded.")
-
-        # 3. Load Master Stock Universe
-        self.universe_data = load_nordnet_universe(self.universe_csv_path) if self.enforce_universe else {}
-
-        # 4. Initialize Core Components
-        self.scraper = NasdaqHelsinkiScraper(self.config)
-        self.quant_engine = QuantitativeRiskEngine(self.config)
-        self.exit_manager = ExitManager(
-            open_positions_path=self.open_positions_path,
-            trade_history_path=self.trade_history_path,
-        )
-        self.email_client = email_client or EmailClient()
-
-        if self.email_client.is_configured:
-            logger.info(f"Email Alerter configured (SMTP: {self.email_client.smtp_server}:{self.email_client.smtp_port} -> {self.email_client.email_to})")
-        else:
-            logger.info("Email Alerter unconfigured (operating in silent notification mode).")
-
-    def calculate_sizing(self, strategy_type: str, ticker: str, min_trade_eur: float = 500.0) -> Dict[str, Any]:
-        """
-        Computes capital allocation and position sizing based on Strategy Type.
-        - SATELLITE: Fractional Half-Kelly model on the 25% satellite pool.
-        - CORE: Conviction Equal-Weight allocation (15%) on the 75% core pool.
-        """
-        if strategy_type == StrategyType.CORE.value:
-            core_pool = self.total_portfolio_eur * self.config.core_capital_pct
-            target_pct = 0.15  # 15% equal weight per Core position
-            allocation_eur = max(min_trade_eur, round(core_pool * target_pct, 2))
-            return {
-                "strategy_type": StrategyType.CORE.value,
-                "capital_pool_eur": round(core_pool, 2),
-                "allocation_pct_of_pool": target_pct * 100.0,
-                "recommended_allocation_eur": allocation_eur,
-                "kelly_fraction": None,
-                "sizing_model": "Core Equal Weight (15% of Core Pool)",
-            }
-        else:
-            satellite_pool = self.total_portfolio_eur * self.config.satellite_capital_pct
-            # Fractional Half-Kelly: Win=60%, TP=+25%, SL=-15%, b=1.667 -> Full Kelly=0.36 -> Half Kelly=0.18
-            p = 0.60
-            b = 0.25 / 0.15
-            full_kelly = max(0.0, (p * (b + 1.0) - 1.0) / b)
-            half_kelly = full_kelly * 0.5
-            allocation_eur = max(min_trade_eur, round(satellite_pool * half_kelly, 2))
-            return {
-                "strategy_type": StrategyType.SATELLITE.value,
-                "capital_pool_eur": round(satellite_pool, 2),
-                "allocation_pct_of_pool": round(half_kelly * 100.0, 1),
-                "recommended_allocation_eur": allocation_eur,
-                "kelly_fraction": round(half_kelly, 3),
-                "sizing_model": f"Fractional Half-Kelly ({half_kelly*100:.1f}% of Satellite Pool)",
-            }
-
-    def record_open_position(
-        self,
-        candidate: Dict[str, Any],
-        entry_price: float,
-        shares: int,
-        position_value: float,
-    ) -> bool:
-        """
-        Records a newly executed trade to `data/open_positions.csv`.
-        Skips if position for this ticker is already open.
-        """
-        ticker = candidate.get("ticker", "").strip().upper()
-        if not ticker:
-            return False
-
-        open_positions = self.exit_manager.load_open_positions()
-        existing_tickers = {p["Ticker"].upper() for p in open_positions}
-
-        if ticker in existing_tickers:
-            logger.info(f"[EXISTS] Position already open for {ticker}. Skipping duplicate position recording.")
-            return False
-
-        today_str = date.today().strftime("%Y-%m-%d")
-        new_pos = {
-            "Ticker": ticker,
-            "EntryDate": today_str,
-            "EntryPrice": round(entry_price, 4),
-            "HighestPrice": round(entry_price, 4),
-            "Shares": shares,
-            "PositionValue": round(position_value, 2),
-            "Strategy_Type": candidate.get("strategy_type", "SATELLITE"),
-        }
-
-        open_positions.append(new_pos)
-        self.exit_manager.save_open_positions(open_positions)
-        logger.info(f"💎 [POSITION OPENED] Recorded {ticker} ({candidate.get('strategy_type')}) in {self.open_positions_path}: {shares} shs @ {entry_price:.2f}€ = {position_value:.2f}€")
-        return True
-
-    def run_screening_cycle(self, dry_run: bool = False) -> List[Dict[str, Any]]:
-        """
-        Executes one full screening pass across all active Nordic feeds:
-        Step A: Scrape news & PRs.
-        Step B: Match universe and route document (TRASH, CORE, SATELLITE).
-        Step C: NLP analysis and quality validation.
-        Step D: Quant friction filter & sizing.
-        Step E: Execute trade (open_positions.csv) and send alert.
-        """
-        logger.info("=" * 75)
-        logger.info(">>> STARTING SCREENING PASS (Nordic Micro-Cap Universe) <<<")
-        logger.info(
-            f"Universe: {self.universe_data.get('total_count', 0)} stocks | "
-            f"Capital Allocation: Core={self.config.core_capital_pct*100:.0f}% | "
-            f"Satellite={self.config.satellite_capital_pct*100:.0f}%"
-        )
-        logger.info("=" * 75)
-        start_time = time.time()
-
-        # Step A: Scrape latest releases
-        try:
-            releases: List[FeedItem] = fetch_latest_releases(self.config)
-        except Exception as e:
-            logger.error(f"Failed to fetch releases from feeds: {e}")
-            return []
-
-        if not releases:
-            logger.info("No releases returned from feeds. Pass complete.")
-            return []
-
-        candidates_found: List[Dict[str, Any]] = []
-        processed_count = 0
-        skipped_count = 0
-        trash_count = 0
-        universe_discard_count = 0
-
-        for release in releases:
-            article_id = release.guid or release.link
-            title = release.title
-            pub_date = release.published_at.isoformat() if release.published_at else ""
-
-            # Check SQLite state
-            if is_processed(article_id, self.config.db_path):
-                skipped_count += 1
-                continue
-
-            # Step B: Match Universe
-            matched_stock = match_universe_item(release, self.universe_data)
-            if self.universe_data.get("total_count", 0) > 0 and matched_stock is None:
-                universe_discard_count += 1
-                if not dry_run:
-                    mark_as_processed(article_id, title, pub_date, self.config.db_path)
-                continue
-
-            if matched_stock:
-                release.ticker = matched_stock.get("Ticker_YF", release.ticker)
-                if matched_stock.get("Name") and not release.company_name:
-                    release.company_name = matched_stock["Name"]
-
-            processed_count += 1
-            logger.info(f"[{processed_count}] Processing release: {title[:70]}... ({release.ticker or 'N/A'})")
-
-            # Extract Document Content & Route
+    def load(self) -> None:
+        """Loads paper account state from JSON file or initializes default."""
+        if self.account_path.exists():
             try:
-                doc = self.scraper.fetch_and_parse_document(release.link)
-                header_info = f"{title}\n{release.category or ''}\n{release.summary or ''}"
-                full_text = f"{header_info}\n\n{doc.full_combined_text}".strip()
-
-                if not full_text:
-                    if not dry_run:
-                        mark_as_processed(article_id, title, pub_date, self.config.db_path)
-                    continue
-
-                has_pdf = len(doc.pdf_urls) > 0 or bool(doc.pdf_text.strip())
-                strategy_route = route_document(
-                    news_item=release,
-                    has_pdf=has_pdf,
-                    full_text=full_text,
-                )
-
-                if strategy_route == "TRASH":
-                    trash_count += 1
-                    if not dry_run:
-                        mark_as_processed(article_id, title, pub_date, self.config.db_path)
-                    continue
-
-                logger.info(f"--> [ROUTER] Classified as [{strategy_route}]: '{title[:55]}...'")
-
-                # Step C: NLP Analysis
-                signals = analyze_text(
-                    text_content=full_text,
-                    api_key=self.api_key,
-                    strategy_type=strategy_route,
-                )
-
+                with open(self.account_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.cash_balance = float(data.get("cash_balance", self.starting_balance))
+                    self.currency = data.get("currency", "USD")
+                    self.created_at = data.get("created_at", self.created_at)
+                    self.updated_at = data.get("updated_at", self.updated_at)
+                    logger.info(f"Loaded Paper Account: Cash Balance = ${self.cash_balance:,.2f} {self.currency}")
+                    return
             except Exception as e:
-                logger.error(f"Error processing release {article_id}: {e}")
-                continue
+                logger.warning(f"Could not read {self.account_path}: {e}. Reinitializing.")
 
-            # Risk Screen Gatekeeper
-            cash_issue = signals.get("cash_issue", False)
-            if cash_issue:
-                logger.info(f"[-] Rejected by Risk Screen (Cash/Distress Risk): {title[:60]}")
-                if not dry_run:
-                    mark_as_processed(article_id, title, pub_date, self.config.db_path)
-                continue
+        self.save()
 
-            is_candidate = False
-            signal_label = ""
-            educational_rationale = signals.get("reasoning", "")
+    def save(self) -> None:
+        """Saves current paper account state to JSON file."""
+        self.account_path.parent.mkdir(parents=True, exist_ok=True)
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "cash_balance": round(self.cash_balance, 2),
+            "currency": self.currency,
+            "starting_balance": self.starting_balance,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        with open(self.account_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        logger.debug(f"Saved Paper Account state: Cash = ${self.cash_balance:,.2f}")
 
-            # Satellite Catalyst Evaluation
-            if strategy_route == StrategyType.SATELLITE.value:
-                insider_buying_personal = signals.get("insider_buying_personal", signals.get("management_buying", False))
-                pos_guidance = signals.get("positive_guidance", False)
+    def reset(self, balance: Optional[float] = None) -> None:
+        """Resets account to starting capital."""
+        if balance is not None:
+            self.starting_balance = float(balance)
+        self.cash_balance = self.starting_balance
+        self.created_at = datetime.now(timezone.utc).isoformat()
+        self.save()
+        logger.info(f"🔄 Paper Account Reset: Starting Cash = ${self.cash_balance:,.2f} {self.currency}")
 
-                if insider_buying_personal or pos_guidance:
-                    signal_types = []
-                    if insider_buying_personal:
-                        signal_types.append("INSIDER_BUYING")
-                    if pos_guidance:
-                        signal_types.append("POSITIVE_GUIDANCE")
-                    signal_label = " & ".join(signal_types)
-                    is_candidate = True
-                    logger.info(f"[+] [SATELLITE BUY] {signal_label}: {title}")
 
-            # Core Fundamental Evaluation
-            elif strategy_route == StrategyType.CORE.value:
-                gross_margin_above_40 = signals.get("gross_margin_above_40", False)
-                recurring_revenue = signals.get("recurring_revenue", False)
-                rule_of_40_passed = signals.get("rule_of_40_passed", False)
-                core_quality_passed = signals.get("core_quality_passed", False)
+class LiveTradingDaemon:
+    """
+    Central daemon executing Phase 1 (Tri-Layer Portfolio Exit Check)
+    and Phase 2 (Clean Universe Profile B Screening & Sizing).
+    """
 
-                if core_quality_passed or (gross_margin_above_40 and recurring_revenue and rule_of_40_passed):
-                    signal_label = f"CORE_10BAGGER_QUALITY (GM: {signals.get('gross_margin_pct', 0):.0f}%, R40: {signals.get('rule_of_40_score', 0):.0f}%)"
-                    is_candidate = True
-                    logger.info(f"[+] [CORE 10-BAGGER CANDIDATE] {title}")
+    def __init__(
+        self,
+        account_path: Path | str = DEFAULT_PAPER_ACCOUNT_JSON,
+        open_positions_path: Path | str = DEFAULT_OPEN_POSITIONS_CSV,
+        trade_history_path: Path | str = DEFAULT_TRADE_HISTORY_CSV,
+        clean_universe_path: Path | str = DEFAULT_CLEAN_UNIVERSE_CSV,
+        starting_balance: float = STARTING_BALANCE,
+    ):
+        self.account_path = Path(account_path)
+        self.open_positions_path = Path(open_positions_path)
+        self.trade_history_path = Path(trade_history_path)
+        self.clean_universe_path = Path(clean_universe_path)
 
-            # Step D: Quant Filter & Sizing
-            if is_candidate:
-                ticker = release.ticker
-                spread_pct = None
-                bid = None
-                ask = None
-                volume = 0
-                entry_price = 10.0  # Default fallback if quote unavailable
+        self.account = PaperAccountManager(self.account_path, starting_balance)
+        self.ensure_files_exist()
 
-                if ticker:
-                    liquidity_res = check_liquidity_and_spread(
-                        ticker=ticker,
-                        max_spread_pct=self.config.max_bid_ask_spread_pct,
-                        min_volume=2000,
-                        commission_min_eur=self.config.nordnet_min_commission_eur,
-                        commission_percent=self.config.nordnet_commission_percent,
-                        sample_trade_size_eur=self.config.nordnet_min_trade_eur * 2.0,
-                        max_total_friction_pct=self.config.max_total_friction_pct,
-                    )
-                    spread_pct = liquidity_res.get("spread_pct")
-                    bid = liquidity_res.get("bid")
-                    ask = liquidity_res.get("ask")
-                    volume = liquidity_res.get("volume", 0)
-                    total_friction_pct = liquidity_res.get("total_friction_pct")
-                    comm_round_trip = liquidity_res.get("commission_round_trip_eur", 14.0)
-                    min_trade = liquidity_res.get("min_recommended_trade_eur", self.config.nordnet_min_trade_eur)
-                    if ask and ask > 0:
-                        entry_price = ask
-                    elif bid and bid > 0:
-                        entry_price = bid
+    def ensure_files_exist(self) -> None:
+        """Ensures CSV files have correct headers if not present."""
+        self.open_positions_path.parent.mkdir(parents=True, exist_ok=True)
+        self.trade_history_path.parent.mkdir(parents=True, exist_ok=True)
 
-                    if not liquidity_res["passed_spread_check"]:
-                        logger.info(f"[-] Rejected by Quant Friction Filter ({ticker}): {liquidity_res['reason']}")
-                        if not dry_run:
-                            mark_as_processed(article_id, title, pub_date, self.config.db_path)
-                        continue
-                else:
-                    total_friction_pct = None
-                    comm_round_trip = 14.0
-                    min_trade = self.config.nordnet_min_trade_eur
+        if not self.open_positions_path.exists():
+            with open(self.open_positions_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Ticker", "Buy Date", "Buy Price", "Shares", "Capital Invested", "Strategy"])
 
-                # Calculate Sizing
-                sizing = self.calculate_sizing(strategy_route, ticker or "", min_trade)
-                alloc_eur = sizing["recommended_allocation_eur"]
-                shares_to_buy = max(1, int(alloc_eur / entry_price)) if entry_price > 0 else 100
+        if not self.trade_history_path.exists():
+            with open(self.trade_history_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "Ticker", "Buy Date", "Sell Date", "Buy Price", "Sell Price",
+                    "Shares", "Capital Invested", "Gross Sale Value", "Transaction Fee",
+                    "Net Return", "Net PnL", "Exit Reason"
+                ])
 
-                candidate = {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "company_name": release.company_name or "Unknown",
-                    "ticker": ticker or "",
-                    "strategy_type": strategy_route,
-                    "title": title,
-                    "link": release.link,
-                    "signals": signal_label,
-                    "reasoning": educational_rationale,
-                    "recommended_allocation_eur": alloc_eur,
-                    "kelly_fraction": sizing.get("kelly_fraction"),
-                    "sizing_model": sizing["sizing_model"],
-                    "spread_pct": spread_pct,
-                    "bid": bid,
-                    "ask": ask,
-                    "volume": volume,
-                    "total_friction_pct": total_friction_pct,
-                    "commission_round_trip_eur": comm_round_trip,
-                    "min_recommended_trade_eur": min_trade,
-                    "pdf_attached": len(doc.pdf_urls) > 0,
-                    "entry_price": entry_price,
-                    "shares": shares_to_buy,
-                    "management_buying": signals.get("insider_buying_personal", signals.get("management_buying", False)),
-                    "positive_guidance": signals.get("positive_guidance", False),
-                    "insider_buying_personal": signals.get("insider_buying_personal", False),
-                    "company_share_buyback": signals.get("company_share_buyback", False),
-                    "cash_issue": cash_issue,
-                }
-                candidates_found.append(candidate)
-
-                self._print_alert(candidate)
-
-                # Step E: Execute & Alert
-                if not dry_run:
-                    self._append_to_csv(candidate)
-                    if ticker:
-                        self.record_open_position(
-                            candidate=candidate,
-                            entry_price=entry_price,
-                            shares=shares_to_buy,
-                            position_value=alloc_eur,
-                        )
-                    try:
-                        send_alert(
-                            pipeline_type=strategy_route,
-                            ticker=candidate["ticker"],
-                            company_name=candidate["company_name"],
-                            analysis_summary=candidate,
-                            email_client=self.email_client,
-                        )
-                    except Exception as email_err:
-                        logger.debug(f"Email notification error: {email_err}")
-
-            if not dry_run:
-                mark_as_processed(article_id, title, pub_date, self.config.db_path)
-
-        elapsed = time.time() - start_time
-        logger.info("=" * 75)
-        logger.info(
-            f"Screening cycle finished in {elapsed:.2f}s. "
-            f"({skipped_count} skipped, {trash_count} trash noise discarded, "
-            f"{universe_discard_count} outside-universe filtered, "
-            f"{processed_count} evaluated, {len(candidates_found)} alerts)"
-        )
-        logger.info("=" * 75)
-
-        return candidates_found
-
-    # Compatibility alias for existing tests
-    def run_pipeline_cycle(self, dry_run: bool = False) -> List[Dict[str, Any]]:
-        return self.run_screening_cycle(dry_run=dry_run)
-
-    def run_eod_maintenance(self, dry_run: bool = False) -> List[Dict[str, Any]]:
-        """
-        End-of-Day maintenance routine (Run daily at 19:00):
-        1. Evaluates all open paper positions with ExitManager.
-        2. Closed trades are moved to trade_history.csv.
-        3. Dispatches automated [SELL ALERT] emails.
-        """
-        logger.info("\n" + "=" * 80)
-        logger.info(">>> RUNNING END-OF-DAY (EOD) MAINTENANCE & EXIT MANAGEMENT <<<")
-        logger.info("=" * 80)
-
-        eod_res = self.exit_manager.check_exits()
-        closed_trades = eod_res.get("closed_trades", []) if isinstance(eod_res, dict) else (eod_res or [])
-
-        if not closed_trades:
-            logger.info("No position exits triggered today. All positions held.")
+    def load_open_positions(self) -> List[Dict[str, Any]]:
+        """Reads open positions from CSV, normalizing legacy headers."""
+        if not self.open_positions_path.exists():
             return []
 
-        logger.info(f"✅ Executed {len(closed_trades)} position exit(s):")
-        for trade in closed_trades:
-            ticker = trade["Ticker"]
-            strat = trade.get("Strategy_Type", "SATELLITE")
-            net_ret = trade.get("NetReturnPct", 0.0)
-            reason = trade.get("ExitReason", "")
-            logger.info(f" -> [EXIT] {ticker} ({strat}): Net PnL {net_ret:+.2f}% | Reason: {reason}")
-
-            if not dry_run:
-                try:
-                    send_sell_alert(
-                        ticker=ticker,
-                        strategy_type=strat,
-                        trade_data=trade,
-                        email_client=self.email_client,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to dispatch sell alert email for {ticker}: {e}")
-
-        return closed_trades
-
-    def _print_alert(self, candidate: Dict[str, Any]) -> None:
-        """Print highlighted alert to console."""
-        strat = candidate.get("strategy_type", "SATELLITE")
-        spread_info = (
-            f"{candidate['spread_pct']}% (Bid: {candidate['bid']} / Ask: {candidate['ask']})"
-            if candidate.get("spread_pct") is not None
-            else "N/A"
-        )
-        friction_info = (
-            f"{candidate['total_friction_pct']}% (Nordnet kulu: {candidate.get('commission_round_trip_eur')} EUR)"
-            if candidate.get("total_friction_pct") is not None
-            else "N/A"
-        )
-        tag = "[ALERT: CORE 10-BAGGER CANDIDATE]" if strat == StrategyType.CORE.value else "[ALERT: SATELLITE CATALYST HUNTING]"
-        
-        print("\n" + "=" * 80)
-        print(f"{tag} {candidate['company_name']} ({candidate['ticker'] or 'N/A'})")
-        print(f"Strategy:       {strat}")
-        print(f"Signals:        {candidate['signals']}")
-        print(f"Position Size:  {candidate['recommended_allocation_eur']:.0f} EUR ({candidate['sizing_model']})")
-        print(f"Spread:         {spread_info} | Vol: {candidate.get('volume', 'N/A')}")
-        print(f"Friction:       {friction_info} | Min. ostosuositus: >= {candidate.get('min_recommended_trade_eur', 500):.0f} EUR")
-        print(f"Title:          {candidate['title']}")
-        print(f"Link:           {candidate['link']}")
-        print(f"PDF Attached:   {'Yes' if candidate['pdf_attached'] else 'No'}")
-        if candidate.get("reasoning"):
-            print(f"Pedagoginen Perustelu:\n  👉 {candidate['reasoning']}")
-        print("=" * 80 + "\n")
-
-    def _append_to_csv(self, candidate: Dict[str, Any]) -> None:
-        """Append candidate record to screener_alerts.csv."""
-        file_exists = self.alerts_csv_path.exists()
-        fieldnames = [
-            "timestamp", "company_name", "ticker", "strategy_type", "title",
-            "link", "signals", "recommended_allocation_eur", "kelly_fraction", "sizing_model",
-            "reasoning", "spread_pct", "bid", "ask", "volume",
-            "total_friction_pct", "commission_round_trip_eur", "min_recommended_trade_eur",
-            "management_buying", "positive_guidance", "pdf_attached"
-        ]
+        positions: List[Dict[str, Any]] = []
         try:
-            with open(self.alerts_csv_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                if not file_exists:
-                    writer.writerow(fieldnames)
-                writer.writerow([
-                    candidate["timestamp"],
-                    candidate["company_name"],
-                    candidate["ticker"],
-                    candidate.get("strategy_type", "SATELLITE"),
-                    candidate["title"],
-                    candidate["link"],
-                    candidate["signals"],
-                    candidate.get("recommended_allocation_eur", ""),
-                    candidate.get("kelly_fraction", ""),
-                    candidate.get("sizing_model", ""),
-                    candidate.get("reasoning", ""),
-                    candidate.get("spread_pct", ""),
-                    candidate.get("bid", ""),
-                    candidate.get("ask", ""),
-                    candidate.get("volume", ""),
-                    candidate.get("total_friction_pct", ""),
-                    candidate.get("commission_round_trip_eur", ""),
-                    candidate.get("min_recommended_trade_eur", ""),
-                    candidate["management_buying"],
-                    candidate["positive_guidance"],
-                    candidate["pdf_attached"],
-                ])
+            with open(self.open_positions_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ticker = (row.get("Ticker") or row.get("ticker") or "").strip().upper()
+                    if not ticker:
+                        continue
+                    buy_date = row.get("Buy Date") or row.get("EntryDate") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    buy_price = float(row.get("Buy Price") or row.get("EntryPrice") or 0.0)
+                    shares = int(float(row.get("Shares") or row.get("shares") or 0))
+
+                    cap_invested_raw = row.get("Capital Invested")
+                    if cap_invested_raw is not None and str(cap_invested_raw).strip():
+                        capital_invested = float(cap_invested_raw)
+                    else:
+                        capital_invested = (shares * buy_price) + calculate_transaction_fee(shares * buy_price)
+
+                    strategy = row.get("Strategy") or row.get("Strategy_Type") or "PROFILE_B"
+
+                    if buy_price > 0 and shares > 0:
+                        positions.append({
+                            "Ticker": ticker,
+                            "Buy Date": buy_date,
+                            "Buy Price": buy_price,
+                            "Shares": shares,
+                            "Capital Invested": capital_invested,
+                            "Strategy": strategy,
+                        })
         except Exception as e:
-            logger.error(f"Failed to append alert to {self.alerts_csv_path}: {e}")
+            logger.error(f"Error reading {self.open_positions_path}: {e}")
+
+        return positions
+
+    def save_open_positions(self, positions: List[Dict[str, Any]]) -> None:
+        """Saves current open positions back to CSV."""
+        with open(self.open_positions_path, "w", encoding="utf-8", newline="") as f:
+            fieldnames = ["Ticker", "Buy Date", "Buy Price", "Shares", "Capital Invested", "Strategy"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for p in positions:
+                writer.writerow({
+                    "Ticker": p["Ticker"],
+                    "Buy Date": p["Buy Date"],
+                    "Buy Price": round(float(p["Buy Price"]), 4),
+                    "Shares": int(p["Shares"]),
+                    "Capital Invested": round(float(p.get("Capital Invested", p["Shares"] * p["Buy Price"])), 2),
+                    "Strategy": p.get("Strategy", "PROFILE_B"),
+                })
+
+    def append_trade_history(self, trade: Dict[str, Any]) -> None:
+        """Appends a closed trade with full fee and PnL breakdown to trade_history.csv."""
+        with open(self.trade_history_path, "a", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                trade["Ticker"],
+                trade["Buy Date"],
+                trade["Sell Date"],
+                f"{trade['Buy Price']:.4f}",
+                f"{trade['Sell Price']:.4f}",
+                int(trade["Shares"]),
+                f"{trade['Capital Invested']:.2f}",
+                f"{trade['Gross Sale Value']:.2f}",
+                f"{trade['Transaction Fee']:.2f}",
+                f"{trade['Net Return']:.2f}",
+                f"{trade['Net PnL']:+.2f}",
+                trade["Exit Reason"],
+            ])
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Nordic Micro-Cap Core & Satellite Screener & Trading Bot v2.0.0"
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version="tradeBotTiuku Core & Satellite Screener v2.0.0"
-    )
-    parser.add_argument(
-        "--run-once",
-        action="store_true",
-        help="Run the screening pipeline once and exit"
-    )
-    parser.add_argument(
-        "--loop",
-        action="store_true",
-        help="Run continuous background daemon loop (with dynamic asymmetric scraping)"
-    )
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=None,
-        help="Explicit fixed polling interval in seconds (overrides asymmetric dynamic schedule)"
-    )
-    parser.add_argument(
-        "--peak-interval",
-        type=int,
-        default=40,
-        help="Polling interval in seconds during morning peak rush 08:30-10:00 (default: 40s)"
-    )
-    parser.add_argument(
-        "--regular-interval",
-        type=int,
-        default=300,
-        help="Polling interval in seconds during regular day hours 08:00-18:30 (default: 300s = 5 min)"
-    )
-    parser.add_argument(
-        "--offmarket-interval",
-        type=int,
-        default=900,
-        help="Polling interval in seconds outside market hours and weekends (default: 900s = 15 min)"
-    )
-    parser.add_argument(
-        "--check-exits",
-        action="store_true",
-        help="Run End-of-Day exit maintenance on open positions and exit"
-    )
-    parser.add_argument(
-        "--universe",
-        type=str,
-        default=str(DEFAULT_UNIVERSE_CSV),
-        help=f"Path to Nordnet universe CSV file (default: {DEFAULT_UNIVERSE_CSV})"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Execute without persisting positions or state"
-    )
-    args = parser.parse_args()
+    def fetch_live_price(self, ticker: str) -> Optional[float]:
+        """Fetches latest real-time closing price via yfinance."""
+        try:
+            t = yf.Ticker(ticker)
+            info = getattr(t, "fast_info", None)
+            if info and hasattr(info, "last_price") and info.last_price:
+                return float(info.last_price)
+            hist = t.history(period="5d")
+            if not hist.empty:
+                valid = hist["Close"].dropna()
+                if not valid.empty:
+                    return float(valid.iloc[-1])
+        except Exception as e:
+            logger.warning(f"Could not fetch live price for {ticker}: {e}")
+        return None
 
-    controller = ScreenerPipelineController(universe_csv_path=args.universe)
+    def evaluate_news_radar(self, ticker: str) -> Tuple[str, str]:
+        """
+        Layer 2 (LLM News Radar):
+        Fetches latest press releases via yfinance news and runs them through
+        RED_FLAG_PATTERNS and nlp_analyzer.rule_based_analyze_core_fundamentals.
+        Returns ('REJECT', reason) if fatal structural risk detected, otherwise ('HOLD', reason).
 
-    if args.check_exits:
-        controller.run_eod_maintenance(dry_run=args.dry_run)
-        return
+        ⚠️  DEGRADED MODE NOTE: This function currently uses ONLY rule-based logic
+        (RED_FLAG_PATTERNS hard-gate + rule_based_analyze_core_fundamentals).
+        No OpenRouter/LLM API call is made here. The configured model is free-tier
+        (meta-llama/llama-3-8b-instruct:free via OpenRouter). HTTP 402 during tests
+        indicates daily free quota was exhausted — this resets after ~24h automatically.
+        The rule-based fallback is context-free and may produce false positives for
+        ambiguous signals (e.g., 'reverse stock split' as Nasdaq compliance vs toxic dilution).
+        Upgrade path: replace rule_based_analyze_core_fundamentals with
+        analyze_core_fundamentals (LLM) once RED_FLAG_PATTERNS pre-filter is refactored.
+        """
+        logger.info(
+            f"[LAYER 2 RADAR] {ticker}: Running in RULE-BASED DEGRADED MODE "
+            f"(no LLM call). Context-free RED_FLAG_PATTERNS scan only."
+        )
+        try:
+            t = yf.Ticker(ticker)
+            news_items = getattr(t, "news", []) or []
+            if not news_items:
+                return "HOLD", "No new press releases"
 
-    if args.loop:
-        # Override config interval values if passed
-        controller.config.peak_interval_seconds = args.peak_interval
-        controller.config.regular_interval_seconds = args.regular_interval
-        controller.config.offmarket_interval_seconds = args.offmarket_interval
+            warning_found = False
+            warning_reason = ""
 
-        if args.interval is not None:
-            logger.info(f"Starting continuous daemon loop with FIXED interval: {args.interval}s...")
-        else:
-            logger.info(
-                f"Starting continuous daemon loop with ASYMMETRIC dynamic schedule "
-                f"(Peak 08:30-10:00: {args.peak_interval}s, Day: {args.regular_interval}s, Off-market: {args.offmarket_interval}s)..."
+            for item in news_items[:10]:
+                title = str(item.get("title", "")).strip()
+                summary = str(item.get("summary", "")).strip()
+                full_text = f"{title} {summary}"
+
+                # 1. Pattern-based fatal red flags (Instant Exit)
+                for pattern in FATAL_RED_FLAG_PATTERNS:
+                    if pattern.lower() in full_text.lower():
+                        reason = f"Fatal red flag '{pattern}' detected in headline: {title}"
+                        logger.warning(f"🚨 [LAYER 2 RADAR] {ticker}: {reason}")
+                        return "REJECT", reason
+
+                # 2. Pattern-based warning signals (Dual Confirmation)
+                for pattern in WARN_PATTERNS:
+                    if pattern.lower() in full_text.lower():
+                        warning_found = True
+                        warning_reason = f"Warning '{pattern}' detected in headline: {title}"
+
+                # 3. NLP fundamental safety check via nlp_analyzer.py (rule-based only)
+                nlp_res = rule_based_analyze_core_fundamentals(full_text)
+                safety = nlp_res.get("financial_safety", {})
+                if safety.get("going_concern_risk") or safety.get("erratic_pivots_detected"):
+                    reason = f"Fatal NLP Risk triggered: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+                    logger.warning(f"🚨 [LAYER 2 RADAR] {ticker}: {reason}")
+                    return "REJECT", reason
+                elif nlp_res.get("verdict_details", {}).get("verdict") == "WARN" or safety.get("warning_detected"):
+                    warning_found = True
+                    warning_reason = f"NLP Warning: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+
+            if warning_found:
+                logger.info(f"⚠️ [LAYER 2 RADAR] {ticker}: {warning_reason}")
+                return "WARN", warning_reason
+
+            return "HOLD", f"Scanned {len(news_items)} recent news items with no fatal red flags"
+        except Exception as e:
+            logger.warning(f"Error checking news for {ticker}: {e}")
+            return "HOLD", "News scan error"
+
+
+    def execute_portfolio_management(self) -> int:
+        """
+        Phase 1: Portfolio Management (Tri-Layer Fundamental Exit Check & Real Costs).
+        Evaluates each position against:
+          - Layer 1: Catastrophic stop (-50%)
+          - Layer 2: LLM news radar
+          - Layer 3: Quarterly fundamental deterioration
+        On SELL:
+          - Gross Sale Value = Shares * Current Price
+          - Transaction Fee = max(Gross Sale Value * 0.002, 9.00)
+          - Net Return = Gross Sale Value - Transaction Fee
+          - Updates cash balance, removes position, logs to trade_history.csv.
+        Returns count of positions sold.
+        """
+        open_positions = self.load_open_positions()
+        if not open_positions:
+            logger.info("💼 [PHASE 1: PORTFOLIO] No open positions to manage.")
+            return 0
+
+        logger.info(f"💼 [PHASE 1: PORTFOLIO] Evaluating {len(open_positions)} active position(s) with Tri-Layer Exit...")
+
+        retained_positions: List[Dict[str, Any]] = []
+        closed_count = 0
+
+        for pos in open_positions:
+            ticker = pos["Ticker"]
+            buy_price = float(pos["Buy Price"])
+            shares = int(pos["Shares"])
+            capital_invested = float(pos.get("Capital Invested", shares * buy_price))
+            buy_date = pos["Buy Date"]
+
+            # 1. Live Price
+            current_price = self.fetch_live_price(ticker)
+            if current_price is None or current_price <= 0:
+                logger.warning(f"⚠️ {ticker}: Price unavailable. Retaining position.")
+                retained_positions.append(pos)
+                continue
+
+            # 2. Layer 2 News Radar (nlp_analyzer.py)
+            news_verdict, news_reason = self.evaluate_news_radar(ticker)
+
+            # 3. Layer 3 Quarterly Financials (financial_metrics_engine.py)
+            hard_facts = get_hard_financials(ticker)
+            financials_payload = {
+                "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
+                "cash_runway_months": hard_facts.get("cash_runway_months"),
+                "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
+            }
+
+            # 4. Tri-Layer Evaluation
+            action, reason = evaluate_position(
+                position={"buy_price": buy_price, "ticker": ticker, "buy_date": buy_date},
+                current_price=current_price,
+                latest_news_judgment=news_verdict,
+                latest_financials=financials_payload,
             )
 
-        last_eod_date = None
-        try:
-            while True:
-                now = datetime.now()
-                # Run regular intraday screening cycle
-                controller.run_screening_cycle(dry_run=args.dry_run)
+            if action == "SELL":
+                gross_sale_value = shares * current_price
+                transaction_fee = calculate_transaction_fee(gross_sale_value)
+                net_return = gross_sale_value - transaction_fee
+                net_pnl = net_return - capital_invested
 
-                # Check if it's EOD maintenance time (19:00+) and hasn't run today
-                today = now.date()
-                if now.hour >= 19 and last_eod_date != today:
-                    logger.info("19:00 reached: Triggering scheduled End-of-Day maintenance...")
-                    controller.run_eod_maintenance(dry_run=args.dry_run)
-                    last_eod_date = today
+                # Update cash balance
+                self.account.cash_balance += net_return
+                self.account.save()
 
-                if args.interval is not None:
-                    sleep_sec = args.interval
-                    mode_desc = f"Fixed interval ({sleep_sec}s)"
-                else:
-                    sleep_sec, mode_desc = get_dynamic_interval(datetime.now(), controller.config)
+                # Archive trade
+                trade_record = {
+                    "Ticker": ticker,
+                    "Buy Date": buy_date,
+                    "Sell Date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "Buy Price": buy_price,
+                    "Sell Price": current_price,
+                    "Shares": shares,
+                    "Capital Invested": capital_invested,
+                    "Gross Sale Value": gross_sale_value,
+                    "Transaction Fee": transaction_fee,
+                    "Net Return": net_return,
+                    "Net PnL": net_pnl,
+                    "Exit Reason": reason,
+                }
+                self.append_trade_history(trade_record)
+                closed_count += 1
 
-                logger.info(f"Heartbeat OK | Schedule Mode: {mode_desc} | Next cycle in {sleep_sec}s...")
-                time.sleep(sleep_sec)
-        except KeyboardInterrupt:
-            logger.info("Daemon loop terminated by user (KeyboardInterrupt). Exiting cleanly.")
+                logger.info(
+                    f"🚨 [SELL TRIGGERED] {ticker} | Exit: {reason} | "
+                    f"Shares: {shares} @ ${current_price:.2f} | Gross: ${gross_sale_value:.2f} | "
+                    f"Fee: ${transaction_fee:.2f} | Net Proceeds: ${net_return:.2f} | "
+                    f"Net PnL: ${net_pnl:+.2f} | Remaining Cash: ${self.account.cash_balance:,.2f}"
+                )
+            else:
+                unrealized_gross = shares * current_price
+                unrealized_fee = calculate_transaction_fee(unrealized_gross)
+                unrealized_net = unrealized_gross - unrealized_fee
+                unrealized_pnl = unrealized_net - capital_invested
+                pnl_pct = (unrealized_pnl / capital_invested) * 100.0 if capital_invested > 0 else 0.0
+
+                logger.info(
+                    f"  • {ticker}: HOLD | Px: ${current_price:.2f} | "
+                    f"Val: ${unrealized_gross:,.2f} | PnL: ${unrealized_pnl:+.2f} ({pnl_pct:+.1f}%) | "
+                    f"News: {news_verdict} | Runway: {financials_payload.get('cash_runway_months')}m"
+                )
+                retained_positions.append(pos)
+
+
+        self.save_open_positions(retained_positions)
+        return closed_count
+
+    def execute_market_screening(self) -> int:
+        """
+        Phase 2: Market Scanning (Profile B Only & Small Account Sizing).
+        Reads clean_microcap_universe.csv, evaluates PROFILE_B only,
+        enforces 1,000.0 target allocation, checks 10% 20d ADV liquidity,
+        deducts 9.00 buy fee, and routes whole shares only (math.floor).
+        Returns count of new positions opened.
+        """
+        if not self.clean_universe_path.exists():
+            logger.error(f"Universe file {self.clean_universe_path} not found. Aborting screening.")
+            return 0
+
+        u_df = pd.read_csv(self.clean_universe_path)
+        logger.info(f"🔍 [PHASE 2: SCREENING] Scanning {len(u_df)} verified micro-caps for PROFILE_B signals...")
+
+        open_positions = self.load_open_positions()
+        held_tickers = {p["Ticker"] for p in open_positions}
+
+        # Calculate Total Invested Capital in open positions
+        open_capital = sum(float(p.get("Capital Invested", p["Shares"] * p["Buy Price"])) for p in open_positions)
+        logger.info(
+            f"📊 Portfolio Status: Cash = ${self.account.cash_balance:,.2f} | "
+            f"Active Capital = ${open_capital:,.2f} | Target Allocation/Stock = ${POSITION_ALLOCATION:,.2f}"
+        )
+
+        new_buys = 0
+
+        for idx, row in u_df.iterrows():
+            ticker = str(row["ticker"]).strip().upper()
+            if ticker in held_tickers:
+                continue
+
+            if self.account.cash_balance < (MIN_BROKER_FEE + 10.0):
+                logger.info("Cash balance depleted (< min fee + buffer). Ending market screening cycle.")
+                break
+
+            # Evaluate hard financials
+            hard_facts = get_hard_financials(ticker)
+            eval_res = evaluate_profiles(hard_facts)
+
+            is_profile_b = eval_res.get("is_profile_b", False)
+            is_profile_a = eval_res.get("is_profile_a", False)
+
+            # Profile A is strictly disabled based on N=240 empirical backtest findings
+            if is_profile_a and not is_profile_b:
+                logger.debug(f"  • {ticker}: Rejected Profile A growth signal (Profile A disabled).")
+                continue
+
+            if not is_profile_b:
+                continue
+
+            # Data Freshness Guard: Skip companies with stale statements (>120 days)
+            dq = hard_facts.get("data_quality", {})
+            if dq.get("is_fresh") is False:
+                logger.warning(
+                    f"⚠️ {ticker}: Financial statement is stale ({hard_facts.get('data_age_days')} days old > 120d). "
+                    "Skipping entry to protect against unreflected deterioration."
+                )
+                continue
+
+            # 1. Target Allocation = 1000.0 (Strictly 10% of the 10k starting balance)
+
+            target_allocation = POSITION_ALLOCATION
+            if target_allocation > self.account.cash_balance:
+                target_allocation = self.account.cash_balance
+
+            # 2. Check Liquidity: Ensure Target Allocation <= 0.10 * 20d_ADV
+            adv_20d_usd = float(row.get("adv_20d_usd", 0.0) or 0.0)
+            max_adv_allowed = adv_20d_usd * MAX_ADV_ALLOCATION_PCT if adv_20d_usd > 0 else 0.0
+
+            if max_adv_allowed > 0 and target_allocation > max_adv_allowed:
+                logger.warning(
+                    f"⚠️ {ticker}: Target allocation ${target_allocation:,.2f} exceeds 10% of 20d ADV "
+                    f"(${max_adv_allowed:,.2f}). Capping to ADV limit."
+                )
+                target_allocation = max_adv_allowed
+
+            if target_allocation < (MIN_BROKER_FEE + 10.0):
+                logger.debug(f"  • {ticker}: Allocation ${target_allocation:.2f} too small after liquidity check. Skipping.")
+                continue
+
+            # 3. Deduct Buy Fee to determine Investable Cash
+            investable_cash = target_allocation - MIN_BROKER_FEE
+            if investable_cash <= 0:
+                logger.debug(f"  • {ticker}: Investable cash <= 0 after fee deduction. Skipping.")
+                continue
+
+            # 4. Fetch Current Live Price
+            current_price = self.fetch_live_price(ticker) or float(row.get("current_price", 0.0) or 0.0)
+            if current_price <= 0:
+                logger.warning(f"Could not determine valid price for {ticker}. Skipping buy.")
+                continue
+
+            # 5. Whole Shares Only via math.floor
+            shares_to_buy = math.floor(investable_cash / current_price)
+            if shares_to_buy <= 0:
+                logger.debug(
+                    f"  • {ticker}: Investable cash ${investable_cash:.2f} cannot afford 1 whole share @ ${current_price:.2f}"
+                )
+                continue
+
+            # 6. Deduct Total Cost (Shares * Price + 9.00) from cash
+            actual_gross_buy = shares_to_buy * current_price
+            total_cost = actual_gross_buy + MIN_BROKER_FEE
+
+            if total_cost > self.account.cash_balance:
+                logger.warning(f"Total cost ${total_cost:.2f} exceeds cash ${self.account.cash_balance:.2f}. Skipping.")
+                continue
+
+            self.account.cash_balance -= total_cost
+            self.account.save()
+
+            new_pos = {
+                "Ticker": ticker,
+                "Buy Date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "Buy Price": current_price,
+                "Shares": shares_to_buy,
+                "Capital Invested": round(total_cost, 2),
+                "Strategy": "PROFILE_B",
+            }
+            open_positions.append(new_pos)
+            held_tickers.add(ticker)
+            new_buys += 1
+
+            logger.info(
+                f"🎯 [BUY TRIGGERED] {ticker} (Profile B Value) | "
+                f"Bought {shares_to_buy} whole shares @ ${current_price:.2f} | "
+                f"Gross: ${actual_gross_buy:.2f} | Fee: ${MIN_BROKER_FEE:.2f} | "
+                f"Total Cost: ${total_cost:,.2f} | Remaining Cash: ${self.account.cash_balance:,.2f}"
+            )
+
+        if new_buys > 0:
+            self.save_open_positions(open_positions)
+
+        return new_buys
+
+
+    def run_daily_cycle(self) -> Tuple[int, int]:
+        """Runs full daily workflow: Phase 1 (Exit Check) + Phase 2 (Screening)."""
+        print("\n" + "=" * 90)
+        print(f"🚀 TRADEBOTTIUKU — LIVE FORWARD-TESTING DAEMON CYCLE: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print("=" * 90)
+
+        sold_count = self.execute_portfolio_management()
+        bought_count = self.execute_market_screening()
+
+        print("\n" + "-" * 90)
+        print(f"✅ CYCLE SUMMARY: {sold_count} position(s) closed | {bought_count} position(s) opened")
+        print(f"💰 CURRENT CASH BALANCE: ${self.account.cash_balance:,.2f} {self.account.currency}")
+        print("-" * 90 + "\n")
+
+        return sold_count, bought_count
+
+    def run_loop(self, interval_hours: float = 24.0) -> None:
+        """Runs the daemon continuously with a sleep loop."""
+        interval_seconds = int(interval_hours * 3600)
+        logger.info(f"Starting continuous live daemon loop (Interval: {interval_hours}h / {interval_seconds}s)...")
+
+        while True:
+            try:
+                self.run_daily_cycle()
+                logger.info(f"Sleeping for {interval_hours} hours until next cycle...")
+                time.sleep(interval_seconds)
+            except KeyboardInterrupt:
+                logger.info("Daemon stopped by user.")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in daemon loop: {e}. Retrying in 60s...")
+                time.sleep(60)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="tradeBotTiuku Live Forward-Testing Daemon")
+    parser.add_argument("--run-once", action="store_true", help="Execute a single daily cycle and exit")
+    parser.add_argument("--loop", action="store_true", help="Run continuously in a sleep loop")
+    parser.add_argument("--interval-hours", type=float, default=24.0, help="Interval in hours for loop mode (default: 24)")
+    parser.add_argument("--reset-paper", action="store_true", help="Reset paper account to starting capital ($10,000)")
+    parser.add_argument("--starting-balance", type=float, default=STARTING_BALANCE, help="Initial paper capital (default: 10000)")
+
+    args = parser.parse_args()
+
+    daemon = LiveTradingDaemon(starting_balance=args.starting_balance)
+
+    if args.reset_paper:
+        daemon.account.reset(args.starting_balance)
+        # Clear open positions to match clean account
+        daemon.save_open_positions([])
+        logger.info("Cleared open positions for fresh forward-testing session.")
+
+    if args.run_once or not args.loop:
+        daemon.run_daily_cycle()
     else:
-        controller.run_screening_cycle(dry_run=args.dry_run)
+        daemon.run_loop(interval_hours=args.interval_hours)
 
 
 if __name__ == "__main__":

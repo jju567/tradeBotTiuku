@@ -593,6 +593,127 @@ tradeBotTiuku Exit Manager
             return False
 
 
+    def send_turnaround_watch_alert_email(
+        self,
+        ticker: str,
+        company_name: str,
+        analysis_summary: Dict[str, Any],
+    ) -> bool:
+        """
+        Sends an automated [TURNAROUND WATCH ALERT] email notification when a potential turnaround is detected.
+        Highlights divergence between negative lagging historical financials and positive real-time news catalysts.
+        """
+        if not self.is_configured():
+            logger.warning(f"EmailClient not configured. Skipping turnaround watch alert email for {ticker}.")
+            return False
+
+        doc_verdict = analysis_summary.get("doc_verdict", "HOLD / REJECT")
+        doc_reasoning = analysis_summary.get("doc_reasoning", "Historical financials lag or show cash burn.")
+        web_catalysts = analysis_summary.get("positive_catalysts_found", [])
+        web_reasoning = analysis_summary.get("web_reasoning", "Positive catalysts detected in recent news/filings.")
+        catalysts_str = ", ".join(web_catalysts) if web_catalysts else "Turnaround catalyst detected"
+        title = analysis_summary.get("title", "")
+        link = analysis_summary.get("link", "")
+
+        subject = f"👀 tradeBotTiuku — [TURNAROUND WATCH ALERT] {ticker} ({company_name}) — {catalysts_str}"
+
+        plain_text = f"""
+===================================================================
+[TURNAROUND WATCH ALERT] POTENTIAL TURNAROUND DETECTED
+===================================================================
+Company:            {company_name} ({ticker})
+Watchlist Status:   👀 WATCH_TURNAROUND (Manual Deep Dive Recommended)
+Trading Action:     Watchlist Only — No Automated Paper Position Opened
+
+-------------------------------------------------------------------
+1. LAGGING HISTORICAL FINANCIALS (Step 1 Document Analysis):
+-------------------------------------------------------------------
+Verdict:   {doc_verdict}
+Analysis:  {doc_reasoning}
+
+-------------------------------------------------------------------
+2. REAL-TIME POSITIVE NEWS CATALYSTS (Step 2 Web Sanity Check):
+-------------------------------------------------------------------
+Catalysts: {catalysts_str}
+Analysis:  {web_reasoning}
+
+Document Title: {title}
+Direct Link:    {link or 'N/A'}
+===================================================================
+tradeBotTiuku Turnaround Watch System
+        """.strip()
+
+        body_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 650px; margin: 0 auto; padding: 20px; background-color: #f8fafc;">
+            <div style="background: linear-gradient(135deg, #7c2d12 0%, #ea580c 100%); color: #ffffff; padding: 22px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+                <div style="font-size: 0.85rem; font-weight: bold; letter-spacing: 0.05em; text-transform: uppercase; color: #ffedd5; margin-bottom: 6px;">👀 TURNAROUND DIVERGENCE DETECTED</div>
+                <h1 style="margin: 0; font-size: 1.6rem; color: #ffffff;">{company_name} <span style="background: rgba(255,255,255,0.25); padding: 2px 8px; border-radius: 4px; font-size: 1.1rem; margin-left: 6px;">{ticker}</span></h1>
+            </div>
+
+            <div style="background: #ffffff; border-left: 4px solid #f97316; border: 1px solid #e2e8f0; border-left-width: 5px; border-radius: 8px; padding: 18px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: #c2410c;">⚠️ Historiallinen Raportti (Laahaavat Luvut / Vaihe 1)</h3>
+                <p style="margin: 4px 0 8px 0;"><strong>Alkuperäinen Tuomio:</strong> <span style="background: #fee2e2; color: #991b1b; padding: 2px 6px; border-radius: 4px; font-weight: bold;">{doc_verdict}</span></p>
+                <p style="margin: 0; font-size: 0.95rem; color: #475569; line-height: 1.5;">{doc_reasoning}</p>
+            </div>
+
+            <div style="background: #ffffff; border-left: 4px solid #10b981; border: 1px solid #e2e8f0; border-left-width: 5px; border-radius: 8px; padding: 18px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: #047857;">🚀 Tuoreet Verkkouutiset & Käännekatalyytit (Vaihe 2)</h3>
+                <p style="margin: 4px 0 8px 0;"><strong>Tunnistetut Katalyytit:</strong> <span style="background: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 4px; font-weight: bold;">{catalysts_str}</span></p>
+                <p style="margin: 0; font-size: 0.95rem; color: #1e293b; line-height: 1.5;">{web_reasoning}</p>
+            </div>
+
+            <div style="background: #f1f5f9; border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 0.9rem; color: #334155;">
+                ℹ️ <strong>Toimenpide:</strong> Lisätty tarkkailulistalle (<code>data/watchlist_turnarounds.csv</code>). Automaattista ostotoimeksiantoa ei avata ilman manuaalista vahvistusta tai toissijaista kriteeritarkastusta.
+            </div>
+
+            {f'<p style="margin-top: 18px;"><a href="{link}" style="display: inline-block; background: #ea580c; color: #ffffff; padding: 10px 18px; border-radius: 6px; text-decoration: none; font-weight: bold;">🔗 Avaa Pörssitiedote / Uutinen</a></p>' if link else ''}
+
+            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 30px; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 15px;">
+                tradeBotTiuku Screener • Dual-Pipeline Core & Satellite Turnaround System
+            </p>
+        </body>
+        </html>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = self.email_from or self.username or "tiuku@local"
+        msg["To"] = self.email_to
+
+        msg.attach(MIMEText(plain_text, "plain", "utf-8"))
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+        try:
+            logger.info(f"Sending [TURNAROUND WATCH ALERT] email for {ticker} to {self.email_to}...")
+            if self.smtp_port == 465:
+                server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, timeout=30)
+            else:
+                server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
+                if self.smtp_port == 587:
+                    try:
+                        server.starttls()
+                    except Exception as e:
+                        logger.warning(f"STARTTLS warning: {e}")
+
+            pwd_lower = str(self.password).lower()
+            if self.username and self.password and "syötä-tähän" not in pwd_lower and "your-" not in pwd_lower:
+                try:
+                    server.login(self.username, self.password)
+                except Exception as e:
+                    logger.warning(f"SMTP login skipped or failed: {e}")
+
+            server.sendmail(self.email_from or self.username, [self.email_to], msg.as_string())
+            server.quit()
+            logger.info(f"✅ [TURNAROUND WATCH ALERT] email successfully sent for {ticker} to {self.email_to}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to send turnaround watch alert email for {ticker}: {e}")
+            return False
+
+
 def send_alert(
     pipeline_type: str,
     ticker: str,
@@ -627,5 +748,23 @@ def send_sell_alert(
         strategy_type=strategy_type,
         trade_data=trade_data,
     )
+
+
+def send_turnaround_alert(
+    ticker: str,
+    company_name: str,
+    analysis_summary: Dict[str, Any],
+    email_client: Optional[EmailClient] = None,
+) -> bool:
+    """
+    Convenience function to send a formatted Turnaround Watch alert email.
+    """
+    client = email_client or EmailClient()
+    return client.send_turnaround_watch_alert_email(
+        ticker=ticker,
+        company_name=company_name,
+        analysis_summary=analysis_summary,
+    )
+
 
 

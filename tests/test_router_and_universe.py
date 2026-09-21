@@ -21,8 +21,8 @@ def test_load_nordnet_universe_default():
     """Test loading the generated Nordic master universe."""
     universe = load_nordnet_universe()
     assert universe["total_count"] > 0
-    assert "FARON.HE" in universe["by_ticker_yf"]
-    assert "FARON" in universe["by_base_ticker"]
+    assert "EXEL.HE" in universe["by_ticker_yf"]
+    assert "EXEL" in universe["by_base_ticker"]
 
 
 def test_match_universe_item_by_ticker_and_name():
@@ -165,6 +165,9 @@ def test_main_controller_trash_and_universe_filtering(tmp_path, monkeypatch):
     controller = ScreenerPipelineController(
         config=cfg,
         alerts_csv_path=csv_file,
+        open_positions_path=tmp_path / "open_positions.csv",
+        trade_history_path=tmp_path / "trade_history.csv",
+        watchlist_turnarounds_path=tmp_path / "watchlist_turnarounds.csv",
         enforce_universe=True,
     )
 
@@ -223,6 +226,11 @@ def test_main_controller_trash_and_universe_filtering(tmp_path, monkeypatch):
             "min_recommended_trade_eur": 500.0,
             "reason": "Passed checks",
         }
+    )
+    monkeypatch.setattr(
+        controller.web_verifier,
+        "verify",
+        lambda **kwargs: {"passed_web_check": True, "reason": "Passed test mock"}
     )
 
     candidates = controller.run_pipeline_cycle()

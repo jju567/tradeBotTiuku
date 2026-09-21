@@ -90,13 +90,13 @@ CORE_REPORT_KEYWORDS_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# Administrative exclusion keywords (discards AGMs, notices, calendars)
+# Administrative exclusion keywords (discards AGMs, notices, calendars, reporting schedules)
 EXCLUSION_KEYWORDS_REGEX = re.compile(
     r"\b("
     r"kutsu|yhtiökokous|yhtiökokouksen|yhtiökokouskutsu|hallituksen\s+järjestäytyminen|"
-    r"liputusilmoitus|taloudellinen\s+kalenteri|osakepalkkio|nimitystoimikun|johdon\s+liiketoimet|"
-    r"kallelse|bolagsstämma|bolagsstämmans|konstituerande|flaggningsmeddelande|finansiell\s+kalender|"
-    r"notice\s+to|general\s+meeting|reporting\s+calendar|managers['\s]+transactions"
+    r"liputusilmoitus|taloudellinen\s+kalenteri|taloudellinen\s+raportointi|talouskalenteri|osakepalkkio|nimitystoimikun|johdon\s+liiketoimet|"
+    r"kallelse|bolagsstämma|bolagsstämmans|konstituerande|flaggningsmeddelande|finansiell\s+kalender|finansiell\s+rapportering|"
+    r"notice\s+to|general\s+meeting|reporting\s+calendar|financial\s+calendar|reporting\s+schedule|managers['\s]+transactions"
     r")\b",
     re.IGNORECASE
 )
@@ -285,8 +285,9 @@ class HistoricalPDFCrawler:
         return stocks
 
     def resolve_cision_company_url(self, company_name: str) -> Optional[str]:
-        """Tries slug variants and search queries to resolve the active Cision company archive URL."""
+        """Tries slug variants and validates matching to resolve the active Cision company archive URL."""
         slug_candidates = generate_company_slug_candidates(company_name)
+        clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|corporation|group)\b", "", company_name, flags=re.IGNORECASE).strip().lower()
         
         # Test Finnish and Scandinavian country routes
         prefixes = ["https://news.cision.com/fi/", "https://news.cision.com/se/", "https://news.cision.com/"]
@@ -296,24 +297,10 @@ class HistoricalPDFCrawler:
                 url = f"{prefix}{slug}"
                 resp = self._safe_get(url, timeout=8.0)
                 if resp and resp.status_code == 200 and len(resp.text) > 5000:
-                    return url
-
-        # Fallback: search query on Cision
-        clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|corporation|group)\b", "", company_name, flags=re.IGNORECASE).strip()
-        for domain in ["https://news.cision.com/fi", "https://news.cision.com/se"]:
-            search_url = f"{domain}/search?q={quote(clean_name)}"
-            resp = self._safe_get(search_url, timeout=10.0)
-            if resp and resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for a in soup.find_all("a", href=True):
-                    href = a["href"]
-                    # Company archive links are typically /fi/company-slug or /se/company-slug
-                    m = re.match(r"^/(fi|se)/([a-z0-9\-]+)/?$", href.lower())
-                    if m and m.group(2) not in ("search", "all", "rss", "contact", "about"):
-                        full_url = urljoin(domain, href)
-                        check_resp = self._safe_get(full_url, timeout=8.0)
-                        if check_resp and check_resp.status_code == 200 and len(check_resp.text) > 5000:
-                            return full_url
+                    # Validate page content actually belongs to this company
+                    resp_lower = resp.text.lower()
+                    if clean_name in resp_lower or slug.replace("-", " ") in resp_lower:
+                        return url
 
         return None
 
@@ -330,6 +317,8 @@ class HistoricalPDFCrawler:
         """
         candidates: List[ReportCandidate] = []
         seen_urls: Set[str] = set()
+        clean_name = re.sub(r"\b(oyj|oy|plc|ab|asa|a/s|as|corp|corporation|group)\b", "", company_name, flags=re.IGNORECASE).strip().lower()
+        base_ticker = ticker.split(".")[0].lower()
 
         for page in range(1, max_pages + 1):
             page_url = f"{company_url}?page={page}"
@@ -544,6 +533,7 @@ class HistoricalPDFCrawler:
         soup = BeautifulSoup(resp.text, "html.parser")
         candidates: List[ReportCandidate] = []
         seen_urls: Set[str] = set()
+        clean_lower = clean_name.lower()
 
         for a in soup.find_all("a", href=True):
             href = a["href"]
@@ -558,6 +548,12 @@ class HistoricalPDFCrawler:
             if not title or EXCLUSION_KEYWORDS_REGEX.search(title):
                 continue
             if not CORE_REPORT_KEYWORDS_REGEX.search(title):
+                continue
+
+            # Strict company matching: title or release URL must contain company name or ticker
+            title_lower = title.lower()
+            base_ticker = ticker.split(".")[0].lower()
+            if clean_lower not in title_lower and base_ticker not in title_lower and clean_lower not in href.lower():
                 continue
 
             year, period = extract_period_and_year(title)
@@ -589,11 +585,20 @@ class HistoricalPDFCrawler:
 
         soup = BeautifulSoup(resp.text, "html.parser")
         candidates: List[ReportCandidate] = []
+        clean_lower = clean_name.lower()
+        base_ticker = ticker.split(".")[0].lower()
+
         for a in soup.find_all("a", href=True):
             href = a["href"]
             title = a.get_text(strip=True)
             if not title or EXCLUSION_KEYWORDS_REGEX.search(title) or not CORE_REPORT_KEYWORDS_REGEX.search(title):
                 continue
+
+            # Strict company matching
+            title_lower = title.lower()
+            if clean_lower not in title_lower and base_ticker not in title_lower and clean_lower not in href.lower():
+                continue
+
             year, period = extract_period_and_year(title)
             if year < self.min_year or year > self.max_year:
                 continue

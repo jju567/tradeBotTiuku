@@ -41,7 +41,7 @@ def get_db_connection(db_path: Path | str = DEFAULT_DB_PATH) -> Generator[sqlite
 
 def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
     """
-    Initializes the SQLite database and ensures the `processed_articles` table
+    Initializes the SQLite database and ensures the `processed_articles` and `sent_alerts` tables
     and required indices exist.
     """
     with get_db_connection(db_path) as conn:
@@ -61,7 +61,97 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_processed_at 
             ON processed_articles(processed_at)
         """)
+
+        # Table to track dispatched email alerts and prevent spam duplicates
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sent_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                alert_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                sent_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sent_alerts_ticker_type
+            ON sent_alerts(ticker, alert_type)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sent_alerts_sent_at
+            ON sent_alerts(sent_at)
+        """)
     logger.debug(f"Initialized state database at: {db_path}")
+
+
+def has_alert_been_sent(
+    ticker: str,
+    alert_type: str = "SATELLITE",
+    cooldown_hours: float = 24.0,
+    db_path: Path | str = DEFAULT_DB_PATH
+) -> bool:
+    """
+    Checks whether an email alert of type `alert_type` for `ticker` has already been sent
+    within the specified cooldown window (default 24 hours).
+    
+    :param ticker: Stock ticker (e.g. 'FARON.HE', 'RAUTE.HE').
+    :param alert_type: Alert category ('SATELLITE', 'CORE', 'TURNAROUND', 'SELL').
+    :param cooldown_hours: Cooldown window in hours (default 24.0).
+    :param db_path: Path to SQLite database.
+    :return: True if an alert was already dispatched within cooldown, False otherwise.
+    """
+    if not ticker:
+        return False
+
+    clean_ticker = ticker.strip().upper()
+    # Normalize base ticker (e.g. 'FARON' and 'FARON.HE' match)
+    base_ticker = clean_ticker.split(".")[0]
+
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT sent_at FROM sent_alerts 
+            WHERE (ticker = ? OR ticker = ? OR ticker LIKE ?) AND alert_type = ?
+            ORDER BY sent_at DESC LIMIT 1
+        """, (clean_ticker, base_ticker, f"{base_ticker}.%", alert_type.upper()))
+        row = cursor.fetchone()
+        if not row:
+            return False
+
+        try:
+            last_sent_str = row["sent_at"]
+            if last_sent_str.endswith("Z"):
+                last_sent_str = last_sent_str[:-1] + "+00:00"
+            last_sent = datetime.fromisoformat(last_sent_str)
+            if last_sent.tzinfo is None:
+                last_sent = last_sent.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            elapsed_seconds = (now - last_sent).total_seconds()
+            return elapsed_seconds < (cooldown_hours * 3600)
+        except Exception as e:
+            logger.debug(f"Error parsing sent_at timestamp: {e}")
+            return True
+
+
+def mark_alert_sent(
+    ticker: str,
+    alert_type: str,
+    title: str = "",
+    db_path: Path | str = DEFAULT_DB_PATH
+) -> None:
+    """
+    Records an outgoing email alert into SQLite `sent_alerts` to prevent duplicate emails.
+    """
+    if not ticker:
+        return
+    clean_ticker = ticker.strip().upper()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    with get_db_connection(db_path) as conn:
+        conn.execute("""
+            INSERT INTO sent_alerts (ticker, alert_type, title, sent_at)
+            VALUES (?, ?, ?, ?)
+        """, (clean_ticker, alert_type.upper(), title.strip()[:200], now_iso))
+    logger.info(f"Recorded sent alert for [{clean_ticker}] ({alert_type.upper()}) at {now_iso}")
 
 
 def is_processed(article_id: str, db_path: Path | str = DEFAULT_DB_PATH) -> bool:

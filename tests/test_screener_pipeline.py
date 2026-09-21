@@ -146,6 +146,9 @@ def test_pipeline_controller_satellite_cycle(tmp_path, monkeypatch):
     controller = ScreenerPipelineController(
         config=cfg,
         alerts_csv_path=csv_file,
+        open_positions_path=tmp_path / "open_positions.csv",
+        trade_history_path=tmp_path / "trade_history.csv",
+        watchlist_turnarounds_path=tmp_path / "watchlist_turnarounds.csv",
         openrouter_api_key="",
         enforce_universe=False,
     )
@@ -201,6 +204,9 @@ def test_pipeline_controller_core_tenbagger_cycle(tmp_path, monkeypatch):
     controller = ScreenerPipelineController(
         config=cfg,
         alerts_csv_path=csv_file,
+        open_positions_path=tmp_path / "open_positions.csv",
+        trade_history_path=tmp_path / "trade_history.csv",
+        watchlist_turnarounds_path=tmp_path / "watchlist_turnarounds.csv",
         total_portfolio_eur=10000.0,
         openrouter_api_key="",
         enforce_universe=False,
@@ -382,4 +388,50 @@ def test_asymmetric_scraping_schedule():
     interval, mode = get_dynamic_interval(sat_morning, cfg)
     assert interval == 900
     assert "Weekend Off-Market" in mode
+
+
+def test_is_market_active_helsinki():
+    from screener.main_controller import is_market_active_helsinki
+    import pytz
+
+    helsinki_tz = pytz.timezone("Europe/Helsinki")
+
+    # Wednesday 10:00 (active)
+    wed_active = helsinki_tz.localize(datetime(2026, 9, 16, 10, 0, 0))
+    assert is_market_active_helsinki(wed_active) is True
+
+    # Wednesday 07:00 (closed, before 07:30)
+    wed_early = helsinki_tz.localize(datetime(2026, 9, 16, 7, 0, 0))
+    assert is_market_active_helsinki(wed_early) is False
+
+    # Wednesday 23:45 (closed, after 23:30)
+    wed_late = helsinki_tz.localize(datetime(2026, 9, 16, 23, 45, 0))
+    assert is_market_active_helsinki(wed_late) is False
+
+    # Saturday 14:00 (closed, weekend)
+    sat_weekend = helsinki_tz.localize(datetime(2026, 9, 19, 14, 0, 0))
+    assert is_market_active_helsinki(sat_weekend) is False
+
+
+def test_run_scheduled_pipeline_loop(tmp_path):
+    from screener.main_controller import ScreenerPipelineController, run_scheduled_pipeline
+
+    # Create dummy universe
+    dummy_univ = tmp_path / "nordnet_universe.csv"
+    dummy_univ.write_text("Ticker_YF,Name,Market,MarketCap_EUR\nTEST.HE,Test Oyj,Helsinki,15000000.0\n", encoding="utf-8")
+
+    controller = ScreenerPipelineController(
+        alerts_csv_path=tmp_path / "alerts.csv",
+        universe_csv_path=dummy_univ,
+        open_positions_path=tmp_path / "open_pos.csv",
+        watchlist_turnarounds_path=tmp_path / "turnarounds.csv",
+    )
+
+    # Test single test iteration with worker threads
+    run_scheduled_pipeline(
+        controller=controller,
+        dry_run=True,
+        run_single_loop_for_test=True,
+    )
+
 

@@ -78,3 +78,22 @@ def test_state_manager_class_filtering(temp_state_db):
     filtered_items = sm.filter_new_items([item1, item2])
     assert len(filtered_items) == 1
     assert filtered_items[0].guid == "item-2"
+
+
+def test_has_alert_been_sent_and_mark_alert_sent(temp_state_db):
+    from screener.state_manager import has_alert_been_sent, mark_alert_sent
+
+    # Initially no alert sent
+    assert has_alert_been_sent("FARON.HE", alert_type="SATELLITE", cooldown_hours=24.0, db_path=temp_state_db) is False
+
+    # Mark alert as sent
+    mark_alert_sent("FARON.HE", alert_type="SATELLITE", title="Strong Buy Alert", db_path=temp_state_db)
+
+    # Now it should be throttled (within 24h)
+    assert has_alert_been_sent("FARON.HE", alert_type="SATELLITE", cooldown_hours=24.0, db_path=temp_state_db) is True
+    # Base ticker match check (FARON should also be throttled)
+    assert has_alert_been_sent("FARON", alert_type="SATELLITE", cooldown_hours=24.0, db_path=temp_state_db) is True
+
+    # Different alert type should not be blocked
+    assert has_alert_been_sent("FARON.HE", alert_type="CORE", cooldown_hours=24.0, db_path=temp_state_db) is False
+

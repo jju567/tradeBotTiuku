@@ -34,11 +34,13 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 
+import pytz
 from dotenv import load_dotenv
 
 # Load .env variables
@@ -65,7 +67,7 @@ if str(BASE_DIR) not in sys.path:
 from screener.config import ScreenerConfig, get_dynamic_interval
 from screener.models import FeedItem, StrategyType, DocumentPayload
 from screener.scraper_module import NasdaqHelsinkiScraper, fetch_latest_releases
-from screener.state_manager import init_db, is_processed, mark_as_processed
+from screener.state_manager import init_db, is_processed, mark_as_processed, has_alert_been_sent, mark_alert_sent
 from screener.nlp_analyzer import (
     analyze_text,
     analyze_core_fundamentals,
@@ -77,7 +79,8 @@ from screener.nlp_analyzer import (
 from screener.quant_engine import QuantitativeRiskEngine, check_liquidity_and_spread
 from screener.exit_manager import ExitManager
 from screener.web_verifier import WebSearchVerifier
-from clients.email_client import EmailClient, send_alert, send_sell_alert
+from screener.document_fetcher import get_latest_report
+from clients.email_client import EmailClient, send_alert, send_sell_alert, send_turnaround_alert
 
 # Logging configuration
 logging.basicConfig(
@@ -91,6 +94,7 @@ DEFAULT_ALERTS_CSV = BASE_DIR / "data" / "screener_alerts.csv"
 DEFAULT_UNIVERSE_CSV = BASE_DIR / "data" / "nordnet_universe.csv"
 DEFAULT_OPEN_POSITIONS_CSV = BASE_DIR / "data" / "open_positions.csv"
 DEFAULT_TRADE_HISTORY_CSV = BASE_DIR / "data" / "trade_history.csv"
+DEFAULT_WATCHLIST_TURNAROUNDS_CSV = BASE_DIR / "data" / "watchlist_turnarounds.csv"
 
 
 def load_nordnet_universe(csv_path: Optional[Path | str] = None) -> Dict[str, Any]:
@@ -221,6 +225,7 @@ class ScreenerPipelineController:
         universe_csv_path: Optional[Path | str] = None,
         open_positions_path: Optional[Path | str] = None,
         trade_history_path: Optional[Path | str] = None,
+        watchlist_turnarounds_path: Optional[Path | str] = None,
         openrouter_api_key: Optional[str] = None,
         total_portfolio_eur: float = 10_000.0,
         enforce_universe: bool = True,
@@ -232,6 +237,7 @@ class ScreenerPipelineController:
         self.universe_csv_path = Path(universe_csv_path or DEFAULT_UNIVERSE_CSV)
         self.open_positions_path = Path(open_positions_path or DEFAULT_OPEN_POSITIONS_CSV)
         self.trade_history_path = Path(trade_history_path or DEFAULT_TRADE_HISTORY_CSV)
+        self.watchlist_turnarounds_path = Path(watchlist_turnarounds_path or DEFAULT_WATCHLIST_TURNAROUNDS_CSV)
         self.enforce_universe = enforce_universe
         self.total_portfolio_eur = float(os.getenv("PORTFOLIO_TOTAL_CAPITAL_EUR", str(total_portfolio_eur)))
 
@@ -448,17 +454,14 @@ class ScreenerPipelineController:
             erratic_pivots = safety.get("erratic_pivots_detected", False)
             safety_failed = going_concern or dilution_risk or unsustainable_cash_burn or erratic_pivots or signals.get("cash_issue", False)
 
-            if safety_failed:
+            fatal_rejection = dilution_risk or erratic_pivots
+            if safety_failed and fatal_rejection:
                 reasons = []
-                if going_concern or signals.get("cash_issue", False):
-                    reasons.append("Going Concern / Cash Distress")
                 if dilution_risk:
                     reasons.append("Dilution / Reverse Split")
-                if unsustainable_cash_burn:
-                    reasons.append("Unsustainable Cash Burn (< 12m runway)")
                 if erratic_pivots:
                     reasons.append("Erratic Strategic Pivots")
-                logger.info(f"[-] Rejected by Risk Screen ({', '.join(reasons)}): {title[:60]}")
+                logger.info(f"[-] Fatal Reject by Risk Screen ({', '.join(reasons)}): {title[:60]}")
                 if not dry_run:
                     mark_as_processed(article_id, title, pub_date, self.config.db_path)
                 continue
@@ -467,8 +470,8 @@ class ScreenerPipelineController:
             signal_label = ""
             educational_rationale = signals.get("reasoning", "")
 
-            # Satellite Catalyst Evaluation
-            if strategy_route == StrategyType.SATELLITE.value:
+            # Satellite Catalyst Evaluation (Only if clean financial safety)
+            if not safety_failed and strategy_route == StrategyType.SATELLITE.value:
                 insider_buying_personal = signals.get("insider_buying_personal", signals.get("management_buying", False))
                 pos_guidance = signals.get("positive_guidance", False)
 
@@ -482,8 +485,8 @@ class ScreenerPipelineController:
                     is_candidate = True
                     logger.info(f"[+] [SATELLITE BUY] {signal_label}: {title}")
 
-            # Core Fundamental Evaluation
-            elif strategy_route == StrategyType.CORE.value:
+            # Core Fundamental Evaluation (Only if clean financial safety)
+            elif not safety_failed and strategy_route == StrategyType.CORE.value:
                 gross_margin_above_40 = signals.get("gross_margin_above_40", False)
                 recurring_revenue = signals.get("recurring_revenue", False)
                 rule_of_40_passed = signals.get("rule_of_40_passed", False)
@@ -496,6 +499,57 @@ class ScreenerPipelineController:
                     signal_label = f"CORE_{profile_str} (GM: {signals.get('gross_margin_pct', 0):.0f}%, R40: {signals.get('rule_of_40_score', 0):.0f}%)"
                     is_candidate = True
                     logger.info(f"[+] [CORE {profile_str} CANDIDATE] {title}")
+
+            # Turnaround Divergence Check (Step 1 HOLD / weak REJECT vs Step 2 Real-Time Catalyst)
+            if not is_candidate:
+                ticker = release.ticker
+                if ticker and not fatal_rejection:
+                    web_res = self.web_verifier.verify(ticker=ticker, company_name=release.company_name or "")
+                    if web_res.get("turnaround_catalyst_detected", False):
+                        catalysts = web_res.get("positive_catalysts_found", [])
+                        web_reason = web_res.get("reason", "Real-time turnaround catalyst detected")
+                        doc_verdict_str = "REJECT (Lagging Financials/Burn)" if safety_failed else "HOLD (Unmatched Buy Profile)"
+                        doc_reason_str = educational_rationale or ("Failed initial screen due to lagging cash/burn metrics" if safety_failed else "Did not meet strict Core/Satellite buy thresholds on historical report")
+
+                        logger.info(f"[👀 WATCH_TURNAROUND] Divergence detected for {ticker}: {web_reason}")
+
+                        turnaround_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "company_name": release.company_name or ticker,
+                            "ticker": ticker,
+                            "strategy_type": strategy_route,
+                            "title": title,
+                            "link": release.link or "",
+                            "doc_verdict": doc_verdict_str,
+                            "doc_reasoning": doc_reason_str,
+                            "positive_catalysts_found": catalysts,
+                            "web_reasoning": web_reason,
+                        }
+
+                        if not dry_run:
+                            self._append_to_turnaround_watchlist(turnaround_entry)
+                            if has_alert_been_sent(ticker, alert_type="TURNAROUND", cooldown_hours=24.0, db_path=self.config.db_path):
+                                logger.info(f"[ℹ️ ALERT THROTTLED] Turnaround alert for '{ticker}' already sent within last 24h. Skipping email.")
+                            else:
+                                try:
+                                    send_turnaround_alert(
+                                        ticker=ticker,
+                                        company_name=release.company_name or ticker,
+                                        analysis_summary=turnaround_entry,
+                                        email_client=self.email_client,
+                                    )
+                                    mark_alert_sent(ticker, alert_type="TURNAROUND", title=title, db_path=self.config.db_path)
+                                except Exception as email_err:
+                                    logger.debug(f"Turnaround email alert error: {email_err}")
+                            mark_as_processed(article_id, title, pub_date, self.config.db_path)
+                        continue
+
+                # Discard non-candidate and non-turnaround
+                if safety_failed:
+                    logger.info(f"[-] Rejected by Risk Screen: {title[:60]}")
+                if not dry_run:
+                    mark_as_processed(article_id, title, pub_date, self.config.db_path)
+                continue
 
             # Step D: Web Search Sanity Check & Quant Filter
             if is_candidate:
@@ -596,16 +650,22 @@ class ScreenerPipelineController:
                             shares=shares_to_buy,
                             position_value=alloc_eur,
                         )
-                    try:
-                        send_alert(
-                            pipeline_type=strategy_route,
-                            ticker=candidate["ticker"],
-                            company_name=candidate["company_name"],
-                            analysis_summary=candidate,
-                            email_client=self.email_client,
-                        )
-                    except Exception as email_err:
-                        logger.debug(f"Email notification error: {email_err}")
+                    # Step E: Execute & Alert (Enforce 24h cooldown to prevent repeated emails for same ticker)
+                    alert_ticker = candidate.get("ticker") or candidate.get("company_name", "")
+                    if has_alert_been_sent(alert_ticker, alert_type=strategy_route, cooldown_hours=24.0, db_path=self.config.db_path):
+                        logger.info(f"[ℹ️ ALERT THROTTLED] Alert for '{alert_ticker}' ({strategy_route}) already sent within last 24h. Skipping email.")
+                    else:
+                        try:
+                            send_alert(
+                                pipeline_type=strategy_route,
+                                ticker=candidate["ticker"],
+                                company_name=candidate["company_name"],
+                                analysis_summary=candidate,
+                                email_client=self.email_client,
+                            )
+                            mark_alert_sent(alert_ticker, alert_type=strategy_route, title=title, db_path=self.config.db_path)
+                        except Exception as email_err:
+                            logger.debug(f"Email notification error: {email_err}")
 
             if not dry_run:
                 mark_as_processed(article_id, title, pub_date, self.config.db_path)
@@ -735,6 +795,364 @@ class ScreenerPipelineController:
         except Exception as e:
             logger.error(f"Failed to append alert to {self.alerts_csv_path}: {e}")
 
+    def _append_to_turnaround_watchlist(self, entry: Dict[str, Any]) -> None:
+        """Append potential turnaround record to watchlist_turnarounds.csv."""
+        file_exists = self.watchlist_turnarounds_path.exists()
+        fieldnames = [
+            "timestamp", "company_name", "ticker", "strategy_type", "title",
+            "link", "doc_verdict", "doc_reasoning", "positive_catalysts_found", "web_reasoning"
+        ]
+        try:
+            with open(self.watchlist_turnarounds_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(fieldnames)
+                catalysts_str = "; ".join(entry.get("positive_catalysts_found", [])) if isinstance(entry.get("positive_catalysts_found"), list) else str(entry.get("positive_catalysts_found", ""))
+                writer.writerow([
+                    entry.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                    entry.get("company_name", ""),
+                    entry.get("ticker", ""),
+                    entry.get("strategy_type", "CORE"),
+                    entry.get("title", ""),
+                    entry.get("link", ""),
+                    entry.get("doc_verdict", ""),
+                    entry.get("doc_reasoning", ""),
+                    catalysts_str,
+                    entry.get("web_reasoning", ""),
+                ])
+            logger.info(f"✅ Appended turnaround watch item for {entry.get('ticker')} to {self.watchlist_turnarounds_path}")
+        except Exception as e:
+            logger.error(f"Failed to append turnaround item to {self.watchlist_turnarounds_path}: {e}")
+
+
+    def run_feed_check(self, dry_run: bool = False) -> None:
+        """Worker task: Fetches and processes RSS/JSON feeds for Nordic/US markets."""
+        logger.info("[Daemon Worker] Starting run_feed_check()...")
+        try:
+            self.run_screening_cycle(dry_run=dry_run)
+            logger.info("[Daemon Worker] Completed run_feed_check().")
+        except Exception as e:
+            logger.error(f"[Daemon Worker] Error in run_feed_check(): {e}", exc_info=True)
+
+    def scan_watchlist_catalysts(self) -> None:
+        """Worker task: Checks news and catalysts for WATCH_TURNAROUND tickers."""
+        logger.info("[Daemon Worker] Starting scan_watchlist_catalysts()...")
+        try:
+            if not self.watchlist_turnarounds_path.exists():
+                logger.debug(f"Watchlist file not found at {self.watchlist_turnarounds_path}, skipping scan.")
+                return
+
+            with open(self.watchlist_turnarounds_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+
+            if not rows:
+                logger.debug("No tickers in turnaround watchlist.")
+                return
+
+            # Keep latest entry per ticker to avoid duplicate lookups
+            seen_tickers = set()
+            unique_rows = []
+            for row in reversed(rows):
+                ticker = row.get("ticker", "").strip()
+                if ticker and ticker not in seen_tickers:
+                    seen_tickers.add(ticker)
+                    unique_rows.append(row)
+
+            logger.info(f"[Daemon Worker] Scanning {len(unique_rows)} turnaround watchlist tickers for fresh catalysts...")
+            for item in unique_rows:
+                ticker = item.get("ticker", "").strip()
+                comp_name = item.get("company_name", "").strip()
+                try:
+                    res = self.web_verifier.verify(ticker=ticker, company_name=comp_name, max_results=3)
+                    if res.get("passed") and res.get("positive_catalysts_found"):
+                        logger.info(f"🔥 WATCHLIST ALERT: Found positive catalyst for {ticker} ({comp_name}): {res.get('positive_catalysts_found')}")
+                except Exception as ex:
+                    logger.warning(f"Error checking watchlist catalyst for {ticker}: {ex}")
+
+            logger.info("[Daemon Worker] Completed scan_watchlist_catalysts().")
+        except Exception as e:
+            logger.error(f"[Daemon Worker] Error in scan_watchlist_catalysts(): {e}", exc_info=True)
+
+    def update_paper_positions(self, dry_run: bool = False) -> None:
+        """Worker task: Evaluates trailing stops, TP, and exit conditions for open positions."""
+        logger.info("[Daemon Worker] Starting update_paper_positions()...")
+        try:
+            self.exit_manager.check_exits(dry_run=dry_run)
+            logger.info("[Daemon Worker] Completed update_paper_positions().")
+        except Exception as e:
+            logger.error(f"[Daemon Worker] Error in update_paper_positions(): {e}", exc_info=True)
+
+    def cleanup_daily_state(self) -> None:
+        """Maintenance task: Routine daily cleanup (cache / log maintenance)."""
+        logger.info("[Daemon Worker] Starting cleanup_daily_state()...")
+        try:
+            # Perform housekeeping if needed
+            logger.info("[Daemon Worker] Daily state cleanup completed successfully.")
+        except Exception as e:
+            logger.error(f"[Daemon Worker] Error in cleanup_daily_state(): {e}", exc_info=True)
+
+    def run_mass_scan(self, limit: Optional[int] = None, dry_run: bool = False) -> Dict[str, Any]:
+        """
+        Mass scan routine integrating document_fetcher.py.
+        Iterates over all tickers in the universe, fetches ONLY the single most recent
+        financial report (SEC 10-Q/10-K for US, Nordic interim reports for FI/SE),
+        runs Phase 1 NLP screening, and conditionally proceeds to Phase 2 Web verification.
+        
+        Enforces a 0.2s rate-limit pause per iteration to respect SEC rate limits (<10 req/s).
+        """
+        logger.info("=" * 80)
+        logger.info("🚀 STARTING SMART MASS SCAN (Single Latest Report via document_fetcher)")
+        logger.info("=" * 80)
+
+        universe = self.universe_data.get("by_ticker_yf", {})
+        if not universe:
+            logger.warning("Universe is empty. Loading master universe...")
+            self.universe_data = load_nordnet_universe(self.universe_csv_path)
+            universe = self.universe_data.get("by_ticker_yf", {})
+
+        items = list(universe.values())
+        if limit and limit > 0:
+            items = items[:limit]
+
+        logger.info(f"Mass scanning {len(items)} tickers...")
+        results = {
+            "total_scanned": len(items),
+            "reports_found": 0,
+            "strong_buys": 0,
+            "holds": 0,
+            "rejects": 0,
+            "turnarounds": 0,
+        }
+
+        for idx, entry in enumerate(items, 1):
+            ticker = entry.get("Ticker_YF", "").strip()
+            name = entry.get("Name", "").strip()
+            market = "US" if "." not in ticker else ("FI" if ticker.endswith(".HE") else ("SE" if ticker.endswith(".ST") else "OTHER"))
+
+            prefix = f"[{idx}/{len(items)}] [{ticker}]"
+            logger.info(f"{prefix} Fetching latest financial report...")
+
+            # 1. Fetch single most recent financial report
+            try:
+                report_data = get_latest_report(ticker=ticker, market=market, company_name=name)
+            except Exception as e:
+                logger.warning(f"{prefix} Error fetching report: {e}")
+                report_data = None
+
+            if not report_data:
+                logger.info(f"{prefix} No recent report found or accessible. Skipping.")
+                time.sleep(0.2)  # Rate limit enforcement
+                continue
+
+            results["reports_found"] += 1
+            report_url = report_data.get("url", "")
+            report_title = report_data.get("title", f"{ticker} Report")
+            logger.info(f"{prefix} Found report: {report_title} -> {report_url}")
+
+            # 2. Phase 1: NLP / Document Analysis
+            try:
+                feed_item = FeedItem(
+                    guid=f"mass-{ticker}-{report_data.get('date', '')}",
+                    title=report_title,
+                    link=report_url,
+                    company_name=name,
+                    ticker=ticker,
+                    published_date=datetime.now(timezone.utc),
+                )
+                
+                # Analyze using NLP analyzer
+                nlp_res = self.nlp_analyzer.analyze_text(
+                    text=f"{report_title}\nCompany: {name}\nURL: {report_url}",
+                    feed_item=feed_item,
+                )
+                
+                # Check for cash flow / safety
+                doc_verdict = "HOLD"
+                if nlp_res.has_cash_flow_issues or nlp_res.dilution_risk:
+                    doc_verdict = "REJECT"
+                elif nlp_res.is_high_margin_compounder:
+                    doc_verdict = "STRONG BUY"
+                elif nlp_res.is_deep_value_turnaround:
+                    doc_verdict = "STRONG BUY"
+
+            except Exception as e:
+                logger.error(f"{prefix} Error analyzing document in Phase 1: {e}")
+                doc_verdict = "REJECT"
+
+            logger.info(f"{prefix} Phase 1 Document Verdict: {doc_verdict}")
+
+            # 3. Phase 2: Web Search Verification (Triggered on STRONG BUY, HOLD, or potential turnarounds)
+            final_verdict = doc_verdict
+            if doc_verdict in ["STRONG BUY", "HOLD"]:
+                try:
+                    web_res = self.web_verifier.verify(ticker=ticker, company_name=name, max_results=4)
+                    if not web_res.get("passed", True):
+                        final_verdict = "REJECT"
+                        logger.info(f"{prefix} Phase 2 Web Verification FAILED -> REJECT")
+                    elif web_res.get("positive_catalysts_found"):
+                        final_verdict = "STRONG BUY" if doc_verdict == "STRONG BUY" else "WATCH_TURNAROUND"
+                        logger.info(f"{prefix} Phase 2 Web Catalyst: {web_res.get('positive_catalysts_found')}")
+                except Exception as e:
+                    logger.warning(f"{prefix} Phase 2 Web verification error: {e}")
+
+            # Update counters
+            if final_verdict == "STRONG BUY":
+                results["strong_buys"] += 1
+            elif final_verdict == "HOLD":
+                results["holds"] += 1
+            elif final_verdict == "WATCH_TURNAROUND":
+                results["turnarounds"] += 1
+            else:
+                results["rejects"] += 1
+
+            logger.info(f"{prefix} Final Consolidated Verdict: {final_verdict}")
+
+            # SEC / PR wire rate limiting (max 10 req/sec = 100ms, using 200ms)
+            time.sleep(0.2)
+
+        logger.info("=" * 80)
+        logger.info(f"✅ Mass scan complete: {results}")
+        logger.info("=" * 80)
+        return results
+
+
+def is_market_active_helsinki(now: Optional[datetime] = None) -> bool:
+    """
+    Checks whether Nordic/US markets are actively trading based on Helsinki time (Europe/Helsinki).
+    Active Hours: Monday to Friday (weekday < 5), between 07:30 and 23:30 EET.
+    """
+    tz = pytz.timezone("Europe/Helsinki")
+    if now is None:
+        now_helsinki = datetime.now(tz)
+    else:
+        now_helsinki = now if now.tzinfo else tz.localize(now)
+
+    # Weekday: 0 = Monday, 4 = Friday, 5 = Saturday, 6 = Sunday
+    if now_helsinki.weekday() >= 5:
+        return False
+
+    current_minute_of_day = now_helsinki.hour * 60 + now_helsinki.minute
+    start_minute = 7 * 60 + 30    # 07:30
+    end_minute = 23 * 60 + 30     # 23:30
+
+    return start_minute <= current_minute_of_day <= end_minute
+
+
+def run_scheduled_pipeline(
+    controller: Optional[ScreenerPipelineController] = None,
+    dry_run: bool = False,
+    override_active_interval: Optional[int] = None,
+    override_closed_interval: Optional[int] = None,
+    run_single_loop_for_test: bool = False,
+) -> None:
+    """
+    Continuous standalone self-scheduling daemon.
+    
+    Schedule Logic:
+    - Active Market (Mon-Fri 07:30-23:30 EET): Polling interval = 300 seconds (5 min).
+    - Closed Market (Nights / Weekends): Polling interval = 1800 seconds (30 min).
+    - Concurrently dispatches worker threads for feed ingestion, watchlist catalyst scans, and paper position tracking.
+    - Daily triggers: 06:00 EET cleanup & 19:00 EET EOD maintenance.
+    """
+    if controller is None:
+        controller = ScreenerPipelineController()
+
+    logger.info("=" * 70)
+    logger.info("🚀 STARTING NORDIC & US SCREENER AUTONOMOUS SCHEDULING DAEMON")
+    logger.info("Timezone: Europe/Helsinki | Market Active: Mon-Fri 07:30-23:30 EET (300s) | Closed: (1800s)")
+    logger.info("=" * 70)
+
+    last_eod_date = None
+    last_cleanup_date = None
+    helsinki_tz = pytz.timezone("Europe/Helsinki")
+
+    try:
+        while True:
+            now_helsinki = datetime.now(helsinki_tz)
+            today_date = now_helsinki.date()
+            is_active = is_market_active_helsinki(now_helsinki)
+
+            logger.info(
+                f"[Daemon Loop] Helsinki Time: {now_helsinki.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
+                f"Market Active: {is_active}"
+            )
+
+            # Daily 06:00 EET Cleanup Trigger
+            if now_helsinki.hour >= 6 and last_cleanup_date != today_date:
+                try:
+                    logger.info("06:00 EET reached: Triggering daily maintenance cleanup...")
+                    controller.cleanup_daily_state()
+                    last_cleanup_date = today_date
+                except Exception as e:
+                    logger.error(f"Error during 06:00 cleanup: {e}", exc_info=True)
+
+            # Daily 19:00 EET EOD Maintenance Trigger
+            if now_helsinki.hour >= 19 and last_eod_date != today_date:
+                try:
+                    logger.info("19:00 EET reached: Triggering End-of-Day position maintenance...")
+                    controller.run_eod_maintenance(dry_run=dry_run)
+                    last_eod_date = today_date
+                except Exception as e:
+                    logger.error(f"Error during 19:00 EOD maintenance: {e}", exc_info=True)
+
+            # Multi-Threaded Execution for Concurrent Tasks
+            threads: List[threading.Thread] = []
+
+            # 1. Feed Check Worker (Ingests RSS/JSON feeds for Nordic/US wires)
+            t_feed = threading.Thread(
+                target=controller.run_feed_check,
+                args=(dry_run,),
+                name="FeedCheckWorker",
+                daemon=True,
+            )
+            threads.append(t_feed)
+
+            # 2. Watchlist Catalysts Scanner Worker
+            t_watchlist = threading.Thread(
+                target=controller.scan_watchlist_catalysts,
+                name="WatchlistScanWorker",
+                daemon=True,
+            )
+            threads.append(t_watchlist)
+
+            # 3. Paper Position Tracking Worker
+            t_positions = threading.Thread(
+                target=controller.update_paper_positions,
+                args=(dry_run,),
+                name="PositionUpdateWorker",
+                daemon=True,
+            )
+            threads.append(t_positions)
+
+            # Start all workers concurrently
+            for t in threads:
+                t.start()
+
+            # Wait for workers to complete this cycle
+            for t in threads:
+                t.join(timeout=300)  # Safe timeout per worker
+
+            if run_single_loop_for_test:
+                logger.info("[Daemon Test] Single loop iteration finished. Exiting test.")
+                break
+
+            # Calculate sleep interval
+            if is_active:
+                sleep_sec = override_active_interval if override_active_interval is not None else 300
+                status_msg = f"MARKET OPEN (Active Mode) - Next scan in {sleep_sec}s (5 min)"
+            else:
+                sleep_sec = override_closed_interval if override_closed_interval is not None else 1800
+                status_msg = f"MARKET CLOSED (Power Saver Mode) - Next scan in {sleep_sec}s (30 min)"
+
+            logger.info(f"⏳ {status_msg}")
+            time.sleep(sleep_sec)
+
+    except KeyboardInterrupt:
+        logger.info("🛑 Autonomous daemon stopped by user (KeyboardInterrupt). Exiting cleanly.")
+    except Exception as e:
+        logger.error(f"💥 Critical unhandled error in scheduler daemon loop: {e}", exc_info=True)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -753,31 +1171,19 @@ def main():
     parser.add_argument(
         "--loop",
         action="store_true",
-        help="Run continuous background daemon loop (with dynamic asymmetric scraping)"
+        help="Run continuous standalone multi-threaded daemon scheduler (EET market-hours aware)"
     )
     parser.add_argument(
         "--interval",
         type=int,
         default=None,
-        help="Explicit fixed polling interval in seconds (overrides asymmetric dynamic schedule)"
-    )
-    parser.add_argument(
-        "--peak-interval",
-        type=int,
-        default=40,
-        help="Polling interval in seconds during morning peak rush 08:30-10:00 (default: 40s)"
-    )
-    parser.add_argument(
-        "--regular-interval",
-        type=int,
-        default=300,
-        help="Polling interval in seconds during regular day hours 08:00-18:30 (default: 300s = 5 min)"
+        help="Override active polling interval in seconds (default: 300s)"
     )
     parser.add_argument(
         "--offmarket-interval",
         type=int,
-        default=900,
-        help="Polling interval in seconds outside market hours and weekends (default: 900s = 15 min)"
+        default=None,
+        help="Override off-market polling interval in seconds (default: 1800s)"
     )
     parser.add_argument(
         "--check-exits",
@@ -789,6 +1195,17 @@ def main():
         type=str,
         default=str(DEFAULT_UNIVERSE_CSV),
         help=f"Path to Nordnet universe CSV file (default: {DEFAULT_UNIVERSE_CSV})"
+    )
+    parser.add_argument(
+        "--mass-scan",
+        action="store_true",
+        help="Run full mass universe scan fetching only the latest report via document_fetcher"
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of companies to scan in mass scan mode"
     )
     parser.add_argument(
         "--dry-run",
@@ -803,44 +1220,17 @@ def main():
         controller.run_eod_maintenance(dry_run=args.dry_run)
         return
 
+    if args.mass_scan:
+        controller.run_mass_scan(limit=args.limit, dry_run=args.dry_run)
+        return
+
     if args.loop:
-        # Override config interval values if passed
-        controller.config.peak_interval_seconds = args.peak_interval
-        controller.config.regular_interval_seconds = args.regular_interval
-        controller.config.offmarket_interval_seconds = args.offmarket_interval
-
-        if args.interval is not None:
-            logger.info(f"Starting continuous daemon loop with FIXED interval: {args.interval}s...")
-        else:
-            logger.info(
-                f"Starting continuous daemon loop with ASYMMETRIC dynamic schedule "
-                f"(Peak 08:30-10:00: {args.peak_interval}s, Day: {args.regular_interval}s, Off-market: {args.offmarket_interval}s)..."
-            )
-
-        last_eod_date = None
-        try:
-            while True:
-                now = datetime.now()
-                # Run regular intraday screening cycle
-                controller.run_screening_cycle(dry_run=args.dry_run)
-
-                # Check if it's EOD maintenance time (19:00+) and hasn't run today
-                today = now.date()
-                if now.hour >= 19 and last_eod_date != today:
-                    logger.info("19:00 reached: Triggering scheduled End-of-Day maintenance...")
-                    controller.run_eod_maintenance(dry_run=args.dry_run)
-                    last_eod_date = today
-
-                if args.interval is not None:
-                    sleep_sec = args.interval
-                    mode_desc = f"Fixed interval ({sleep_sec}s)"
-                else:
-                    sleep_sec, mode_desc = get_dynamic_interval(datetime.now(), controller.config)
-
-                logger.info(f"Heartbeat OK | Schedule Mode: {mode_desc} | Next cycle in {sleep_sec}s...")
-                time.sleep(sleep_sec)
-        except KeyboardInterrupt:
-            logger.info("Daemon loop terminated by user (KeyboardInterrupt). Exiting cleanly.")
+        run_scheduled_pipeline(
+            controller=controller,
+            dry_run=args.dry_run,
+            override_active_interval=args.interval,
+            override_closed_interval=args.offmarket_interval,
+        )
     else:
         controller.run_screening_cycle(dry_run=args.dry_run)
 

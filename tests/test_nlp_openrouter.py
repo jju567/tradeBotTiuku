@@ -199,3 +199,34 @@ def test_classify_release_strategy_router():
     assert classify_release_strategy("Harvia Oyj: Johdon liiketoimet") == "SATELLITE"
     assert classify_release_strategy("Remedy: Sisäpiiritieto: Positiivinen tulosvaroitus") == "SATELLITE"
     assert classify_release_strategy("Nokia Oyj: Lehdistötiedote") == "SATELLITE"
+
+
+def test_build_analysis_prompt_and_analyze_company():
+    from screener.nlp_analyzer import build_analysis_prompt, analyze_company, MASTER_SYSTEM_PROMPT
+
+    prompt = build_analysis_prompt(
+        ticker="QTCOM.HE",
+        market="FI",
+        news_text="Qt Group: Uusi suurtilaus autoteollisuudelta.",
+        filing_text="Osavuosikatsaus Q2 2026: Liikevaihto kasvoi 15%."
+    )
+
+    assert "[HARD FINANCIAL FACTS - DO NOT RECALCULATE]" in prompt
+    assert "[MARKET]\nFI" in prompt
+    assert "[NEWS / PÖRSSITIEDOTTEET]" in prompt
+    assert "[FILING TEXT / TILINPÄÄTÖSDOKUMENTTI - LAADULLISEEN KONTEKSTIIN]" in prompt
+
+    # Test analyze_company with mock llm_client
+    mock_client = MagicMock()
+    mock_client.generate.return_value = {
+        "judgment": "STRONG_BUY",
+        "confidence": 0.95,
+        "pedagogical_reasoning": "Vahva tase ja positiivinen OCF.",
+        "triggered_hard_filters": [],
+    }
+
+    res = analyze_company("QTCOM.HE", "FI", "Uutinen", "Raportti", llm_client=mock_client)
+    assert res["judgment"] == "STRONG_BUY"
+    assert res["confidence"] == 0.95
+    mock_client.generate.assert_called_once()
+

@@ -665,10 +665,10 @@ def generate_sample_signals_csv(target_path: Path | str) -> Path:
 
     sample_signals = [
         {"ticker": "FARON.HE", "signal_date": "2024-06-18", "signal_type": "INSIDER_BUYING", "company_name": "Faron Pharmaceuticals"},
-        {"ticker": "KEMIRA.HE", "signal_date": "2024-04-25", "signal_type": "POSITIVE_GUIDANCE", "company_name": "Kemira Oyj"},
-        {"ticker": "QTCOM.HE", "signal_date": "2024-02-16", "signal_type": "INSIDER_BUYING", "company_name": "Qt Group Oyj"},
-        {"ticker": "HARVIA.HE", "signal_date": "2024-05-08", "signal_type": "INSIDER_BUYING", "company_name": "Harvia Oyj"},
-        {"ticker": "NOKIA.HE", "signal_date": "2024-01-26", "signal_type": "INSIDER_BUYING", "company_name": "Nokia Oyj"},
+        {"ticker": "ROBIT.HE", "signal_date": "2024-05-15", "signal_type": "INSIDER_BUYING", "company_name": "Robit Oyj"},
+        {"ticker": "KAMUX.HE", "signal_date": "2024-03-01", "signal_type": "INSIDER_BUYING", "company_name": "Kamux Oyj"},
+        {"ticker": "SSH1V.HE", "signal_date": "2024-04-20", "signal_type": "POSITIVE_GUIDANCE", "company_name": "SSH Communications Security"},
+        {"ticker": "FODELIA.HE", "signal_date": "2024-02-16", "signal_type": "INSIDER_BUYING", "company_name": "Fodelia Oyj"},
     ]
 
     with open(file_path, "w", newline="", encoding="utf-8") as f:
