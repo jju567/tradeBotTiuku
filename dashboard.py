@@ -276,8 +276,9 @@ def record_portfolio_snapshot(
     history_file: Path = PORTFOLIO_HISTORY_JSON,
 ) -> None:
     """Records a new equity snapshot if sufficient time or value delta has occurred."""
-    if total_equity <= 0:
+    if total_equity <= 0 or total_equity < 1000.0:
         return
+
     history = []
     if history_file.exists():
         try:
@@ -465,7 +466,6 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
     if metric_sel == "Salkun Kokonaisarvo (€)":
         latest_val = df_plot["total_equity"].iloc[-1]
         line_color = "#10b981" if latest_val >= starting_capital else "#f43f5e"
-        fill_color = "rgba(16, 185, 129, 0.15)" if latest_val >= starting_capital else "rgba(244, 63, 94, 0.15)"
 
         fig.add_trace(go.Scatter(
             x=df_plot.index,
@@ -473,8 +473,6 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
             mode="lines+markers" if len(df_plot) <= 30 else "lines",
             name="Salkun Kokonaisarvo",
             line=dict(color=line_color, width=2.5),
-            fill="tozeroy",
-            fillcolor=fill_color,
             customdata=custom_data,
             hovertemplate=(
                 "<b>Aika:</b> %{x|%d.%m.%Y %H:%M}<br>"
@@ -496,9 +494,22 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
             annotation_font_color="#94a3b8",
         )
 
+        min_val = float(df_plot["total_equity"].min())
+        max_val = float(df_plot["total_equity"].max())
+        y_bottom = min(min_val, starting_capital)
+        y_top = max(max_val, starting_capital)
+        spread = max(y_top - y_bottom, 100.0)
+        y_min = y_bottom - spread * 0.25
+        y_max = y_top + spread * 0.25
+
         fig.update_layout(
             title=f"💼 Salkun Kokonaisarvon Kehitys ({interval_sel}){subtitle_html}",
-            yaxis=dict(title="Euroa (€)", tickformat=",.0f", gridcolor="#334155"),
+            yaxis=dict(
+                title="Euroa (€)",
+                tickformat=",.0f",
+                range=[y_min, y_max],
+                gridcolor="#334155",
+            ),
         )
 
     elif metric_sel == "Kokonaistuotto (€ ja %)":
@@ -518,10 +529,23 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
             ),
         ))
         fig.add_hline(y=0.0, line_dash="solid", line_color="#64748b", line_width=1.5)
+
+        min_ret = float(df_plot["total_return"].min())
+        max_ret = float(df_plot["total_return"].max())
+        y_bottom_r = min(min_ret, 0.0)
+        y_top_r = max(max_ret, 0.0)
+        spread_r = max(y_top_r - y_bottom_r, 50.0)
+
         fig.update_layout(
             title=f"📊 Kumulatiivinen Tuotto (€){subtitle_html}",
-            yaxis=dict(title="Tuotto (€)", tickformat="+,.0f", gridcolor="#334155"),
+            yaxis=dict(
+                title="Tuotto (€)",
+                tickformat="+,.0f",
+                range=[y_bottom_r - spread_r * 0.25, y_top_r + spread_r * 0.25],
+                gridcolor="#334155",
+            ),
         )
+
 
     elif metric_sel == "Varallisuuden jakautuma (Käteinen vs. Osakkeet)":
         fig.add_trace(go.Scatter(

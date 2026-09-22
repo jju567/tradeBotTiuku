@@ -31,14 +31,18 @@ def temp_daemon_env(tmp_path):
     )
     universe_file.write_text(universe_content, encoding="utf-8")
 
+    portfolio_file = tmp_path / "portfolio_history.json"
+
     daemon = LiveTradingDaemon(
         account_path=account_file,
         open_positions_path=open_pos_file,
         trade_history_path=history_file,
         clean_universe_path=universe_file,
+        portfolio_history_path=portfolio_file,
         starting_balance=10_000.0,
     )
     return daemon, tmp_path
+
 
 
 def test_paper_account_initialization(temp_daemon_env):

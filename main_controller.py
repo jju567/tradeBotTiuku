@@ -841,11 +841,11 @@ class LiveTradingDaemon:
         fx_eur_sek = fx_rates.get("EURSEK", 11.30)
 
         for p in positions:
-            ticker = str(p.get("ticker", "")).strip().upper()
-            shares = float(p.get("shares", 0.0) or 0.0)
+            ticker = str(p.get("Ticker") or p.get("ticker") or "").strip().upper()
+            shares = float(p.get("Shares") or p.get("shares") or 0.0)
             if shares <= 0:
                 continue
-            cand_price = self.fetch_live_price(ticker) or float(p.get("buy_price", 0.0) or 0.0)
+            cand_price = self.fetch_live_price(ticker) or float(p.get("Buy Price") or p.get("buy_price") or 0.0)
             if "." not in ticker:
                 fx = 1.0 / fx_eur_usd
             elif ticker.endswith(".ST"):
@@ -855,6 +855,12 @@ class LiveTradingDaemon:
             stock_val_eur += shares * cand_price * fx
 
         total_equity = self.account.cash_balance + stock_val_eur
+        if total_equity <= 0:
+            return
+        if positions and stock_val_eur <= 0:
+            logger.warning("Skipping snapshot: open positions exist but stock value is 0.0")
+            return
+
 
         history = []
         if self.portfolio_history_path.exists():
