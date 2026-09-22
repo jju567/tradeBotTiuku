@@ -44,6 +44,12 @@ st.set_page_config(
 )
 
 # Timezone Helper (Helsinki Time with 1-second accuracy)
+try:
+    HELSINKI_TZ = zoneinfo.ZoneInfo("Europe/Helsinki")
+except Exception:
+    HELSINKI_TZ = timezone.utc
+
+
 def to_helsinki_time(val: object) -> str:
     """Converts UTC / ISO timestamp to Finnish local time (DD.MM.YYYY HH:MM:SS)."""
     if pd.isna(val) or not val:
@@ -56,15 +62,11 @@ def to_helsinki_time(val: object) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         
-        try:
-            helsinki_tz = zoneinfo.ZoneInfo("Europe/Helsinki")
-            dt_local = dt.astimezone(helsinki_tz)
-        except Exception:
-            dt_local = dt.astimezone()
-
+        dt_local = dt.astimezone(HELSINKI_TZ)
         return dt_local.strftime("%d.%m.%Y %H:%M:%S")
     except Exception:
         return val_str
+
 
 
 def is_pid_alive(pid: int) -> bool:
@@ -205,8 +207,11 @@ KNOWN_ENTRY_PRICES = {
 def fetch_positions_live_data(tickers_tuple: tuple) -> dict:
     """Fetches real-time price, day change, and currency for a tuple of tickers with fallback logic."""
     from screener.price_fetcher import get_realtime_data
-    live_map = {}
+    live_map = {
+        "_fetch_timestamp": datetime.now(HELSINKI_TZ).strftime("%d.%m.%Y %H:%M:%S")
+    }
     for ticker in tickers_tuple:
+
         t_clean = str(ticker).strip().upper()
         if not t_clean:
             continue
@@ -342,10 +347,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         st.info("📊 Salkun historiadata alustetaan...")
         return
 
-    try:
-        helsinki_tz = zoneinfo.ZoneInfo("Europe/Helsinki")
-    except Exception:
-        helsinki_tz = timezone.utc
+    helsinki_tz = HELSINKI_TZ
 
     df_hist["dt"] = pd.to_datetime(df_hist["timestamp"], format="ISO8601", utc=True, errors="coerce")
     df_hist = df_hist.dropna(subset=["dt"])
@@ -354,6 +356,11 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
 
     df_hist["dt_local"] = df_hist["dt"].dt.tz_convert(helsinki_tz)
     df_hist = df_hist.sort_values("dt_local").set_index("dt_local")
+
+    latest_data_dt = df_hist.index.max()
+    latest_data_at = latest_data_dt.strftime("%d.%m.%Y %H:%M:%S") if pd.notna(latest_data_dt) else "N/A"
+    chart_updated_at = datetime.now(HELSINKI_TZ).strftime("%d.%m.%Y %H:%M:%S")
+    subtitle_html = f"<br><span style='font-size: 11px; color: #94a3b8; font-weight: normal;'>🕒 Päivitetty: {chart_updated_at} &nbsp;|&nbsp; 📅 Uusin data: {latest_data_at}</span>"
 
     for col in ["cash_balance", "total_stock_value"]:
         if col not in df_hist.columns:
@@ -381,7 +388,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
                 "Viimeiset 3 kuukautta",
             ],
             index=0,
-            key="equity_timeframe_select"
+            key="equity_timeframe_select",
         )
     with c_interval:
         interval_sel = st.selectbox(
@@ -393,8 +400,8 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
                 "Viikko (1vk)",
                 "Kuukausi (1kk)",
             ],
-            index=1 if timeframe_sel == "Viimeiset 24 tuntia" else 2,
-            key="equity_interval_select"
+            index=1 if timeframe_sel == "Viimeiset 24 tuntia" else 0,
+            key="equity_interval_select",
         )
     with c_metric:
         metric_sel = st.selectbox(
@@ -405,7 +412,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
                 "Varallisuuden jakautuma (Käteinen vs. Osakkeet)",
             ],
             index=0,
-            key="equity_metric_select"
+            key="equity_metric_select",
         )
 
     # Filter Timeframe
@@ -443,6 +450,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
 
     if df_plot.empty:
         df_plot = df_filtered[cols_to_resample]
+
 
     # Build Plotly Figure
     fig = go.Figure()
@@ -489,7 +497,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         )
 
         fig.update_layout(
-            title=f"💼 Salkun Kokonaisarvon Kehitys ({interval_sel})",
+            title=f"💼 Salkun Kokonaisarvon Kehitys ({interval_sel}){subtitle_html}",
             yaxis=dict(title="Euroa (€)", tickformat=",.0f", gridcolor="#334155"),
         )
 
@@ -511,7 +519,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         ))
         fig.add_hline(y=0.0, line_dash="solid", line_color="#64748b", line_width=1.5)
         fig.update_layout(
-            title=f"📊 Kumulatiivinen Tuotto (€)",
+            title=f"📊 Kumulatiivinen Tuotto (€){subtitle_html}",
             yaxis=dict(title="Tuotto (€)", tickformat="+,.0f", gridcolor="#334155"),
         )
 
@@ -537,7 +545,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
             hovertemplate="<b>Osakkeet:</b> %{y:,.2f} €<extra></extra>",
         ))
         fig.update_layout(
-            title=f"🍰 Varallisuusjakauma (Käteinen vs. Osakkeet)",
+            title=f"🍰 Varallisuusjakauma (Käteinen vs. Osakkeet){subtitle_html}",
             yaxis=dict(title="Euroa (€)", tickformat=",.0f", gridcolor="#334155"),
         )
 
@@ -545,13 +553,14 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         template="plotly_dark",
         paper_bgcolor="#1e293b",
         plot_bgcolor="#0f172a",
-        height=380,
-        margin=dict(l=60, r=30, t=40, b=30),
+        height=390,
+        margin=dict(l=60, r=30, t=55, b=30),
         xaxis=dict(gridcolor="#334155"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"🕒 **Graafi päivitetty:** {chart_updated_at} &nbsp;|&nbsp; 📅 **Uusin data:** {latest_data_at}")
 
 
 
@@ -1270,6 +1279,9 @@ def render_dashboard_views(active_menu: str):
                 if not df_enriched.empty:
                     df_sorted = df_enriched.sort_values(by="pnl_pct", ascending=True)
                     bar_colors = ["#10b981" if p >= 0 else "#f43f5e" for p in df_sorted["pnl_pct"]]
+                    bar_updated_at = datetime.now(HELSINKI_TZ).strftime("%d.%m.%Y %H:%M:%S")
+                    bar_latest_data_at = live_quotes.get("_fetch_timestamp") or bar_updated_at
+                    bar_subtitle = f"<br><span style='font-size: 11px; color: #94a3b8; font-weight: normal;'>🕒 Päivitetty: {bar_updated_at} &nbsp;|&nbsp; 📅 Uusin data: {bar_latest_data_at}</span>"
 
                     fig_bar = go.Figure(go.Bar(
                         x=df_sorted["pnl_pct"],
@@ -1281,16 +1293,18 @@ def render_dashboard_views(active_menu: str):
                         hovertemplate="<b>%{y}</b><br>Tuotto: %{x:+.2f}%<extra></extra>",
                     ))
                     fig_bar.update_layout(
-                        title="📊 Salkun Osakkeiden Tuotto Ostohetkestä (%)",
+                        title=f"📊 Salkun Osakkeiden Tuotto Ostohetkestä (%){bar_subtitle}",
                         template="plotly_dark",
                         paper_bgcolor="#1e293b",
                         plot_bgcolor="#0f172a",
-                        height=320,
-                        margin=dict(l=90, r=40, t=40, b=30),
+                        height=340,
+                        margin=dict(l=90, r=40, t=55, b=30),
                         xaxis=dict(title="Tuotto %", zeroline=True, zerolinecolor="#64748b", zerolinewidth=1.5),
                         yaxis=dict(title=""),
                     )
                     st.plotly_chart(fig_bar, use_container_width=True)
+                    st.caption(f"🕒 **Graafi päivitetty:** {bar_updated_at} &nbsp;|&nbsp; 📅 **Uusin data:** {bar_latest_data_at}")
+
 
                 # ------------------------------------------------------------------
                 # Visual 2: Formatted Portfolio Table
@@ -1420,18 +1434,39 @@ def render_dashboard_views(active_menu: str):
                             annotation_font_color="#f43f5e",
                         )
 
+                        stock_updated_at = datetime.now(HELSINKI_TZ).strftime("%d.%m.%Y %H:%M:%S")
+                        latest_bar = df_hist.index.max()
+                        if hasattr(latest_bar, "tzinfo") and latest_bar.tzinfo is not None:
+                            try:
+                                latest_bar_local = latest_bar.tz_convert(HELSINKI_TZ)
+                            except Exception:
+                                latest_bar_local = latest_bar
+                        else:
+                            latest_bar_local = latest_bar
+
+                        if hasattr(latest_bar_local, "hour") and (latest_bar_local.hour != 0 or latest_bar_local.minute != 0):
+                            stock_latest_data_at = latest_bar_local.strftime("%d.%m.%Y %H:%M:%S")
+                        elif hasattr(latest_bar_local, "strftime"):
+                            stock_latest_data_at = latest_bar_local.strftime("%d.%m.%Y")
+                        else:
+                            stock_latest_data_at = str(latest_bar_local)
+
+                        stock_subtitle = f"<br><span style='font-size: 11px; color: #94a3b8; font-weight: normal;'>🕒 Päivitetty: {stock_updated_at} &nbsp;|&nbsp; 📅 Uusin data: {stock_latest_data_at}</span>"
+
                         fig_stock.update_layout(
-                            title=f"📈 {selected_ticker} ({resolved_ticker}) — Kurssikehitys ja Positiotasot",
+                            title=f"📈 {selected_ticker} ({resolved_ticker}) — Kurssikehitys ja Positiotasot{stock_subtitle}",
                             template="plotly_dark",
                             paper_bgcolor="#1e293b",
                             plot_bgcolor="#0f172a",
-                            height=420,
-                            margin=dict(l=50, r=40, t=50, b=40),
+                            height=430,
+                            margin=dict(l=50, r=40, t=65, b=40),
                             xaxis=dict(title="Päivämäärä", showgrid=True, gridcolor="#334155"),
                             yaxis=dict(title=f"Kurssi ({pos_match['currency']})", showgrid=True, gridcolor="#334155"),
                             hovermode="x unified",
                         )
                         st.plotly_chart(fig_stock, use_container_width=True)
+                        st.caption(f"🕒 **Graafi päivitetty:** {stock_updated_at} &nbsp;|&nbsp; 📅 **Uusin data:** {stock_latest_data_at}")
+
 
                         # Metrics under chart
                         m1, m2, m3, m4 = st.columns(4)
