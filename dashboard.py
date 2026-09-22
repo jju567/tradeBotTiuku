@@ -1297,30 +1297,61 @@ def render_dashboard_views(active_menu: str):
                 # ------------------------------------------------------------------
                 st.markdown("#### 📋 Avoimet Positiot ja Tuloserittely")
                 
-                table_display = df_enriched.copy()
-                table_display["Ostohinta"] = table_display.apply(lambda r: f"{r['buy_price']:,.2f} {r['currency']}", axis=1)
-                table_display["Nykykurssi"] = table_display.apply(lambda r: f"{r['curr_price']:,.2f} {r['currency']}", axis=1)
-                table_display["Päivämuutos"] = table_display["day_change_pct"].apply(lambda v: f"{v:+.2f}%")
-                table_display["Hankinta-arvo (€)"] = table_display.apply(lambda r: f"{r['invested_eur']:,.2f} €", axis=1)
-                table_display["Markkina-arvo (€)"] = table_display.apply(lambda r: f"{r['market_val_eur']:,.2f} €", axis=1)
-                table_display["Tulos (€)"] = table_display.apply(lambda r: f"{r['pnl_abs_eur']:+,.2f} €", axis=1)
-                table_display["Tuotto %"] = table_display["pnl_pct"].apply(lambda v: f"{v:+.2f}%")
-                table_display["Stop-loss (-50%)"] = table_display.apply(lambda r: f"{r['cat_stop']:,.2f} {r['currency']}", axis=1)
-                table_display["Puskuri stoppiin"] = table_display["stop_dist_pct"].apply(lambda v: f"{v:.1f}%")
-
-                final_cols = [
-                    "ticker", "buy_date", "Ostohinta", "Nykykurssi", "Päivämuutos",
-                    "shares", "Hankinta-arvo (€)", "Markkina-arvo (€)", "Tulos (€)", "Tuotto %",
-                    "Stop-loss (-50%)", "Puskuri stoppiin", "strategy"
+                table_cols = [
+                    "ticker", "currency", "buy_date", "buy_price", "curr_price", "day_change_pct",
+                    "shares", "invested_eur", "market_val_eur", "pnl_abs_eur", "pnl_pct",
+                    "cat_stop", "stop_dist_pct", "strategy"
                 ]
-                final_renames = {
+                existing_cols = [c for c in table_cols if c in df_enriched.columns]
+                table_display = df_enriched[existing_cols].copy()
+
+                # Ensure numeric types remain numeric for proper column sorting
+                num_cols = ["buy_price", "curr_price", "day_change_pct", "shares", "invested_eur", "market_val_eur", "pnl_abs_eur", "pnl_pct", "cat_stop", "stop_dist_pct"]
+                for c in num_cols:
+                    if c in table_display.columns:
+                        table_display[c] = pd.to_numeric(table_display[c], errors="coerce").fillna(0.0)
+
+                if "buy_date" in table_display.columns:
+                    table_display["buy_date"] = pd.to_datetime(table_display["buy_date"], errors="coerce").dt.date
+
+                col_renames = {
                     "ticker": "Ticker",
+                    "currency": "Valuutta",
                     "buy_date": "Ostopäivä",
+                    "buy_price": "Ostohinta",
+                    "curr_price": "Nykykurssi",
+                    "day_change_pct": "Päivämuutos",
                     "shares": "Kpl",
+                    "invested_eur": "Hankinta-arvo (€)",
+                    "market_val_eur": "Markkina-arvo (€)",
+                    "pnl_abs_eur": "Tulos (€)",
+                    "pnl_pct": "Tuotto %",
+                    "cat_stop": "Stop-loss (-50%)",
+                    "stop_dist_pct": "Puskuri stoppiin",
                     "strategy": "Strategia",
                 }
+                table_display = table_display.rename(columns=col_renames)
+
+                col_config = {
+                    "Ticker": st.column_config.TextColumn("Ticker"),
+                    "Valuutta": st.column_config.TextColumn("Valuutta", help="Alkuperäinen noteerausvaluutta"),
+                    "Ostopäivä": st.column_config.DateColumn("Ostopäivä", format="YYYY-MM-DD"),
+                    "Ostohinta": st.column_config.NumberColumn("Ostohinta", format="%,.2f", help="Ostohinta alkuperäisessä valuutassa"),
+                    "Nykykurssi": st.column_config.NumberColumn("Nykykurssi", format="%,.2f", help="Viimeisin kurssinoteeraus"),
+                    "Päivämuutos": st.column_config.NumberColumn("Päivämuutos", format="%+,.2f %%", help="Päiväkohtainen kurssimuutos prosentteina"),
+                    "Kpl": st.column_config.NumberColumn("Kpl", format="%,.0f", help="Osakemäärä"),
+                    "Hankinta-arvo (€)": st.column_config.NumberColumn("Hankinta-arvo (€)", format="%,.2f €", help="Hankinta-arvo euroissa"),
+                    "Markkina-arvo (€)": st.column_config.NumberColumn("Markkina-arvo (€)", format="%,.2f €", help="Markkina-arvo euroissa"),
+                    "Tulos (€)": st.column_config.NumberColumn("Tulos (€)", format="%+,.2f €", help="Avoin tulos euroina"),
+                    "Tuotto %": st.column_config.NumberColumn("Tuotto %", format="%+,.2f %%", help="Tuotto ostohinnasta prosentteina"),
+                    "Stop-loss (-50%)": st.column_config.NumberColumn("Stop-loss (-50%)", format="%,.2f", help="Katastrofistoppi (-50%) alkuperäisessä valuutassa"),
+                    "Puskuri stoppiin": st.column_config.NumberColumn("Puskuri stoppiin", format="%,.1f %%", help="Etäisyys nykykurssista stoppiin"),
+                    "Strategia": st.column_config.TextColumn("Strategia"),
+                }
+
                 st.dataframe(
-                    table_display[final_cols].rename(columns=final_renames),
+                    table_display,
+                    column_config=col_config,
                     width="stretch",
                     hide_index=True,
                 )
