@@ -284,7 +284,7 @@ def test_capital_sizing_calculations():
 
 
 def test_check_liquidity_and_spread_filters(monkeypatch):
-    from quant_engine import check_liquidity_and_spread
+    from screener.quant_engine import check_liquidity_and_spread
 
     class MockTickerPass:
         info = {

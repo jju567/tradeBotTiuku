@@ -19,7 +19,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Add workspace directory to Python path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_current = Path(__file__).resolve().parent
+_root = _current.parent if _current.name == "scripts" else _current
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
 
 # Import analyze_text from screener package or local module
 try:

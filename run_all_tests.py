@@ -32,6 +32,14 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
+# Ensure project root and scripts directory are in sys.path
+BASE_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = BASE_DIR / "scripts"
+for p in [str(BASE_DIR), str(SCRIPTS_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

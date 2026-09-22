@@ -7,7 +7,8 @@ import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
 
-from single_stock_news_backtest import SingleStockNewsBacktester, evaluate_release_layer2
+from scripts.single_stock_news_backtest import SingleStockNewsBacktester, evaluate_release_layer2
+
 
 
 def test_evaluate_release_layer2_reject_and_warn_patterns():

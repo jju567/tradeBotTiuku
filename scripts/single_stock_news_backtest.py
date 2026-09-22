@@ -31,9 +31,11 @@ if hasattr(sys.stderr, "reconfigure"):
         pass
 
 # Ensure workspace root in sys.path
-_root = Path(__file__).resolve().parent
+_current = Path(__file__).resolve().parent
+_root = _current.parent if _current.name == "scripts" else _current
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
+
 
 from screener.nlp_analyzer import analyze_core_fundamentals, rule_based_analyze_core_fundamentals
 from screener.web_verifier import RED_FLAG_PATTERNS, FATAL_RED_FLAG_PATTERNS, WARN_PATTERNS

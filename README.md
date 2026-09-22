@@ -15,7 +15,7 @@
   - *Parametrit*: `--interval-hours <h>` (oletus: 4.0h), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8501).
 - **Pelkkä Käyttöliittymä**: `streamlit run dashboard.py`
 - **Pelkkä Paper Trader Daemon**: `python main_controller.py --loop --interval-hours 4`
-- 🐧 **Linux-palvelinasennus & systemd-daemon**: Täydellinen asennusopas ja valmiit palvelupohjat löytyvät dokumentista: [LINUX_DAEMON_OHJEET.md](LINUX_DAEMON_OHJEET.md).
+- 🐧 **Linux-palvelinasennus & systemd-daemon**: Täydellinen asennusopas ja valmiit palvelupohjat löytyvät dokumentista: [docs/LINUX_DAEMON_OHJEET.md](docs/LINUX_DAEMON_OHJEET.md).
 - **Saumaton Taustapäivitys Ilman Harmaantumista (`st.fragment` & Anti-Dimming CSS)**: Hyödyntää moduulitason staattisia `@st.fragment`-kääreitä ja räätälöityä CSS-koodia, joka estää Streamlitin himmenemisen / latauspeitteen automaattisen päivityksen aikana.
 - **Selkeät Välilehdet**:
   - 📋 **Seulonnan Tulokset**: Suodatettava ja haettava taulukko analysoiduista raporteista, Suomen aikavyöhykkeen aikaleimoilla (`DD.MM.YYYY HH:MM:SS`), profiileilla ja tuomioilla (🔥 *STRONG BUY*, 👀 *WATCH_TURNAROUND*, 🟡 *HOLD*, ❌ *REJECT*).
@@ -29,9 +29,9 @@
 ---
 
 ### 2. 🔍 Dual-Lens Mikroyhtiöseulonta & Massa-analyysi (`batch_processor.py`)
-> *Yksityiskohtainen kuvaus poimintalogiikasta löytyy dokumentista: [OSAKEPOIMINTALOGIIKKA.md](OSAKEPOIMINTALOGIIKKA.md). Täydellinen testausmetodologia ja tulokset on koottu raporttiin: [BACKTEST_RAPORTTI.md](BACKTEST_RAPORTTI.md).*
+> *Yksityiskohtainen kuvaus poimintalogiikasta löytyy dokumentista: [docs/OSAKEPOIMINTALOGIIKKA.md](docs/OSAKEPOIMINTALOGIIKKA.md). Täydellinen testausmetodologia ja tulokset on koottu raporttiin: [docs/BACKTEST_RAPORTTI.md](docs/BACKTEST_RAPORTTI.md).*
 
-- **Mikroyhtiöuniversumin Eristys (`universe_builder.py`)**:
+- **Mikroyhtiöuniversumin Eristys (`scripts/clean_universe_builder.py`)**:
   - Hakee reaaliaikaiset FX-kurssit ja suodattaa osakeuniversumin tiukasti alle $300M USD markkina-arvoon (`< $300M USD`) estäen suuryhtiökontaminaation.
   - **Tiukat likviditeetti- ja senttiosakesuodattimet**: Hylkää osakkeet, joiden hinta on alle 0.10 (paikallisessa valuutassa) tai joiden 20 päivän keskimääräinen päivävaihto (20d ADV) on alle $50,000 USD, karsien epälikvidit tilauskirjat ja sub-penny -ansat puhtaaseen 106 laatulikvidin mikroyhtiön universumiin (US, FI, SE).
   - Päivitetty **Profile A (Quality Growth)**: vaatii liikevaihdon kasvun (> 20 %) ohella vahvaa myyntikatetta (> 40 %) ja eloonjäämistarkastuksen (positiivinen OCF tai kassariittävyys > 18 kk).
@@ -39,25 +39,26 @@
 - **Yhdistetty Testipatteristo (`run_all_tests.py`)**:
   - Ajaa yhdellä komennolla kaikki 5 testausmoduulia (pytest, Lost in the Middle, Ground Truth, 2.5x ATR Trailing Stop-Loss ja Markkinavaikutus/DSR).
 
-- **Kvantitatiivinen Fundamenttibäkkäri (`fundamental_backtester.py`)**:
+- **Kvantitatiivinen Fundamenttibäkkäri (`scripts/fundamental_backtester.py`)**:
   - Testaa historiallisesta tilinpäätösdatasta (yfinance) deterministiset kovat säännöt täysin erillään LLM:stä.
   - Arvioi kvartaalikohtaisesti Profile A (Kasvu: liikevaihto YoY > 20 %, myyntikate > 40 %, kassariittävyys) ja Profile B (Arvo: nettovelaton tase, Anti-Shrinking -sääntö).
   - Laskee automaattisesti 3 kk (~63 kaupankäyntipäivää) ja 6 kk (~126 kaupankäyntipäivää) toteutuneet tuotot, vertailuindeksin (esim. `^RUT`) tuoton, alfan sekä maksimilaskut (Max Drawdown).
 
-- **LLM Ground Truth -testipatteri (`llm_truth_tester.py`)**:
+- **LLM Ground Truth -testipatteri (`scripts/llm_truth_tester.py`)**:
   - Validoi laadullisen päättelyn ja determinististen turvaporttien toimivuuden tunnetuilla testiskenaarioilla (Ruotsin kontrollbalansräkning, ATM-diluutiokriisi, johdon ostot ja käännekatalyytti, rutiinikalenterit, hyperkasvuyhtiöt).
   - Vertaa LLM-tuomiota ja pedagogista perustelua odotettuun maaperätotuuteen (Ground Truth) ja tulostaa tarkan tarkkuusraportin.
 
-- **Konteksti-ikkunan & 'Lost in the Middle' -Testipatteri (`context_window_tester.py`)**:
+- **Konteksti-ikkunan & 'Lost in the Middle' -Testipatteri (`scripts/context_window_tester.py`)**:
   - Testaa analyysiputken tarkkaavaisuutta ja kestävyyttä massiivisen 50-sivuisen (~7 000 – 30 000 tokenia) tilinpäätöksen keskelle (50 % kohta) upotettua kriittistä myrkkykapselia vastaan (*Ruotsin kontrollbalansräkning tai \$25M ATM-diluutio*).
   - Varmistaa, että petollisen hyvät kovat fundamenttiluvut eivät sokaise järjestelmää ohittamaan tekstin kriittisiä riskivaroituksia.
 
-- **Institutionaalinen Harhaton Bäkkäri (`institutional_backtester.py`)**:
+- **Institutionaalinen Harhaton Bäkkäri (`scripts/institutional_backtester.py`)**:
   - Eliminoi eloonjäämis- (survivorship bias) ja ennakkonäkemisharhan (look-ahead bias) lukemalla fundamentit puhtaasta **Point-in-Time** -tietokannasta (`data/clean_microcap_pit_fundamentals.csv`, 672 kvartaaliraporttia aikaväliltä 02/2025–09/2026) historiallisen kurssi- ja valuuttatiedon kera.
   - Simuloi 240 toteutunutta mikroyhtiökauppaa 69 eri yhtiölle ($N=240, N_{\text{eff}} \approx 69$) vähentäen **0.50 %** kulusuojan/slippagen.
   - Tuottaa kattavat institutionaaliset riskimittarit: keskituotto vs. mediaani (vinouden paljastamiseksi), Sharpe-luku (3 % Rf), volatiliteetti (Std Dev), keskimääräinen Max Drawdown sekä segmentoidut alfat suhteessa Russell 2000 (`^RUT`) -indeksiin.
 
-- **2.5x ATR Trailing Stop-Loss -Simulaattori (`stop_loss_simulator.py`)**:
+- **2.5x ATR Trailing Stop-Loss -Simulaattori (`scripts/stop_loss_simulator.py`)**:
+
   - Simuloi mekaanisen 14 päivän 2.5x ATR dynaamisen liukuvan tappionpysäytyksen toteutusta fundamenttisignaaleille (`data/institutional_backtest_results.csv`).
   - Vertailee 6 kk Buy & Hold -tuottoa ja hallittua riskiä, rajoittaen suurimman tappion (-27.83 %) ja vapauttaen pääoman uusiin ideoihin (ka. pitoaika 26.9 pv).
 
