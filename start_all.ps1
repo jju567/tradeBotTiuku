@@ -4,14 +4,14 @@ param(
     [switch]$UiOnly,
     [switch]$DaemonOnly,
     [switch]$RunOnce,
-    [int]$Port = 8501
+    [int]$Port = 8502
 )
 
 $argsList = @()
 if ($UiOnly) { $argsList += "--ui-only" }
 if ($DaemonOnly) { $argsList += "--daemon-only" }
 if ($RunOnce) { $argsList += "--run-once" }
-if ($Port -ne 8501) { $argsList += "--port", $Port }
+if ($Port -ne 8502) { $argsList += "--port", $Port }
 if ($IntervalHours -ne 4.0) { $argsList += "--interval-hours", $IntervalHours }
 
 python start_all.py @argsList

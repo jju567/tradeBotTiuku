@@ -12,8 +12,8 @@
 - **Yhdistetty Pikakäynnistys (UI + Paper Trader)**:
   - `start_all.bat` tai `.\start_all.ps1` tai `python start_all.py`
   - Käynnistää sekä Streamlit-hallintapaneelin että reaaliaikaisen Paper Trader -daemonin yhdellä komennolla ja hallitsee molempien prosessien siistiä sammutusta (`Ctrl+C`).
-  - *Parametrit*: `--interval-hours <h>` (oletus: 4.0h), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8501).
-- **Pelkkä Käyttöliittymä**: `streamlit run dashboard.py`
+  - *Parametrit*: `--interval-hours <h>` (oletus: 4.0h), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8502).
+- **Pelkkä Käyttöliittymä**: `streamlit run dashboard.py --server.port 8502`
 - **Pelkkä Paper Trader Daemon**: `python main_controller.py --loop --interval-hours 4`
 - 🐧 **Linux-palvelinasennus & systemd-daemon**: Täydellinen asennusopas ja valmiit palvelupohjat löytyvät dokumentista: [docs/LINUX_DAEMON_OHJEET.md](docs/LINUX_DAEMON_OHJEET.md).
 - **Saumaton Taustapäivitys Ilman Harmaantumista (`st.fragment` & Anti-Dimming CSS)**: Hyödyntää moduulitason staattisia `@st.fragment`-kääreitä ja räätälöityä CSS-koodia, joka estää Streamlitin himmenemisen / latauspeitteen automaattisen päivityksen aikana.
@@ -141,9 +141,9 @@ INVESTMENT_STRATEGY="HYBRID"
 
 ### 1. Web-Hallintapaneeli (Streamlit)
 ```bash
-streamlit run dashboard.py
+streamlit run dashboard.py --server.port 8502
 ```
-Avaa selaimessa osoitteen `http://localhost:8501`.
+Avaa selaimessa osoitteen `http://localhost:8502`.
 
 ### 2. Massaraporttien Seulonta (Batch Processor)
 ```bash

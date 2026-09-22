@@ -40,11 +40,12 @@ def main() -> None:
         action="store_true",
         help="Start only Paper Trader Daemon",
     )
+    default_port = int(os.getenv("STREAMLIT_PORT", "8502"))
     parser.add_argument(
         "--port",
         type=int,
-        default=8501,
-        help="Streamlit UI web server port",
+        default=default_port,
+        help=f"Streamlit UI web server port (default: {default_port})",
     )
     parser.add_argument(
         "--run-once",

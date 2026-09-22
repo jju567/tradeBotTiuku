@@ -78,15 +78,15 @@ Tämä käynnistää sekä taustadaemonin että Streamlit-käyttöliittymän:
 
 ```bash
 # Kopioi palvelutiedosto systemd-hakemistoon
-sudo cp deploy/tradebot.service /etc/systemd/system/
+sudo cp deploy/tradebot-tiuku.service /etc/systemd/system/
 
 # Muokkaa tarvittaessa User ja hakemistopolut vastaamaan ympäristöäsi:
-# sudo nano /etc/systemd/system/tradebot.service
+# sudo nano /etc/systemd/system/tradebot-tiuku.service
 
 # Ota palvelu käyttöön ja käynnistä
 sudo systemctl daemon-reload
-sudo systemctl enable tradebot
-sudo systemctl start tradebot
+sudo systemctl enable tradebot-tiuku
+sudo systemctl start tradebot-tiuku
 ```
 
 ### Vaihtoehto B: Erilliset palvelut (Suositeltu tuotannossa)
@@ -95,18 +95,18 @@ Jos haluat ajaa daemonia ja UI-paneelia toisistaan riippumattomina:
 
 ```bash
 # Kopioi molemmat palvelut
-sudo cp deploy/tradebot-daemon.service /etc/systemd/system/
-sudo cp deploy/tradebot-ui.service /etc/systemd/system/
+sudo cp deploy/tradebot-tiuku-daemon.service /etc/systemd/system/
+sudo cp deploy/tradebot-tiuku-ui.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 
 # Käynnistä Paper Trader -daemon (tarkistaa 4h välein)
-sudo systemctl enable tradebot-daemon
-sudo systemctl start tradebot-daemon
+sudo systemctl enable tradebot-tiuku-daemon
+sudo systemctl start tradebot-tiuku-daemon
 
-# Käynnistä Streamlit Web UI (portti 8501)
-sudo systemctl enable tradebot-ui
-sudo systemctl start tradebot-ui
+# Käynnistä Streamlit Web UI (portti 8502)
+sudo systemctl enable tradebot-tiuku-ui
+sudo systemctl start tradebot-tiuku-ui
 ```
 
 ---
@@ -115,37 +115,37 @@ sudo systemctl start tradebot-ui
 
 ### Palvelun tila:
 ```bash
-sudo systemctl status tradebot-daemon
-# tai
-sudo systemctl status tradebot
+sudo systemctl status tradebot-tiuku-daemon
+# tai yhdistetty:
+sudo systemctl status tradebot-tiuku
 ```
 
 ### Reaaliaikaiset logit (`journalctl`):
 ```bash
 # Seuraa daemonin reaaliaikaista tulostetta
-sudo journalctl -u tradebot-daemon -f
+sudo journalctl -u tradebot-tiuku-daemon -f
 
 # Seuraa yhdistettyä palvelua
-sudo journalctl -u tradebot -f -n 100
+sudo journalctl -u tradebot-tiuku -f -n 100
 ```
 
 ### Palvelun uudelleenkäynnistys / sammutus:
 ```bash
-sudo systemctl restart tradebot-daemon
-sudo systemctl stop tradebot-daemon
+sudo systemctl restart tradebot-tiuku-daemon
+sudo systemctl stop tradebot-tiuku-daemon
 ```
 
 ---
 
 ## 🌐 7. Streamlit Web UI:n Saavutettavuus & Palomuuri
 
-Oletuksena Streamlit kuuntelee porttia `8501`.
+Oletuksena tradeBotTiukun Streamlit kuuntelee porttia `8502` (jotta se ei mene päällekkäin muiden sovellusten tai Eetun kanssa).
 
 ```bash
 # Salli portti UFW-palomuurissa (Ubuntu)
-sudo ufw allow 8501/tcp
+sudo ufw allow 8502/tcp
 ```
 
-Avaa selain osoitteessa: `http://<palvelimen-ip>:8501`
+Avaa selain osoitteessa: `http://<palvelimen-ip>:8502`
 
-*(Valinnainen tuotantosuositus: voit asettaa Nginx reverse proxyn ja HTTPS Let's Encrypt -sertifikaatin ohjaamaan liikenteen porttiin 8501).*
+*(Valinnainen tuotantosuositus: voit asettaa Nginx reverse proxyn ja HTTPS Let's Encrypt -sertifikaatin ohjaamaan liikenteen porttiin 8502).*
