@@ -181,6 +181,10 @@ def test_pipeline_controller_satellite_cycle(tmp_path, monkeypatch):
             "reason": "Passed liquidity and spread checks",
         }
     )
+    # Block real email sending — tests must NEVER send real SMTP emails
+    monkeypatch.setattr("screener.main_controller.send_alert", lambda **kwargs: True)
+    monkeypatch.setattr("screener.main_controller.send_turnaround_alert", lambda **kwargs: True)
+    monkeypatch.setattr("screener.main_controller.send_sell_alert", lambda **kwargs: True)
 
     candidates = controller.run_pipeline_cycle()
 
@@ -194,6 +198,7 @@ def test_pipeline_controller_satellite_cycle(tmp_path, monkeypatch):
     # Second run should skip already processed release
     candidates_second_run = controller.run_pipeline_cycle()
     assert len(candidates_second_run) == 0
+
 
 
 def test_pipeline_controller_core_tenbagger_cycle(tmp_path, monkeypatch):
@@ -242,6 +247,10 @@ def test_pipeline_controller_core_tenbagger_cycle(tmp_path, monkeypatch):
             "reason": "Passed liquidity and spread checks",
         }
     )
+    # Block real email sending — tests must NEVER send real SMTP emails
+    monkeypatch.setattr("screener.main_controller.send_alert", lambda **kwargs: True)
+    monkeypatch.setattr("screener.main_controller.send_turnaround_alert", lambda **kwargs: True)
+    monkeypatch.setattr("screener.main_controller.send_sell_alert", lambda **kwargs: True)
 
     candidates = controller.run_pipeline_cycle()
 
@@ -253,6 +262,7 @@ def test_pipeline_controller_core_tenbagger_cycle(tmp_path, monkeypatch):
     assert cand["recommended_allocation_eur"] == 1125.0
     assert cand["kelly_fraction"] is None
     assert csv_file.exists()
+
 
 
 def test_capital_sizing_calculations():

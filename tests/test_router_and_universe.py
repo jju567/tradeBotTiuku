@@ -232,6 +232,10 @@ def test_main_controller_trash_and_universe_filtering(tmp_path, monkeypatch):
         "verify",
         lambda **kwargs: {"passed_web_check": True, "reason": "Passed test mock"}
     )
+    # Block real email sending — tests must NEVER send real SMTP emails
+    monkeypatch.setattr("screener.main_controller.send_alert", lambda **kwargs: True)
+    monkeypatch.setattr("screener.main_controller.send_turnaround_alert", lambda **kwargs: True)
+    monkeypatch.setattr("screener.main_controller.send_sell_alert", lambda **kwargs: True)
 
     candidates = controller.run_pipeline_cycle()
 
@@ -239,3 +243,4 @@ def test_main_controller_trash_and_universe_filtering(tmp_path, monkeypatch):
     assert candidates[0]["ticker"] == "FARON.HE"
     assert candidates[0]["strategy_type"] == "SATELLITE"
     assert candidates[0]["positive_guidance"] is True
+
