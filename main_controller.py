@@ -278,7 +278,7 @@ class PortfolioInstance:
                     self.cash_balance = float(data.get("cash_balance", self.config.start_cash))
                     self.starting_balance = float(data.get("starting_balance", self.config.start_cash))
                     self.currency = data.get("currency", "EUR")
-                    self.positions = data.get("positions", [])
+                    self.positions = [self._normalize_position(p) for p in data.get("positions", [])]
                     self.created_at = data.get("created_at", self.created_at)
                     self.updated_at = data.get("updated_at", self.updated_at)
                     return
@@ -286,6 +286,36 @@ class PortfolioInstance:
                 logger.warning(f"[{self.config.portfolio_id}] Could not load {self.state_file.name}: {e}. Initializing.")
 
         self.save_state()
+
+    @staticmethod
+    def _normalize_position(pos: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensures position dict uses canonical Title Case keys regardless of source format."""
+        # Build a lowercase lookup for flexible key matching
+        lower = {k.lower().replace(" ", "_").replace("-", "_"): v for k, v in pos.items()}
+        def _get(*candidates):
+            for c in candidates:
+                if c in lower:
+                    return lower[c]
+            return None
+
+        normalized = {
+            "Ticker":           _get("ticker") or pos.get("Ticker", ""),
+            "Buy Date":         _get("buy_date", "buy date") or pos.get("Buy Date", ""),
+            "Buy Price":        float(_get("buy_price", "buy price") or pos.get("Buy Price", 0.0)),
+            "Shares":           float(_get("shares") or pos.get("Shares", 0.0)),
+            "Capital Invested": float(_get("capital_invested", "capital invested") or pos.get("Capital Invested", 0.0)),
+            "Strategy":         _get("strategy") or pos.get("Strategy", "Profile B"),
+            "Currency":         _get("currency") or pos.get("Currency", "EUR"),
+        }
+        # Preserve any extra keys (highest_price_seen, catastrophic_stop, market, etc.)
+        canonical_lower = {"ticker", "buy_date", "buy price", "buy_price", "shares",
+                           "capital_invested", "capital invested", "strategy", "currency"}
+        for k, v in pos.items():
+            k_norm = k.lower().replace(" ", "_")
+            if k_norm not in canonical_lower and k not in normalized:
+                normalized[k] = v
+        return normalized
+
 
     def save_state(self) -> None:
         """Saves current state to JSON file."""
