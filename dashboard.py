@@ -814,6 +814,7 @@ with st.sidebar:
         portfolio_options,
         index=0,
         key="selected_portfolio",
+        on_change=st.rerun,  # Force full rerun so fragment re-executes with the new portfolio
         help="Valitse tarkasteltava paperisalkku 10 rinnakkaisen walk-forward-testisalkun joukosta.",
     )
     if selected_portfolio in portfolio_meta_map:
@@ -1280,11 +1281,12 @@ def render_dashboard_views(active_menu: str):
                 f"Alueet: **{', '.join(portfolio_meta.get('regions', ['FI', 'SE', 'US']))}**{filter_note}"
             )
 
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📌 Avoimet Positiot & Trailing Stopit",
             "⚡ Riskinhallinta & Testiosto",
             "📜 Toteutuneet Kaupat (Trade History)",
             "🔔 Hälytysloki (Screener Alerts)",
+            "📊 Salkkuvertailu (Kaikki)",
         ])
 
         with tab1:
@@ -1888,6 +1890,152 @@ def render_dashboard_views(active_menu: str):
                     if col in df_alerts.columns:
                         df_alerts[col] = df_alerts[col].apply(to_helsinki_time)
                 st.dataframe(df_alerts, width="stretch", hide_index=True)
+
+        # ------------------------------------------------------------------
+        # TAB 5: Multi-Portfolio Equity Curve Comparison
+        # ------------------------------------------------------------------
+        with tab5:
+            st.markdown("### 📊 Kaikkien Salkkujen Kehitysvertailu")
+            st.caption(
+                "Vertaile kaikkien 10 rinnakkaisen walk-forward-testisalkun pääoman kehitystä. "
+                "Jokainen käyrä edustaa yhtä salkun kokonaispääoman (käteinen + osakkeet) kehitystä ajan kuluessa."
+            )
+
+            # Toggle: absolute vs normalised (base 100)
+            norm_toggle = st.toggle(
+                "Normalisoitu vertailu (lähtötaso = 100)",
+                value=False,
+                help="Normalisoitu näkymä poistaa alkupääoman eron ja näyttää suhteellisen tuoton.",
+            )
+
+            # Load all portfolio history files
+            port_traces = {}
+            summary_rows = []
+
+            all_port_ids = portfolio_options if portfolio_options else [f"P{i}" for i in range(1, 11)]
+
+            for pid in all_port_ids:
+                eq_file = PORTFOLIOS_DIR / f"portfolio_{pid}_history.json"
+                if not eq_file.exists():
+                    continue
+                try:
+                    with open(eq_file, "r", encoding="utf-8") as _ef:
+                        eq_data = json.load(_ef)
+                    if not eq_data or not isinstance(eq_data, list):
+                        continue
+                    df_eq = pd.DataFrame(eq_data)
+                    if "timestamp" not in df_eq.columns or "total_equity" not in df_eq.columns:
+                        continue
+                    df_eq["timestamp"] = pd.to_datetime(df_eq["timestamp"], errors="coerce")
+                    df_eq["total_equity"] = pd.to_numeric(df_eq["total_equity"], errors="coerce")
+                    df_eq = df_eq.dropna(subset=["timestamp", "total_equity"]).sort_values("timestamp")
+                    if df_eq.empty:
+                        continue
+                    port_traces[pid] = df_eq
+
+                    latest = df_eq.iloc[-1]
+                    start_eq = df_eq.iloc[0]["total_equity"]
+                    latest_eq = float(latest["total_equity"])
+                    ret_eur = latest_eq - start_eq
+                    ret_pct = (ret_eur / start_eq * 100) if start_eq else 0.0
+                    summary_rows.append({
+                        "Salkku": pid,
+                        "Viimeisin pääoma (€)": round(latest_eq, 2),
+                        "Tuotto (€)": round(ret_eur, 2),
+                        "Tuotto (%)": round(ret_pct, 2),
+                        "Snapshotit": len(df_eq),
+                        "Viimeisin päivitys": latest["timestamp"].strftime("%d.%m.%Y %H:%M"),
+                    })
+                except Exception:
+                    continue
+
+            if not port_traces:
+                st.info(
+                    "Ei equity-historiadataa saatavilla. "
+                    "Daemon tallentaa snapshotteja ajon lopussa tiedostoihin "
+                    "`data/portfolios/portfolio_<ID>_history.json`."
+                )
+            else:
+                # Build Plotly figure
+                PALETTE = [
+                    "#38bdf8", "#10b981", "#f59e0b", "#f43f5e", "#a78bfa",
+                    "#fb923c", "#34d399", "#e879f9", "#facc15", "#60a5fa",
+                ]
+                fig_comp = go.Figure()
+                for i, (pid, df_eq) in enumerate(port_traces.items()):
+                    y_vals = df_eq["total_equity"].tolist()
+                    if norm_toggle and y_vals:
+                        base = y_vals[0]
+                        y_vals = [v / base * 100 for v in y_vals] if base else y_vals
+                    color = PALETTE[i % len(PALETTE)]
+                    is_active = (pid == selected_portfolio)
+                    fig_comp.add_trace(go.Scatter(
+                        x=df_eq["timestamp"].tolist(),
+                        y=y_vals,
+                        mode="lines+markers",
+                        name=pid,
+                        line=dict(
+                            color=color,
+                            width=3 if is_active else 1.5,
+                            dash="solid" if is_active else "dot",
+                        ),
+                        marker=dict(size=5 if is_active else 3),
+                        opacity=1.0 if is_active else 0.65,
+                        hovertemplate=(
+                            f"<b>{pid}</b><br>"
+                            "%{x|%d.%m.%Y %H:%M}<br>"
+                            + ("Indeksi: %{y:.1f}" if norm_toggle else "Pääoma: %{y:,.2f} €")
+                            + "<extra></extra>"
+                        ),
+                    ))
+
+                y_axis_title = "Indeksi (lähtötaso=100)" if norm_toggle else "Kokonaispääoma (€)"
+                if norm_toggle:
+                    fig_comp.add_hline(
+                        y=100, line_dash="dash", line_color="#64748b", line_width=1,
+                        annotation_text="Lähtötaso 100", annotation_position="bottom right",
+                        annotation_font_color="#94a3b8",
+                    )
+
+                fig_comp.update_layout(
+                    title="📊 Kaikkien Salkkujen Pääomakehitys",
+                    template="plotly_dark",
+                    paper_bgcolor="#1e293b",
+                    plot_bgcolor="#0f172a",
+                    height=480,
+                    margin=dict(l=60, r=40, t=60, b=50),
+                    legend=dict(
+                        orientation="v",
+                        x=1.01, y=1,
+                        bgcolor="rgba(0,0,0,0)",
+                        font=dict(size=11),
+                    ),
+                    xaxis=dict(title="Aika", gridcolor="#1e293b"),
+                    yaxis=dict(title=y_axis_title, gridcolor="#334155"),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_comp, use_container_width=True)
+                st.caption(
+                    f"🔵 **Paksu viiva** = aktiivinen salkku ({selected_portfolio}). "
+                    "Pisteet piirtyvät daemon-ajojen yhteydessä tallennetuista snapshotista."
+                )
+
+                # Summary table
+                if summary_rows:
+                    st.markdown("#### 📋 Yhteenveto — Kaikkien Salkkujen Tila")
+                    df_summary = pd.DataFrame(summary_rows)
+                    # Highlight active portfolio row
+                    def _highlight_active(row):
+                        if row["Salkku"] == selected_portfolio:
+                            return ["background-color: #1e3a5f"] * len(row)
+                        return [""] * len(row)
+
+                    styled = df_summary.style.apply(_highlight_active, axis=1).format({
+                        "Viimeisin pääoma (€)": "{:,.2f}",
+                        "Tuotto (€)": "{:+,.2f}",
+                        "Tuotto (%)": "{:+.2f}%",
+                    })
+                    st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # ------------------------------------------------------------------
     # VIEW 4: LIVE TICKER SCANNER
