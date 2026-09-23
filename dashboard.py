@@ -284,6 +284,17 @@ def record_portfolio_snapshot(
     if total_equity <= 0 or total_equity < min_reasonable_equity:
         return
 
+    # Check if open positions exist: if positions exist, stock value cannot be 0.0 or flat 10,000 reset
+    try:
+        if OPEN_POSITIONS_CSV.exists() and OPEN_POSITIONS_CSV.stat().st_size > 0:
+            df_check = pd.read_csv(OPEN_POSITIONS_CSV)
+            if not df_check.empty and len(df_check) > 0:
+                if stock_value <= 0.0 or (abs(total_equity - starting_balance) < 0.01 and stock_value < 100.0):
+                    # Reject corrupt zero-stock snapshot when positions are actually active
+                    return
+    except Exception:
+        pass
+
     history = []
     if history_file.exists():
         try:
@@ -378,6 +389,15 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
 
     # Filter out corrupted / zero-drop glitch data points (e.g. total_equity < 40% of starting balance)
     df_hist = df_hist[df_hist["total_equity"] >= (starting_capital * 0.40)]
+
+    # Clean out false reset snapshots: if the portfolio contains or has had open positions (stock_value > 0),
+    # drop any mid-history points where stock_value dropped to 0 and equity reset to starting_capital.
+    if (df_hist["total_stock_value"] > 0).any():
+        first_idx = df_hist.index[0]
+        # Keep the very first initial record (inception), but drop subsequent glitches where stock_value is 0 or drops to 10k flat while active
+        is_glitch_reset = (df_hist.index != first_idx) & (df_hist["total_stock_value"] <= 0.0) & (abs(df_hist["total_equity"] - starting_capital) < 0.01)
+        df_hist = df_hist[~is_glitch_reset]
+
     if df_hist.empty:
         st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
         return
@@ -407,13 +427,13 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         interval_sel = st.selectbox(
             "Resoluutio / Aggregointi:",
             [
-                "Kaikki mittauspisteet",
                 "Tunti (1h)",
+                "Kaikki mittauspisteet",
                 "Päivä (1d)",
                 "Viikko (1vk)",
                 "Kuukausi (1kk)",
             ],
-            index=1 if timeframe_sel == "Viimeiset 24 tuntia" else 0,
+            index=0,
             key="equity_interval_select",
         )
     with c_metric:
