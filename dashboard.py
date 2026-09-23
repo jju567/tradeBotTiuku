@@ -814,7 +814,6 @@ with st.sidebar:
         portfolio_options,
         index=0,
         key="selected_portfolio",
-        on_change=st.rerun,  # Force full rerun so fragment re-executes with the new portfolio
         help="Valitse tarkasteltava paperisalkku 10 rinnakkaisen walk-forward-testisalkun joukosta.",
     )
     if selected_portfolio in portfolio_meta_map:
@@ -2098,39 +2097,44 @@ def render_dashboard_views(active_menu: str):
 
 # ----------------------------------------------------------------------
 # STATIC FRAGMENT WRAPPERS (Module-level for zero dimming / gray-out)
+# selected_portfolio is passed as a parameter so that when the user switches
+# portfolios in the sidebar, the argument value changes and Streamlit is
+# forced to re-execute the fragment body (fragments only re-run on argument
+# change, timer tick, or internal widget interaction).
 # ----------------------------------------------------------------------
 @st.fragment(run_every=10)
-def _fragment_view_10(active_menu: str):
+def _fragment_view_10(active_menu: str, selected_portfolio: str):
     render_dashboard_views(active_menu)
 
 @st.fragment(run_every=30)
-def _fragment_view_30(active_menu: str):
+def _fragment_view_30(active_menu: str, selected_portfolio: str):
     render_dashboard_views(active_menu)
 
 @st.fragment(run_every=60)
-def _fragment_view_60(active_menu: str):
+def _fragment_view_60(active_menu: str, selected_portfolio: str):
     render_dashboard_views(active_menu)
 
 @st.fragment(run_every=300)
-def _fragment_view_300(active_menu: str):
+def _fragment_view_300(active_menu: str, selected_portfolio: str):
     render_dashboard_views(active_menu)
 
 @st.fragment
-def _fragment_view_manual(active_menu: str):
+def _fragment_view_manual(active_menu: str, selected_portfolio: str):
     render_dashboard_views(active_menu)
 
 
 # Execute fragment renderer
+_active_portfolio = st.session_state.get("selected_portfolio", "P1_Base")
 if auto_refresh:
     interval_val = int(refresh_interval) if refresh_interval else 30
     if interval_val <= 10:
-        _fragment_view_10(menu)
+        _fragment_view_10(menu, _active_portfolio)
     elif interval_val <= 30:
-        _fragment_view_30(menu)
+        _fragment_view_30(menu, _active_portfolio)
     elif interval_val <= 60:
-        _fragment_view_60(menu)
+        _fragment_view_60(menu, _active_portfolio)
     else:
-        _fragment_view_300(menu)
+        _fragment_view_300(menu, _active_portfolio)
 else:
-    _fragment_view_manual(menu)
+    _fragment_view_manual(menu, _active_portfolio)
 
