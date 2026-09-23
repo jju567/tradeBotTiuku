@@ -196,28 +196,46 @@ python -m screener.main_controller --run-once
 python -m screener.main_controller --mass-scan
 ```
 
-### 6. 🚀 Live Forward-Testing Daemon (`main_controller.py`)
-Juuritason päädaemon reaaliaikaiseen paperisalkun hallintaan ja Profile B -mikroyhtiöseulontaan:
-- **Paperisalkun hallinta & automaattinen FX-valuuttamuunnos (Multi-Currency)**: 10,000 € käteissaldo (`data/paper_account.json`), aktiiviset positiot (`data/open_positions.csv`) ja kauppahistoria (`data/trade_history.csv`). Sisältää täyden EUR/SEK/USD-valuuttakurssimuunnoksen: ruotsalaiset (`.ST`) ja yhdysvaltalaiset osakkeet arvotetaan ja ostetaan paikallisessa valuutassa, ja käteisvarojen veloitus ja myyntituotot tilitetään reaaliaikaisilla valuuttakursseilla suoraan salkun perusvaluuttaan (EUR) estäen saldon vääristymisen.
-- **Vaihe 1: Tri-Layer Fundamental Exit**:
-  - *Taso 1: Katastrofisuoja (-50 %)*: Välitön myynti puolittumisesta.
-  - *Taso 2: LLM News Radar*: Skannaa reaaliaikaiset tiedotteet/uutiset (`Ticker.news`) ja suorittaa hätämyynnin punaisista lipuista (diluutio, saneeraus).
-  - *Taso 3: Kvartaalikohtaiset fundamentit*: Myynti, jos liikevaihto laskee YoY tai kassa < 12 kk negatiivisella OCF:llä.
-- **Vaihe 2: Markkinaskannaus (Profile B Only)**:
-  - Skannaa puhtaan mikroyhtiöuniversumin (`data/clean_microcap_universe.csv`, 106 kpl).
-  - **Data Freshness Guard**: Tarkistaa automaattisesti tilinpäätöksen iän (enintään 120 päivää); hylkää vanhentunutta dataa käyttävät ehdokkaat ennen pääoman allokointia.
-  - Positiokoko: Enintään 10 % salkusta, tiukasti rajattu 10 % 20 päivän keskimääräiseen päivävaihtoon (20d ADV).
-  - Vähentää automaattisesti 0.50 % kulusuojan/slippagen toimeksiannoista.
+### 6. 🚀 Multi-Portfolio Live Walk-Forward Testing Engine (`main_controller.py`)
+Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forward -testaukseen ja tilastojen keräämiseen:
+- **Konfigurointi YAML-tiedostolla (`portfolios_config.yaml`)**:
+  - Määrittelee 10 toisistaan erotettua salkkua, joilla jokaisella on 10,000 € virtuaalipääoma ja omat riskiparametrit:
+    1. `P1_Base`: Profile B, dead money 180d, min ADV 50k, 10 slottia (1,000 €/osto), alueet FI/SE/US.
+    2. `P2_Fast_Cycle`: Profile B, lyhyt dead money 90d (nopea pääoman kierrätys).
+    3. `P3_Diamond_Hands`: Profile B, pitkä dead money 365d (kestää väliaikaiset pohjamudat).
+    4. `P4_Institutional`: Profile B, korkea likviditeettivaatimus (min ADV 250,000 €).
+    5. `P5_Nordic_Only`: Profile B, sijoittaa ainoastaan Pohjoismaihin (FI, SE).
+    6. `P6_US_Only`: Profile B, sijoittaa ainoastaan Yhdysvaltoihin (US).
+    7. `P7_Deep_Value_Extreme`: Profile B, lisäsuodatin `price_to_cash < 0.5` (markkina-arvo alle puolet nettokassasta).
+    8. `P8_Quality_Growth`: Profile A, sijoittaa kasvu- ja kannattavuussignaaleihin (kasvu > 20 %, kate > 40 %).
+    9. `P9_High_Conviction`: Profile B, vain 5 slottia (2,000 €/osto) suurella vakaumuksella.
+    10. `P10_Micro_Sniper`: Profile B, 20 pientä slottia (500 €/osto, min ADV 150k).
+- **Yhteinen Markkinadatan Nouto (Single-Pass Market Engine)**:
+  - Hakee reaaliaikaiset kurssit, 20d ADV:t, uutiset ja deterministiset fundamentit **tiukasti vain kerran syklissä** (säästää API-kutsuja ja estää yfinance-bannit).
+- **Itsenäinen Tilanhallinta (`data/portfolios/`)**:
+  - Jokainen salkku ylläpitää omaa tilaansa: `portfolio_<id>_state.json` (käteinen, aloitussaldo, valuutta, avoimet positiot).
+  - Kauppahistoria kirjataan erilliseen lokiin: `portfolio_<id>_history.csv`.
+  - Tuottokehityksen aikasarja tallennetaan tiedostoon: `portfolio_<id>_history.json`.
+- **Sähköposti-integraatio (`email_notifier.py`)**:
+  - Kevyt SMTP-hälytin (`.env`-tunnukset: `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ALERT_EMAIL`).
+  - Lähettää välittömät ilmoitukset BUY, SELL ja WARN -tapahtumista salkkutunnisteella varustettuna (esim. `TRADE BOT [P5_Nordic_Only]: BUY EXEL.HE`).
+  - Vikaturvallinen (fail-safe): jos SMTP-yhteys epäonnistuu, moottori jatkaa toimintaansa keskeytyksettä.
+- **Streamlit-Käyttöliittymä**:
+  - Sivupalkin valikosta valittavissa mikä tahansa 10 rinnakkaissalkusta.
+  - Avaa ja visualisoi reaaliaikaiset avoimet positiot, KPI-arvot, tuottokäyrän ja toteutuneet kaupat valitulle salkulle reaaliaikaisine FX-muunnoksineen.
 
 ```bash
-# Aja päivittäinen tarkistussykli kerran:
+# Aja yksi walk-forward-sykli kaikille 10 salkulle:
 python main_controller.py --run-once
+
+# Aja vain tietty salkku (esim. P5_Nordic_Only):
+python main_controller.py --run-once --portfolio P5_Nordic_Only
 
 # Käynnistä jatkuva silmukka (oletus 24h välein):
 python main_controller.py --loop --interval-hours 24
 
-# Nollaa paperisalkku aloitustilaan ($10,000):
-python main_controller.py --reset-paper
+# Nollaa kaikki 10 salkkua aloitustilaan (10,000 €):
+python main_controller.py --reset-portfolios
 
 # Single-Stock Time Machine: Testaa Layer 2 -uutistutka historiallisilla tiedotteilla:
 python single_stock_news_backtest.py --ticker SEZI.ST --buy-date 2026-02-16

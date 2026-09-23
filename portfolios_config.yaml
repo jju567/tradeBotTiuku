@@ -1,0 +1,81 @@
+portfolios:
+  P1_Base:
+    strategy: "Profile B"
+    dead_money_days: 180
+    min_adv: 50000
+    slots: 10
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]
+
+  P2_Fast_Cycle:
+    strategy: "Profile B"
+    dead_money_days: 90
+    min_adv: 50000
+    slots: 10
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]
+
+  P3_Diamond_Hands:
+    strategy: "Profile B"
+    dead_money_days: 365
+    min_adv: 50000
+    slots: 10
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]
+
+  P4_Institutional:
+    strategy: "Profile B"
+    dead_money_days: 180
+    min_adv: 250000
+    slots: 10
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]
+
+  P5_Nordic_Only:
+    strategy: "Profile B"
+    dead_money_days: 180
+    min_adv: 50000
+    slots: 10
+    start_cash: 10000
+    regions: ["FI", "SE"]
+
+  P6_US_Only:
+    strategy: "Profile B"
+    dead_money_days: 180
+    min_adv: 50000
+    slots: 10
+    start_cash: 10000
+    regions: ["US"]
+
+  P7_Deep_Value_Extreme:
+    strategy: "Profile B"
+    dead_money_days: 180
+    min_adv: 50000
+    slots: 10
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]
+    extra_filter: "price_to_cash < 0.5"
+
+  P8_Quality_Growth:
+    strategy: "Profile A"
+    dead_money_days: 180
+    min_adv: 50000
+    slots: 10
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]
+
+  P9_High_Conviction:
+    strategy: "Profile B"
+    dead_money_days: 180
+    min_adv: 50000
+    slots: 5
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]
+
+  P10_Micro_Sniper:
+    strategy: "Profile B"
+    dead_money_days: 180
+    min_adv: 150000
+    slots: 20
+    start_cash: 10000
+    regions: ["FI", "SE", "US"]

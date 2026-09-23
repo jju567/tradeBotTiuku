@@ -16,6 +16,7 @@ import logging
 import zoneinfo
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
@@ -37,6 +38,8 @@ TRADE_HISTORY_CSV = DATA_DIR / "trade_history.csv"
 BATCH_STATUS_JSON = DATA_DIR / "batch_status.json"
 PAPER_ACCOUNT_JSON = DATA_DIR / "paper_account.json"
 PORTFOLIO_HISTORY_JSON = DATA_DIR / "portfolio_history.json"
+PORTFOLIOS_DIR = DATA_DIR / "portfolios"
+PORTFOLIOS_CONFIG_YAML = BASE_DIR / "portfolios_config.yaml"
 
 # Page Configuration
 st.set_page_config(
@@ -277,6 +280,7 @@ def record_portfolio_snapshot(
     stock_value: float,
     starting_balance: float = 10_000.0,
     history_file: Path = PORTFOLIO_HISTORY_JSON,
+    has_positions: Optional[bool] = None,
 ) -> None:
     """Records a new equity snapshot if sufficient time or value delta has occurred."""
     # Sanity filter: Ignore zero/anomalously low readings (e.g. temporary API fetch failure dropping stock value to 0)
@@ -286,12 +290,17 @@ def record_portfolio_snapshot(
 
     # Check if open positions exist: if positions exist, stock value cannot be 0.0 or flat 10,000 reset
     try:
-        if OPEN_POSITIONS_CSV.exists() and OPEN_POSITIONS_CSV.stat().st_size > 0:
-            df_check = pd.read_csv(OPEN_POSITIONS_CSV)
-            if not df_check.empty and len(df_check) > 0:
-                if stock_value <= 0.0 or (abs(total_equity - starting_balance) < 0.01 and stock_value < 100.0):
-                    # Reject corrupt zero-stock snapshot when positions are actually active
-                    return
+        check_pos = has_positions
+        if check_pos is None:
+            if OPEN_POSITIONS_CSV.exists() and OPEN_POSITIONS_CSV.stat().st_size > 0:
+                df_check = pd.read_csv(OPEN_POSITIONS_CSV)
+                check_pos = not df_check.empty and len(df_check) > 0
+            else:
+                check_pos = False
+        if check_pos:
+            if stock_value <= 0.0 or (abs(total_equity - starting_balance) < 0.01 and stock_value < 100.0):
+                # Reject corrupt zero-stock snapshot when positions are actually active
+                return
     except Exception:
         pass
 
@@ -771,6 +780,56 @@ with st.sidebar:
 
     st.divider()
 
+    # ------------------------------------------------------------------
+    # MULTI-PORTFOLIO SELECTOR
+    # ------------------------------------------------------------------
+    portfolio_options = [
+        "P1_Base",
+        "P2_Fast_Cycle",
+        "P3_Diamond_Hands",
+        "P4_Institutional",
+        "P5_Nordic_Only",
+        "P6_US_Only",
+        "P7_Deep_Value_Extreme",
+        "P8_Quality_Growth",
+        "P9_High_Conviction",
+        "P10_Micro_Sniper",
+    ]
+    portfolio_meta_map = {}
+    if PORTFOLIOS_CONFIG_YAML.exists():
+        try:
+            import yaml
+            with open(PORTFOLIOS_CONFIG_YAML, "r", encoding="utf-8") as yf:
+                ydata = yaml.safe_load(yf) or {}
+                loaded_ports = ydata.get("portfolios", {})
+                if loaded_ports:
+                    portfolio_options = list(loaded_ports.keys())
+                    portfolio_meta_map = loaded_ports
+        except Exception as e:
+            logger.debug(f"Failed to load {PORTFOLIOS_CONFIG_YAML}: {e}")
+
+    st.subheader("📂 Paper-salkku")
+    selected_portfolio = st.selectbox(
+        "Valitse seurattava salkku:",
+        portfolio_options,
+        index=0,
+        key="selected_portfolio",
+        help="Valitse tarkasteltava paperisalkku 10 rinnakkaisen walk-forward-testisalkun joukosta.",
+    )
+    if selected_portfolio in portfolio_meta_map:
+        p_meta = portfolio_meta_map[selected_portfolio]
+        alloc_eur = p_meta.get("start_cash", 10000) / max(p_meta.get("slots", 10), 1)
+        st.caption(
+            f"🎯 **{p_meta.get('strategy', 'Profile B')}** &bull; Slots: {p_meta.get('slots', 10)} ({alloc_eur:,.0f} €/kpl)\n"
+            f"- Dead Money: `{p_meta.get('dead_money_days', 180)}d`\n"
+            f"- Min ADV: `{p_meta.get('min_adv', 50000):,.0f} €`\n"
+            f"- Alueet: `{', '.join(p_meta.get('regions', ['FI', 'SE', 'US']))}`"
+        )
+        if p_meta.get("extra_filter"):
+            st.caption(f"- Suodatin: `{p_meta.get('extra_filter')}`")
+
+    st.divider()
+
     # Token Usage & Cost Counter (Always accessible directly under navigation)
     try:
         from core.token_tracker import get_token_stats, tracker
@@ -1190,7 +1249,36 @@ def render_dashboard_views(active_menu: str):
     # ------------------------------------------------------------------
     elif active_menu == "💰 Paper Trading Portfolio":
         st.markdown('<div class="main-header">💰 Virtual Paper Trading Portfolio & Risk Controls</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub-header">Live virtual portfolio tracking, 5% position sizing, and strict -20% Trailing Stop-Loss enforcement.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">Multi-Portfolio Walk-Forward Live Testing, parameterized position sizing, and Tri-Layer Exit enforcement.</div>', unsafe_allow_html=True)
+
+        selected_portfolio = st.session_state.get("selected_portfolio", "P1_Base")
+        port_state_file = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_state.json"
+        port_history_csv = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.csv"
+        port_equity_json = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.json"
+        active_equity_file = port_equity_json if port_equity_json.exists() else PORTFOLIO_HISTORY_JSON
+
+        # Display portfolio metadata card
+        portfolio_meta = {}
+        if PORTFOLIOS_CONFIG_YAML.exists():
+            try:
+                import yaml
+                with open(PORTFOLIOS_CONFIG_YAML, "r", encoding="utf-8") as yf:
+                    ydata = yaml.safe_load(yf) or {}
+                    portfolio_meta = ydata.get("portfolios", {}).get(selected_portfolio, {})
+            except Exception:
+                pass
+
+        if portfolio_meta:
+            alloc_eur = portfolio_meta.get("start_cash", 10000) / max(portfolio_meta.get("slots", 10), 1)
+            filter_note = f" &bull; Extra: `{portfolio_meta['extra_filter']}`" if portfolio_meta.get("extra_filter") else ""
+            st.info(
+                f"💼 **Aktiivinen salkku: `{selected_portfolio}`** | "
+                f"Strategia: **{portfolio_meta.get('strategy', 'Profile B')}** | "
+                f"Slots: **{portfolio_meta.get('slots', 10)}** ({alloc_eur:,.0f} €/osto) | "
+                f"Dead Money: **{portfolio_meta.get('dead_money_days', 180)}d** | "
+                f"Min ADV: **{portfolio_meta.get('min_adv', 50000):,.0f} €** | "
+                f"Alueet: **{', '.join(portfolio_meta.get('regions', ['FI', 'SE', 'US']))}**{filter_note}"
+            )
 
         tab1, tab2, tab3, tab4 = st.tabs([
             "📌 Avoimet Positiot & Trailing Stopit",
@@ -1200,19 +1288,25 @@ def render_dashboard_views(active_menu: str):
         ])
 
         with tab1:
-            df_pos = load_csv_safely(OPEN_POSITIONS_CSV)
-            if df_pos.empty:
-                st.info("Ei avoimia paperipositioita tiedostossa `data/open_positions.csv`. Voit avata uuden position '⚡ Riskinhallinta & Testiosto' -välilehdeltä tai ajaa seulonnan.")
-                render_portfolio_equity_chart(
-                    df_pos=df_pos,
-                    free_cash=0.0,
-                    starting_capital=10_000.0,
-                    history_file=PORTFOLIO_HISTORY_JSON,
-                )
+            starting_capital = 10_000.0
+            free_cash = 10_000.0
+            raw_positions = []
+
+            if port_state_file.exists():
+                try:
+                    with open(port_state_file, "r", encoding="utf-8") as f_acc:
+                        acc_data = json.load(f_acc)
+                        starting_capital = float(acc_data.get("starting_balance", 10_000.0))
+                        free_cash = float(acc_data.get("cash_balance", 10_000.0))
+                        raw_positions = acc_data.get("positions", [])
+                except Exception:
+                    pass
+                if raw_positions:
+                    df_pos = pd.DataFrame(raw_positions)
+                    df_pos.columns = [str(c).strip().lower() for c in df_pos.columns]
+                else:
+                    df_pos = pd.DataFrame()
             else:
-                # Load paper account balance
-                starting_capital = 10_000.0
-                free_cash = 0.72
                 if PAPER_ACCOUNT_JSON.exists():
                     try:
                         with open(PAPER_ACCOUNT_JSON, "r", encoding="utf-8") as f_acc:
@@ -1221,6 +1315,17 @@ def render_dashboard_views(active_menu: str):
                             free_cash = float(acc_data.get("cash_balance", 0.72))
                     except Exception:
                         pass
+                df_pos = load_csv_safely(OPEN_POSITIONS_CSV)
+
+            if df_pos.empty:
+                st.info(f"Ei avoimia paperipositioita salkussa `{selected_portfolio}`.")
+                render_portfolio_equity_chart(
+                    df_pos=df_pos,
+                    free_cash=free_cash,
+                    starting_capital=starting_capital,
+                    history_file=active_equity_file,
+                )
+            else:
 
                 # Extract tickers and fetch live market quotes
                 tickers_list = []
@@ -1368,6 +1473,15 @@ def render_dashboard_views(active_menu: str):
 
                 # Persist healed positions to disk if repairs were made
                 if needs_healing and healed_rows_to_save:
+                    if port_state_file.exists():
+                        try:
+                            with open(port_state_file, "r", encoding="utf-8") as f_acc:
+                                acc_save = json.load(f_acc)
+                            acc_save["positions"] = healed_rows_to_save
+                            with open(port_state_file, "w", encoding="utf-8") as f_acc:
+                                json.dump(acc_save, f_acc, indent=2, ensure_ascii=False)
+                        except Exception:
+                            pass
                     try:
                         pd.DataFrame(healed_rows_to_save).to_csv(OPEN_POSITIONS_CSV, index=False)
                     except Exception:
@@ -1386,6 +1500,8 @@ def render_dashboard_views(active_menu: str):
                     cash_balance=free_cash,
                     stock_value=total_market_val,
                     starting_balance=starting_capital,
+                    history_file=active_equity_file,
+                    has_positions=True,
                 )
 
                 win_count = sum(1 for row in enriched_rows if row["pnl_pct"] > 0)
@@ -1451,7 +1567,7 @@ def render_dashboard_views(active_menu: str):
                     df_pos=df_pos,
                     free_cash=free_cash,
                     starting_capital=starting_capital,
-                    history_file=PORTFOLIO_HISTORY_JSON,
+                    history_file=active_equity_file,
                 )
 
                 st.divider()
@@ -1724,10 +1840,12 @@ def render_dashboard_views(active_menu: str):
                 "Net Return", "Net PnL", "Exit Reason"
             ]
 
-            # Auto-repair mismatched header in trade_history.csv (e.g. 9 headers vs 12 data columns)
-            if TRADE_HISTORY_CSV.exists():
+            active_trade_history_file = port_history_csv if port_history_csv.exists() else TRADE_HISTORY_CSV
+
+            # Auto-repair mismatched header in trade history (e.g. 9 headers vs 12 data columns)
+            if active_trade_history_file.exists():
                 try:
-                    with open(TRADE_HISTORY_CSV, "r", encoding="utf-8") as f_th:
+                    with open(active_trade_history_file, "r", encoding="utf-8") as f_th:
                         th_lines = f_th.readlines()
                     if th_lines:
                         h_parts = [p.strip() for p in th_lines[0].strip().split(",")]
@@ -1735,14 +1853,14 @@ def render_dashboard_views(active_menu: str):
                             d_parts = [p.strip() for p in th_lines[1].strip().split(",")]
                             if len(d_parts) == len(trade_cols):
                                 th_lines[0] = ",".join(trade_cols) + "\n"
-                                with open(TRADE_HISTORY_CSV, "w", encoding="utf-8") as f_out:
+                                with open(active_trade_history_file, "w", encoding="utf-8") as f_out:
                                     f_out.writelines(th_lines)
                 except Exception:
                     pass
 
-            df_trades = load_csv_safely(TRADE_HISTORY_CSV)
+            df_trades = load_csv_safely(active_trade_history_file)
             if df_trades.empty:
-                st.info("Ei toteutuneita kauppoja tiedostossa `data/trade_history.csv`.")
+                st.info(f"Ei toteutuneita kauppoja salkussa `{selected_portfolio}`.")
             else:
                 for col in ["timestamp", "entrydate", "exitdate", "date", "buy date", "sell date"]:
                     if col in df_trades.columns:

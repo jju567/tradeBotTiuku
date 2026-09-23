@@ -68,6 +68,7 @@ def evaluate_position(
     latest_news_judgment: Optional[str] = None,
     latest_financials: Optional[Dict[str, Any]] = None,
     current_date: Optional[Union[datetime, date, str]] = None,
+    dead_money_days: int = 180,
 ) -> Tuple[str, str]:
     """
     Evaluates an open position using the Tri-Layer Fundamental Exit Strategy + Dead Money Timer.
@@ -81,6 +82,7 @@ def evaluate_position(
             - 'cash_runway_months': float (estimated runway in months)
             - 'operating_cash_flow': float (TTM or quarterly OCF)
         current_date: Optional date/datetime/string for evaluation time (defaults to current UTC date).
+        dead_money_days: Opportunity cost timer threshold in days (e.g. 90, 180, 365).
 
     Returns:
         (action, reason):
@@ -89,7 +91,7 @@ def evaluate_position(
                 - 'CATASTROPHIC_STOP': Daily drop >= 50% from buy price
                 - 'LLM_NEWS_REJECT': Fatal news detected (e.g. kontrollbalansräkning, toxic dilution)
                 - 'LLM_NEWS_WARN_CONFIRMED': Warning news confirmed by price breakdown
-                - 'TIME_STOP_DEAD_MONEY': Position held > 180 days with <= +5% gain (opportunity cost release)
+                - 'TIME_STOP_DEAD_MONEY': Position held > dead_money_days with <= +5% gain (opportunity cost release)
                 - 'FUNDAMENTAL_DETERIORATION': Revenue contraction or imminent cash crisis
                 - 'HOLD': No exit condition met
     """
@@ -125,7 +127,7 @@ def evaluate_position(
                 )
                 return "SELL", "LLM_NEWS_WARN_CONFIRMED"
 
-    # Time-Based Exit: Dead Money Timer (Held > 180 days and gain <= +5%)
+    # Time-Based Exit: Dead Money Timer (Held > dead_money_days and gain <= +5%)
     raw_buy_date = position.get("buy_date") or position.get("entry_date") or position.get("entrydate")
     if raw_buy_date:
         try:
@@ -154,9 +156,9 @@ def evaluate_position(
             if buy_dt and curr_dt:
                 holding_days = (curr_dt - buy_dt).days
                 dead_money_threshold = buy_price * 1.05
-                if holding_days > 180 and current_price <= dead_money_threshold:
+                if holding_days > dead_money_days and current_price <= dead_money_threshold:
                     logger.warning(
-                        f"⏰ [TIME STOP - DEAD MONEY] {position.get('ticker')}: Held {holding_days} days (>180) "
+                        f"⏰ [TIME STOP - DEAD MONEY] {position.get('ticker')}: Held {holding_days} days (>{dead_money_days}) "
                         f"with current price {current_price:.4f} <= threshold {dead_money_threshold:.4f} "
                         f"(<= +5% gain). Releasing capital for new opportunities."
                     )
