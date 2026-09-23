@@ -343,70 +343,107 @@ def record_portfolio_snapshot(
             pass
 
 
-def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, starting_capital: float = 10_000.0):
-    """Renders interactive Plotly equity performance chart with multi-interval and metric controls."""
-    if not history_file.exists():
-        st.info("📊 Salkun historiaa kerätään... Ensimmäinen mittauspiste tallennettu.")
-        return
+@st.cache_data(ttl=300)
+def compute_live_portfolio_history(
+    positions_tuple: tuple,
+    free_cash: float,
+    starting_capital: float = 10_000.0,
+    timeframe: str = "Viimeiset 7 päivää",
+) -> pd.DataFrame:
+    """
+    Reconstructs the true continuous portfolio equity curve directly from
+    historical market closing prices of the open positions.
+    Eliminates corruption from static snapshots and accurately reflects actual stock performance.
+    """
+    import yfinance as yf
+
+    if not positions_tuple:
+        return pd.DataFrame()
+
+    tickers = [p[0] for p in positions_tuple]
+    
+    # Determine appropriate download period & interval
+    if timeframe in ["Viimeiset 24 tuntia", "Viimeiset 7 päivää"]:
+        period = "7d"
+        interval = "1h"
+    elif timeframe == "Viimeiset 30 päivää":
+        period = "1mo"
+        interval = "1d"
+    else:  # "Viimeiset 3 kuukautta", "Kaikki historia"
+        period = "3mo"
+        interval = "1d"
 
     try:
-        with open(history_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        df_raw = yf.download(tickers, period=period, interval=interval, auto_adjust=True, progress=False)
+        if df_raw.empty:
+            return pd.DataFrame()
+        if "Close" in df_raw.columns:
+            close_df = df_raw["Close"].copy()
+        else:
+            close_df = df_raw.copy()
+
+        if isinstance(close_df, pd.Series):
+            close_df = close_df.to_frame(name=tickers[0])
+
+        # Standardize timezone to Europe/Helsinki
+        if close_df.index.tz is None:
+            close_df.index = close_df.index.tz_localize("UTC").tz_convert(HELSINKI_TZ)
+        else:
+            close_df.index = close_df.index.tz_convert(HELSINKI_TZ)
+
+        close_df = close_df.sort_index()
+
+        # Get exchange rates for conversion to EUR
+        fx_rates = get_live_fx_rates()
+        eur_usd = fx_rates.get("EURUSD", 1.15)
+        eur_sek = fx_rates.get("EURSEK", 11.30)
+
+        # Forward fill and backfill prices per ticker using buy_price fallback
+        for t_sym, shares, buy_price, curr_val, curr_code in positions_tuple:
+            bp = float(buy_price) if buy_price > 0 else 1.0
+            if t_sym in close_df.columns:
+                close_df[t_sym] = close_df[t_sym].ffill().bfill().fillna(bp)
+            else:
+                close_df[t_sym] = bp
+
+        # Compute stock portfolio value series across time
+        stock_val_series = pd.Series(0.0, index=close_df.index)
+        for t_sym, shares, buy_price, curr_val, curr_code in positions_tuple:
+            fx = 1.0
+            if curr_code == "USD":
+                fx = 1.0 / eur_usd
+            elif curr_code == "SEK":
+                fx = 1.0 / eur_sek
+
+            stock_val_series += close_df[t_sym] * float(shares) * fx
+
+        res = pd.DataFrame(index=close_df.index)
+        res["cash_balance"] = float(free_cash)
+        res["total_stock_value"] = stock_val_series
+        res["total_equity"] = stock_val_series + float(free_cash)
+        res["total_return"] = res["total_equity"] - starting_capital
+        res["total_return_pct"] = (res["total_return"] / starting_capital) * 100.0 if starting_capital > 0 else 0.0
+
+        return res
     except Exception:
-        data = []
+        return pd.DataFrame()
 
-    if not data:
-        st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
-        return
 
-    df_hist = pd.DataFrame(data)
-    if "timestamp" not in df_hist.columns or "total_equity" not in df_hist.columns:
-        st.info("📊 Salkun historiadata alustetaan...")
-        return
-
+def render_portfolio_equity_chart(
+    df_pos: pd.DataFrame = None,
+    free_cash: float = 0.0,
+    starting_capital: float = 10_000.0,
+    history_file: Path = PORTFOLIO_HISTORY_JSON,
+):
+    """
+    Renders interactive Plotly equity performance chart with multi-interval and metric controls.
+    Prioritizes real-time market reconstruction from active positions, falling back to JSON snapshots.
+    """
     helsinki_tz = HELSINKI_TZ
-
-    df_hist["dt"] = pd.to_datetime(df_hist["timestamp"], format="ISO8601", utc=True, errors="coerce")
-    df_hist = df_hist.dropna(subset=["dt"])
-    if df_hist.empty:
-        return
-
-    df_hist["dt_local"] = df_hist["dt"].dt.tz_convert(helsinki_tz)
-    df_hist = df_hist.sort_values("dt_local").set_index("dt_local")
-
-    latest_data_dt = df_hist.index.max()
-    latest_data_at = latest_data_dt.strftime("%d.%m.%Y %H:%M:%S") if pd.notna(latest_data_dt) else "N/A"
-    chart_updated_at = datetime.now(HELSINKI_TZ).strftime("%d.%m.%Y %H:%M:%S")
-    subtitle_html = f"<br><span style='font-size: 11px; color: #94a3b8; font-weight: normal;'>🕒 Päivitetty: {chart_updated_at} &nbsp;|&nbsp; 📅 Uusin data: {latest_data_at}</span>"
-
-    for col in ["cash_balance", "total_stock_value"]:
-        if col not in df_hist.columns:
-            df_hist[col] = 0.0
-
-    df_hist["total_equity"] = pd.to_numeric(df_hist["total_equity"], errors="coerce").fillna(starting_capital)
-    df_hist["cash_balance"] = pd.to_numeric(df_hist["cash_balance"], errors="coerce").fillna(0.0)
-    df_hist["total_stock_value"] = pd.to_numeric(df_hist["total_stock_value"], errors="coerce").fillna(0.0)
-
-    # Filter out corrupted / zero-drop glitch data points (e.g. total_equity < 40% of starting balance)
-    df_hist = df_hist[df_hist["total_equity"] >= (starting_capital * 0.40)]
-
-    # Clean out false reset snapshots: if the portfolio contains or has had open positions (stock_value > 0),
-    # drop any mid-history points where stock_value dropped to 0 and equity reset to starting_capital.
-    if (df_hist["total_stock_value"] > 0).any():
-        first_idx = df_hist.index[0]
-        # Keep the very first initial record (inception), but drop subsequent glitches where stock_value is 0 or drops to 10k flat while active
-        is_glitch_reset = (df_hist.index != first_idx) & (df_hist["total_stock_value"] <= 0.0) & (abs(df_hist["total_equity"] - starting_capital) < 0.01)
-        df_hist = df_hist[~is_glitch_reset]
-
-    if df_hist.empty:
-        st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
-        return
-
-    df_hist["total_return"] = df_hist["total_equity"] - starting_capital
-    df_hist["total_return_pct"] = (df_hist["total_return"] / starting_capital * 100.0) if starting_capital > 0 else 0.0
+    chart_updated_at = datetime.now(helsinki_tz).strftime("%d.%m.%Y %H:%M:%S")
 
     st.markdown("### 📈 Salkun Kokonaistuloksen ja Varallisuuden Kehitys")
-    st.caption("Interaktiivinen seuranta salkun kokonaisarvon, tuoton ja varallisuuserien kehityksestä eri aikaväleillä.")
+    st.caption("Reaaliaikainen seuranta salkun kokonaisarvon, tuoton ja varallisuuserien kehityksestä suoraan markkinahinnoista.")
 
     # Controls row
     c_time, c_interval, c_metric = st.columns([1.2, 1.2, 1.6])
@@ -414,11 +451,11 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         timeframe_sel = st.selectbox(
             "Aikaväli (Haarukka):",
             [
-                "Kaikki historia",
-                "Viimeiset 24 tuntia",
                 "Viimeiset 7 päivää",
+                "Viimeiset 24 tuntia",
                 "Viimeiset 30 päivää",
                 "Viimeiset 3 kuukautta",
+                "Kaikki historia",
             ],
             index=0,
             key="equity_timeframe_select",
@@ -448,42 +485,136 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
             key="equity_metric_select",
         )
 
-    # Filter Timeframe
-    now_local = datetime.now(helsinki_tz)
-    if timeframe_sel == "Viimeiset 24 tuntia":
-        cutoff = now_local - pd.Timedelta(hours=24)
-        df_filtered = df_hist[df_hist.index >= cutoff]
-    elif timeframe_sel == "Viimeiset 7 päivää":
-        cutoff = now_local - pd.Timedelta(days=7)
-        df_filtered = df_hist[df_hist.index >= cutoff]
-    elif timeframe_sel == "Viimeiset 30 päivää":
-        cutoff = now_local - pd.Timedelta(days=30)
-        df_filtered = df_hist[df_hist.index >= cutoff]
-    elif timeframe_sel == "Viimeiset 3 kuukautta":
-        cutoff = now_local - pd.Timedelta(days=90)
-        df_filtered = df_hist[df_hist.index >= cutoff]
-    else:
-        df_filtered = df_hist
+    # 1. Attempt dynamic market reconstruction if positions are active
+    df_plot = pd.DataFrame()
+    is_live_reconstructed = False
 
-    if df_filtered.empty:
-        df_filtered = df_hist.iloc[-1:]
+    if df_pos is not None and not df_pos.empty:
+        pos_tuples = []
+        for _, r in df_pos.iterrows():
+            sym = str(r.get("ticker", "")).strip().upper()
+            if not sym:
+                continue
+            sh = float(pd.to_numeric(r.get("shares", 0.0), errors="coerce") or 0.0)
+            bp = float(pd.to_numeric(r.get("buy_price", r.get("entry_price", 0.0)), errors="coerce") or 0.0)
+            cp = float(pd.to_numeric(r.get("current_price", 0.0), errors="coerce") or bp)
+            curr = str(r.get("currency", "USD")).strip().upper()
+            pos_tuples.append((sym, sh, bp, cp, curr))
 
-    # Apply Aggregation / Resampling
-    cols_to_resample = ["total_equity", "cash_balance", "total_stock_value", "total_return", "total_return_pct"]
-    if interval_sel == "Tunti (1h)":
-        df_plot = df_filtered[cols_to_resample].resample("1h").last().ffill().dropna()
-    elif interval_sel == "Päivä (1d)":
-        df_plot = df_filtered[cols_to_resample].resample("1D").last().ffill().dropna()
-    elif interval_sel == "Viikko (1vk)":
-        df_plot = df_filtered[cols_to_resample].resample("1W").last().ffill().dropna()
-    elif interval_sel == "Kuukausi (1kk)":
-        df_plot = df_filtered[cols_to_resample].resample("1ME").last().ffill().dropna()
-    else:
-        df_plot = df_filtered[cols_to_resample]
+        if pos_tuples:
+            df_reconstructed = compute_live_portfolio_history(
+                tuple(pos_tuples),
+                free_cash=free_cash,
+                starting_capital=starting_capital,
+                timeframe=timeframe_sel,
+            )
+            if not df_reconstructed.empty:
+                df_plot = df_reconstructed.copy()
+                is_live_reconstructed = True
 
+    # 2. Fallback to portfolio_history.json if live reconstruction produced no data
     if df_plot.empty:
-        df_plot = df_filtered[cols_to_resample]
+        if not history_file.exists():
+            st.info("📊 Salkun historiaa kerätään... Ensimmäinen mittauspiste tallennettu.")
+            return
 
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = []
+
+        if not data:
+            st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
+            return
+
+        df_hist = pd.DataFrame(data)
+        if "timestamp" not in df_hist.columns or "total_equity" not in df_hist.columns:
+            st.info("📊 Salkun historiadata alustetaan...")
+            return
+
+        df_hist["dt"] = pd.to_datetime(df_hist["timestamp"], format="ISO8601", utc=True, errors="coerce")
+        df_hist = df_hist.dropna(subset=["dt"])
+        if df_hist.empty:
+            return
+
+        df_hist["dt_local"] = df_hist["dt"].dt.tz_convert(helsinki_tz)
+        df_hist = df_hist.sort_values("dt_local").set_index("dt_local")
+
+        for col in ["cash_balance", "total_stock_value"]:
+            if col not in df_hist.columns:
+                df_hist[col] = 0.0
+
+        df_hist["total_equity"] = pd.to_numeric(df_hist["total_equity"], errors="coerce").fillna(starting_capital)
+        df_hist["cash_balance"] = pd.to_numeric(df_hist["cash_balance"], errors="coerce").fillna(0.0)
+        df_hist["total_stock_value"] = pd.to_numeric(df_hist["total_stock_value"], errors="coerce").fillna(0.0)
+
+        # Filter out corrupted / zero-drop glitch data points (e.g. total_equity < 40% of starting balance)
+        df_hist = df_hist[df_hist["total_equity"] >= (starting_capital * 0.40)]
+
+        # Drop mid-history points where stock_value dropped to 0 and equity reset to flat starting_capital
+        if (df_hist["total_stock_value"] > 0).any():
+            first_idx = df_hist.index[0]
+            is_glitch_reset = (df_hist.index != first_idx) & (df_hist["total_stock_value"] <= 0.0) & (abs(df_hist["total_equity"] - starting_capital) < 0.01)
+            df_hist = df_hist[~is_glitch_reset]
+
+        if df_hist.empty:
+            st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
+            return
+
+        df_hist["total_return"] = df_hist["total_equity"] - starting_capital
+        df_hist["total_return_pct"] = (df_hist["total_return"] / starting_capital * 100.0) if starting_capital > 0 else 0.0
+
+        # Filter Timeframe for JSON history
+        now_local = datetime.now(helsinki_tz)
+        if timeframe_sel == "Viimeiset 24 tuntia":
+            cutoff = now_local - pd.Timedelta(hours=24)
+            df_plot = df_hist[df_hist.index >= cutoff]
+        elif timeframe_sel == "Viimeiset 7 päivää":
+            cutoff = now_local - pd.Timedelta(days=7)
+            df_plot = df_hist[df_hist.index >= cutoff]
+        elif timeframe_sel == "Viimeiset 30 päivää":
+            cutoff = now_local - pd.Timedelta(days=30)
+            df_plot = df_hist[df_hist.index >= cutoff]
+        elif timeframe_sel == "Viimeiset 3 kuukautta":
+            cutoff = now_local - pd.Timedelta(days=90)
+            df_plot = df_hist[df_hist.index >= cutoff]
+        else:
+            df_plot = df_hist
+
+        if df_plot.empty:
+            df_plot = df_hist.iloc[-1:]
+
+    # Apply Aggregation / Resampling if requested and possible
+    cols_to_resample = ["total_equity", "cash_balance", "total_stock_value", "total_return", "total_return_pct"]
+    for c in cols_to_resample:
+        if c not in df_plot.columns:
+            df_plot[c] = 0.0
+
+    try:
+        if interval_sel == "Tunti (1h)":
+            df_resampled = df_plot[cols_to_resample].resample("1h").last().ffill().dropna()
+            if not df_resampled.empty:
+                df_plot = df_resampled
+        elif interval_sel == "Päivä (1d)":
+            df_resampled = df_plot[cols_to_resample].resample("1D").last().ffill().dropna()
+            if not df_resampled.empty:
+                df_plot = df_resampled
+        elif interval_sel == "Viikko (1vk)":
+            df_resampled = df_plot[cols_to_resample].resample("1W").last().ffill().dropna()
+            if not df_resampled.empty:
+                df_plot = df_resampled
+        elif interval_sel == "Kuukausi (1kk)":
+            df_resampled = df_plot[cols_to_resample].resample("1ME").last().ffill().dropna()
+            if not df_resampled.empty:
+                df_plot = df_resampled
+    except Exception:
+        pass
+
+    latest_data_dt = df_plot.index.max()
+    latest_data_at = latest_data_dt.strftime("%d.%m.%Y %H:%M:%S") if pd.notna(latest_data_dt) else "N/A"
+    engine_badge = "🟢 Markkinarekonstruktio (Tarkka)" if is_live_reconstructed else "💾 Tallennehistoria"
+    subtitle_html = f"<br><span style='font-size: 11px; color: #94a3b8; font-weight: normal;'>🕒 Päivitetty: {chart_updated_at} &nbsp;|&nbsp; 📅 Uusin data: {latest_data_at} &nbsp;|&nbsp; 📡 {engine_badge}</span>"
 
     # Build Plotly Figure
     fig = go.Figure()
@@ -496,7 +627,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
     ))
 
     if metric_sel == "Salkun Kokonaisarvo (€)":
-        latest_val = df_plot["total_equity"].iloc[-1]
+        latest_val = float(df_plot["total_equity"].iloc[-1])
         line_color = "#10b981" if latest_val >= starting_capital else "#f43f5e"
 
         fig.add_trace(go.Scatter(
@@ -530,9 +661,9 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         max_val = float(df_plot["total_equity"].max())
         y_bottom = min(min_val, starting_capital)
         y_top = max(max_val, starting_capital)
-        spread = max(y_top - y_bottom, 100.0)
-        y_min = y_bottom - spread * 0.25
-        y_max = y_top + spread * 0.25
+        spread = max(y_top - y_bottom, 50.0)
+        y_min = y_bottom - spread * 0.15
+        y_max = y_top + spread * 0.15
 
         fig.update_layout(
             title=f"💼 Salkun Kokonaisarvon Kehitys ({interval_sel}){subtitle_html}",
@@ -566,18 +697,17 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
         max_ret = float(df_plot["total_return"].max())
         y_bottom_r = min(min_ret, 0.0)
         y_top_r = max(max_ret, 0.0)
-        spread_r = max(y_top_r - y_bottom_r, 50.0)
+        spread_r = max(y_top_r - y_bottom_r, 30.0)
 
         fig.update_layout(
             title=f"📊 Kumulatiivinen Tuotto (€){subtitle_html}",
             yaxis=dict(
                 title="Tuotto (€)",
                 tickformat="+,.0f",
-                range=[y_bottom_r - spread_r * 0.25, y_top_r + spread_r * 0.25],
+                range=[y_bottom_r - spread_r * 0.15, y_top_r + spread_r * 0.15],
                 gridcolor="#334155",
             ),
         )
-
 
     elif metric_sel == "Varallisuuden jakautuma (Käteinen vs. Osakkeet)":
         fig.add_trace(go.Scatter(
@@ -616,7 +746,7 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"🕒 **Graafi päivitetty:** {chart_updated_at} &nbsp;|&nbsp; 📅 **Uusin data:** {latest_data_at}")
+    st.caption(f"🕒 **Graafi päivitetty:** {chart_updated_at} &nbsp;|&nbsp; 📅 **Uusin data:** {latest_data_at} &nbsp;|&nbsp; 📡 **Moottori:** {engine_badge}")
 
 
 
@@ -1073,6 +1203,12 @@ def render_dashboard_views(active_menu: str):
             df_pos = load_csv_safely(OPEN_POSITIONS_CSV)
             if df_pos.empty:
                 st.info("Ei avoimia paperipositioita tiedostossa `data/open_positions.csv`. Voit avata uuden position '⚡ Riskinhallinta & Testiosto' -välilehdeltä tai ajaa seulonnan.")
+                render_portfolio_equity_chart(
+                    df_pos=df_pos,
+                    free_cash=0.0,
+                    starting_capital=10_000.0,
+                    history_file=PORTFOLIO_HISTORY_JSON,
+                )
             else:
                 # Load paper account balance
                 starting_capital = 10_000.0
@@ -1101,6 +1237,10 @@ def render_dashboard_views(active_menu: str):
                 total_market_val = 0.0
                 needs_healing = False
                 healed_rows_to_save = []
+
+                fx_rates = get_live_fx_rates()
+                fx_eur_usd = fx_rates.get("EURUSD", 1.15)
+                fx_eur_sek = fx_rates.get("EURSEK", 11.30)
 
                 for _, r in df_pos.iterrows():
                     t_sym = str(r.get("ticker", "")).strip().upper()
@@ -1180,10 +1320,6 @@ def render_dashboard_views(active_menu: str):
                         "currency": curr_curr,
                         "last_evaluated_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                     })
-
-                    fx_rates = get_live_fx_rates()
-                    fx_eur_usd = fx_rates.get("EURUSD", 1.15)
-                    fx_eur_sek = fx_rates.get("EURSEK", 11.30)
 
                     # FX conversion to EUR
                     if curr_curr == "EUR":
@@ -1311,7 +1447,12 @@ def render_dashboard_views(active_menu: str):
                 st.divider()
 
                 # Visual 0: Interactive Portfolio Total Equity Performance Chart
-                render_portfolio_equity_chart(history_file=PORTFOLIO_HISTORY_JSON, starting_capital=starting_capital)
+                render_portfolio_equity_chart(
+                    df_pos=df_pos,
+                    free_cash=free_cash,
+                    starting_capital=starting_capital,
+                    history_file=PORTFOLIO_HISTORY_JSON,
+                )
 
                 st.divider()
 

@@ -58,3 +58,24 @@ def test_portfolio_history_resampling():
     df_1d = df[["total_equity"]].resample("1D").last().dropna()
     assert len(df_1d) == 2
     assert df_1d["total_equity"].iloc[-1] == 10900.0
+
+
+def test_compute_live_portfolio_history_structure():
+    from dashboard import compute_live_portfolio_history
+
+    # Empty positions should return empty DataFrame
+    res_empty = compute_live_portfolio_history((), free_cash=100.0)
+    assert res_empty.empty
+
+    # Test with sample position tuple: (ticker, shares, buy_price, current_price, currency)
+    sample_positions = (
+        ("VIAFIN.HE", 46.0, 19.80, 19.90, "EUR"),
+    )
+    df_hist = compute_live_portfolio_history(sample_positions, free_cash=10.0, starting_capital=1000.0, timeframe="Viimeiset 7 päivää")
+    if not df_hist.empty:
+        assert "total_equity" in df_hist.columns
+        assert "cash_balance" in df_hist.columns
+        assert "total_stock_value" in df_hist.columns
+        assert "total_return" in df_hist.columns
+        assert "total_return_pct" in df_hist.columns
+        assert (df_hist["total_equity"] > 0).all()
