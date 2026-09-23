@@ -218,7 +218,7 @@ Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forwa
   - Tuottokehityksen aikasarja tallennetaan tiedostoon: `portfolio_<id>_history.json`.
 - **Sähköposti-integraatio (`email_notifier.py`)**:
   - Kevyt SMTP-hälytin (`.env`-tunnukset: `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ALERT_EMAIL`).
-  - Lähettää välittömät ilmoitukset BUY, SELL ja WARN -tapahtumista salkkutunnisteella varustettuna (esim. `TRADE BOT [P5_Nordic_Only]: BUY EXEL.HE`).
+  - **Ajon kauppayhteenveto (Consolidated Run Summary)**: Ei tuki sähköpostia kymmenillä yksittäisillä viesteillä, vaan lähettää kunkin suoritussyklin päätteeksi **yhden selkeän koontiviestin**, joka listaa kaikki toteutetut ostot, myynnit, varoitukset ja salkkujen päivitetyt saldot/tuotot.
   - Vikaturvallinen (fail-safe): jos SMTP-yhteys epäonnistuu, moottori jatkaa toimintaansa keskeytyksettä.
 - **Pysyvä NLP-Päätösarkisto (`data/nlp_decisions_archive.csv`)**:
   - Jokainen arvioitu tiedote tai uutisotsikko tallennetaan pysyvään lokiin (`Timestamp, Ticker, Headline, LLM_Decision, Reasoning`).

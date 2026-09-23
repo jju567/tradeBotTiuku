@@ -59,7 +59,7 @@ BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from email_notifier import send_portfolio_alert
+from email_notifier import send_portfolio_alert, send_run_summary_email
 from screener.financial_metrics_engine import evaluate_profiles, get_hard_financials
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
 from screener.portfolio_manager import evaluate_position
@@ -569,7 +569,7 @@ class MasterLiveTradingDaemon:
 
         logger.info(f"Loaded {len(self.portfolios)} portfolio configurations from {self.config_yaml_path.name}")
 
-    def execute_phase1_exits(self, portfolio: PortfolioInstance) -> int:
+    def execute_phase1_exits(self, portfolio: PortfolioInstance, run_trades: Optional[List[Dict[str, Any]]] = None) -> int:
         """
         Phase 1: Portfolio Management (Tri-Layer Exit & Dead Money Timer).
         Returns count of closed positions.
@@ -591,17 +591,17 @@ class MasterLiveTradingDaemon:
                 continue
 
             news_verdict, news_reason = self.market_engine.news_radar_cache.get(ticker, ("HOLD", "No news"))
-            if news_verdict == "WARN":
-                send_portfolio_alert(
-                    portfolio_id=portfolio.config.portfolio_id,
-                    event_type="WARN",
-                    ticker=ticker,
-                    details={
+            if news_verdict == "WARN" and run_trades is not None:
+                run_trades.append({
+                    "portfolio_id": portfolio.config.portfolio_id,
+                    "action": "WARN",
+                    "ticker": ticker,
+                    "details": {
                         "reason": news_reason,
                         "current_price": f"{current_price:.2f}",
                         "shares": shares,
                     },
-                )
+                })
 
             hard_facts = self.market_engine.hard_facts_cache.get(ticker, {})
             financials_payload = {
@@ -653,19 +653,19 @@ class MasterLiveTradingDaemon:
                     f"Shares: {shares} @ {current_price:.2f} {ticker_curr} | PnL: {net_pnl:+.2f} {ticker_curr}"
                 )
 
-                # Send email notification
-                send_portfolio_alert(
-                    portfolio_id=portfolio.config.portfolio_id,
-                    event_type="SELL",
-                    ticker=ticker,
-                    details={
-                        "exit_reason": reason,
-                        "shares": shares,
-                        "sell_price": f"{current_price:.2f} {ticker_curr}",
-                        "net_pnl": f"{net_pnl:+.2f} {ticker_curr}",
-                        "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
-                    },
-                )
+                if run_trades is not None:
+                    run_trades.append({
+                        "portfolio_id": portfolio.config.portfolio_id,
+                        "action": "SELL",
+                        "ticker": ticker,
+                        "details": {
+                            "exit_reason": reason,
+                            "shares": shares,
+                            "sell_price": f"{current_price:.2f} {ticker_curr}",
+                            "net_pnl": f"{net_pnl:+.2f} {ticker_curr}",
+                            "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                        },
+                    })
             else:
                 retained_positions.append(pos)
 
@@ -673,7 +673,7 @@ class MasterLiveTradingDaemon:
         portfolio.save_state()
         return closed_count
 
-    def execute_phase2_screening(self, portfolio: PortfolioInstance) -> int:
+    def execute_phase2_screening(self, portfolio: PortfolioInstance, run_trades: Optional[List[Dict[str, Any]]] = None) -> int:
         """
         Phase 2: Screening & Sizing for a specific portfolio based on its parameters.
         Returns count of new positions opened.
@@ -832,19 +832,19 @@ class MasterLiveTradingDaemon:
                 f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
             )
 
-            # Send email notification
-            send_portfolio_alert(
-                portfolio_id=cfg.portfolio_id,
-                event_type="BUY",
-                ticker=ticker,
-                details={
-                    "strategy": cfg.strategy,
-                    "shares": shares_to_buy,
-                    "buy_price": f"{cand_price:.2f} {ticker_curr}",
-                    "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
-                    "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
-                },
-            )
+            if run_trades is not None:
+                run_trades.append({
+                    "portfolio_id": cfg.portfolio_id,
+                    "action": "BUY",
+                    "ticker": ticker,
+                    "details": {
+                        "strategy": cfg.strategy,
+                        "shares": shares_to_buy,
+                        "buy_price": f"{cand_price:.2f} {ticker_curr}",
+                        "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
+                        "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                    },
+                })
 
         if new_buys > 0:
             portfolio.save_state()
@@ -878,11 +878,12 @@ class MasterLiveTradingDaemon:
         self.market_engine.refresh_data(held_tickers=all_held)
 
         results: Dict[str, Dict[str, Any]] = {}
+        run_trades: List[Dict[str, Any]] = []
 
         # Process each portfolio independently
         for p in self.portfolios:
-            closed = self.execute_phase1_exits(p)
-            opened = self.execute_phase2_screening(p)
+            closed = self.execute_phase1_exits(p, run_trades=run_trades)
+            opened = self.execute_phase2_screening(p, run_trades=run_trades)
             stock_val_eur = self.calculate_stock_value_eur(p)
             p.record_snapshot(stock_val_eur)
 
@@ -898,6 +899,13 @@ class MasterLiveTradingDaemon:
                 "total_equity": total_equity,
                 "return_pct": ret_pct,
             }
+
+        # Send a single consolidated email summary of all executed trades across all portfolios
+        if run_trades:
+            send_run_summary_email(
+                run_trades=run_trades,
+                portfolio_results=results,
+            )
 
         # Consolidated Summary Table
         print("\n" + "-" * 100)

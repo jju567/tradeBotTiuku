@@ -146,3 +146,70 @@ def test_permanent_nlp_decision_archive(tmp_path):
     assert "HOLD" in lines[1]
     assert "SEZI.ST" in lines[2]
     assert "REJECT" in lines[2]
+
+
+def test_send_run_summary_email():
+    """Verify that send_run_summary_email formats summary and sends single consolidated email."""
+    from email_notifier import send_run_summary_email
+
+    run_trades = [
+        {
+            "portfolio_id": "P6_US_Only",
+            "action": "BUY",
+            "ticker": "IDN",
+            "details": {
+                "strategy": "Profile B",
+                "shares": 465,
+                "buy_price": "2.43 USD",
+                "total_cost": "1,140.23 USD (997.93 EUR)",
+                "remaining_cash": "2,023.36 EUR",
+            },
+        },
+        {
+            "portfolio_id": "P1_Base",
+            "action": "SELL",
+            "ticker": "WRAP",
+            "details": {
+                "exit_reason": "TAKE_PROFIT",
+                "shares": 100,
+                "sell_price": "5.50 USD",
+                "net_pnl": "+250.00 USD",
+            },
+        }
+    ]
+    portfolio_results = {
+        "P1_Base": {"positions_count": 5, "cash": 4500.0, "total_equity": 10250.0, "return_pct": 2.5},
+        "P6_US_Only": {"positions_count": 8, "cash": 2023.36, "total_equity": 10100.0, "return_pct": 1.0},
+    }
+
+    import email
+    with patch("smtplib.SMTP") as mock_smtp:
+        mock_instance = MagicMock()
+        mock_smtp.return_value = mock_instance
+
+        with patch("email_notifier.load_env_credentials", return_value={
+            "SMTP_SERVER": "smtp.mock.server",
+            "SMTP_PORT": "587",
+            "SMTP_USER": "test@user.com",
+            "SMTP_PASS": "secret",
+            "ALERT_EMAIL": "alert@user.com",
+        }):
+            res = send_run_summary_email(run_trades, portfolio_results)
+            assert res is True
+            assert mock_instance.sendmail.called
+            sent_args = mock_instance.sendmail.call_args[0]
+            raw_msg = email.message_from_string(sent_args[2])
+            body_parts = []
+            for part in raw_msg.walk():
+                payload = part.get_payload(decode=True)
+                if payload:
+                    body_parts.append(payload.decode("utf-8", errors="ignore"))
+            full_body = "\n".join(body_parts)
+
+            assert "P6_US_Only" in full_body
+            assert "IDN" in full_body
+            assert "P1_Base" in full_body
+            assert "WRAP" in full_body
+            assert "Ajon Kauppayhteenveto" in full_body
+
+
