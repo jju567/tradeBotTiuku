@@ -107,3 +107,42 @@ def test_email_notifier_graceful_failure():
                 details={"shares": 50, "price": 13.40},
             )
             assert res is False
+
+
+def test_permanent_nlp_decision_archive(tmp_path):
+    """Verify that append_nlp_decision writes correct CSV format and handles headers properly."""
+    from main_controller import append_nlp_decision
+
+    test_archive = tmp_path / "nlp_decisions_archive.csv"
+    assert not test_archive.exists()
+
+    # Append first decision
+    append_nlp_decision(
+        ticker="BIOA.ST",
+        headline="BioArctic presents positive Phase 3 clinical data",
+        llm_decision="HOLD",
+        reasoning="Positive drug trial progression, no dilution",
+        archive_path=test_archive,
+        timestamp="2026-09-23T11:00:00+00:00",
+    )
+    assert test_archive.exists()
+
+    # Append second decision
+    append_nlp_decision(
+        ticker="SEZI.ST",
+        headline="Seafire AB beslutar om företrädesemission av aktier",
+        llm_decision="REJECT",
+        reasoning="Fatal red flag företrädesemission detected",
+        archive_path=test_archive,
+        timestamp="2026-09-23T11:05:00+00:00",
+    )
+
+    with open(test_archive, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f.readlines() if line.strip()]
+
+    assert len(lines) == 3
+    assert lines[0] == "Timestamp,Ticker,Headline,LLM_Decision,Reasoning"
+    assert "BIOA.ST" in lines[1]
+    assert "HOLD" in lines[1]
+    assert "SEZI.ST" in lines[2]
+    assert "REJECT" in lines[2]

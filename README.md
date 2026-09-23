@@ -220,9 +220,13 @@ Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forwa
   - Kevyt SMTP-hälytin (`.env`-tunnukset: `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ALERT_EMAIL`).
   - Lähettää välittömät ilmoitukset BUY, SELL ja WARN -tapahtumista salkkutunnisteella varustettuna (esim. `TRADE BOT [P5_Nordic_Only]: BUY EXEL.HE`).
   - Vikaturvallinen (fail-safe): jos SMTP-yhteys epäonnistuu, moottori jatkaa toimintaansa keskeytyksettä.
+- **Pysyvä NLP-Päätösarkisto (`data/nlp_decisions_archive.csv`)**:
+  - Jokainen arvioitu tiedote tai uutisotsikko tallennetaan pysyvään lokiin (`Timestamp, Ticker, Headline, LLM_Decision, Reasoning`).
+  - Kerää pitkän aikavälin dataa LLM- ja sääntöpohjaisista tuomioista (REJECT / WARN / HOLD) mallin ja suodatinten jatkoanalyysiä varten.
 - **Streamlit-Käyttöliittymä**:
   - Sivupalkin valikosta valittavissa mikä tahansa 10 rinnakkaissalkusta.
   - Avaa ja visualisoi reaaliaikaiset avoimet positiot, KPI-arvot, tuottokäyrän ja toteutuneet kaupat valitulle salkulle reaaliaikaisine FX-muunnoksineen.
+
 
 ```bash
 # Aja yksi walk-forward-sykli kaikille 10 salkulle:

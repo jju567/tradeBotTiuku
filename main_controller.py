@@ -86,12 +86,46 @@ logger = logging.getLogger("master_daemon")
 DEFAULT_PORTFOLIOS_YAML = BASE_DIR / "portfolios_config.yaml"
 PORTFOLIOS_DIR = BASE_DIR / "data" / "portfolios"
 DEFAULT_CLEAN_UNIVERSE_CSV = BASE_DIR / "data" / "clean_microcap_universe.csv"
+DEFAULT_NLP_ARCHIVE_CSV = BASE_DIR / "data" / "nlp_decisions_archive.csv"
 
 # Legacy fallback paths for backwards compatibility
 DEFAULT_PAPER_ACCOUNT_JSON = BASE_DIR / "data" / "paper_account.json"
 DEFAULT_OPEN_POSITIONS_CSV = BASE_DIR / "data" / "open_positions.csv"
 DEFAULT_TRADE_HISTORY_CSV = BASE_DIR / "data" / "trade_history.csv"
 DEFAULT_PORTFOLIO_HISTORY_JSON = BASE_DIR / "data" / "portfolio_history.json"
+
+
+def append_nlp_decision(
+    ticker: str,
+    headline: str,
+    llm_decision: str,
+    reasoning: str,
+    archive_path: Path = DEFAULT_NLP_ARCHIVE_CSV,
+    timestamp: Optional[str] = None,
+) -> None:
+    """
+    Appends an evaluated press release / news decision to the permanent NLP decision archive CSV.
+    Header: Timestamp, Ticker, Headline, LLM_Decision, Reasoning
+    """
+    try:
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = archive_path.exists()
+        ts = timestamp or datetime.now(timezone.utc).isoformat()
+
+        # Sanitize single-line strings
+        clean_ticker = str(ticker).strip().upper()
+        clean_headline = " ".join(str(headline).split())
+        clean_decision = str(llm_decision).strip().upper()
+        clean_reasoning = " ".join(str(reasoning).split())
+
+        with open(archive_path, "a", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists or archive_path.stat().st_size == 0:
+                writer.writerow(["Timestamp", "Ticker", "Headline", "LLM_Decision", "Reasoning"])
+            writer.writerow([ts, clean_ticker, clean_headline, clean_decision, clean_reasoning])
+    except Exception as e:
+        logger.warning(f"Failed to record NLP decision to {archive_path}: {e}")
+
 
 # Strict Fee & Execution Parameters
 MIN_BROKER_FEE = 9.00           # Flat minimum broker commission ($9.00 / €9.00)
@@ -458,30 +492,45 @@ class MarketDataEngine:
 
             warning_found = False
             warning_reason = ""
+            warning_headline = ""
 
             for item in news_items[:10]:
                 title = str(item.get("title", "")).strip()
                 summary = str(item.get("summary", "")).strip()
                 full_text = f"{title} {summary}"
 
+                item_decision = "HOLD"
+                item_reason = "No fatal red flags detected"
+
                 for pattern in FATAL_RED_FLAG_PATTERNS:
                     if pattern.lower() in full_text.lower():
-                        reason = f"Fatal red flag '{pattern}' detected in headline: {title}"
-                        return "REJECT", reason
+                        item_reason = f"Fatal red flag '{pattern}' detected in headline: {title}"
+                        append_nlp_decision(ticker, title or summary, "REJECT", item_reason)
+                        return "REJECT", item_reason
 
                 for pattern in WARN_PATTERNS:
                     if pattern.lower() in full_text.lower():
+                        item_decision = "WARN"
+                        item_reason = f"Warning '{pattern}' detected in headline: {title}"
                         warning_found = True
-                        warning_reason = f"Warning '{pattern}' detected in headline: {title}"
+                        warning_reason = item_reason
+                        warning_headline = title
 
                 nlp_res = rule_based_analyze_core_fundamentals(full_text)
                 safety = nlp_res.get("financial_safety", {})
                 if safety.get("going_concern_risk") or safety.get("erratic_pivots_detected"):
-                    reason = f"Fatal NLP Risk triggered: {nlp_res.get('verdict_details', {}).get('reasoning')}"
-                    return "REJECT", reason
+                    item_reason = f"Fatal NLP Risk triggered: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+                    append_nlp_decision(ticker, title or summary, "REJECT", item_reason)
+                    return "REJECT", item_reason
                 elif nlp_res.get("verdict_details", {}).get("verdict") == "WARN" or safety.get("warning_detected"):
+                    item_decision = "WARN"
+                    item_reason = f"NLP Warning: {nlp_res.get('verdict_details', {}).get('reasoning')}"
                     warning_found = True
-                    warning_reason = f"NLP Warning: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+                    warning_reason = item_reason
+                    warning_headline = title
+
+                # Log non-fatal evaluation into archive
+                append_nlp_decision(ticker, title or summary, item_decision, item_reason)
 
             if warning_found:
                 return "WARN", warning_reason
