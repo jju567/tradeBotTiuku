@@ -632,12 +632,13 @@ with st.sidebar:
         total_reqs = token_stats.get("total_requests", 0)
 
         with st.expander("🪙 Token-laskuri & Kustannus", expanded=True):
-            t_col1, t_col2 = st.columns(2)
-            with t_col1:
-                st.metric("Kokonaiskulutus", f"${total_cost:.4f}")
-            with t_col2:
-                st.metric("Pyyntöjä", f"{total_reqs} kpl")
+            if total_cost < 0.01:
+                cost_str = f"${total_cost:.5f}"
+            else:
+                cost_str = f"${total_cost:.4f}"
 
+            st.markdown(f"**Kokonaiskulutus:** `{cost_str}`")
+            st.markdown(f"**Pyyntöjä tehty:** `{total_reqs} kpl`")
             st.markdown(f"**Tokenit yhteensä:** `{total_tokens:,}`")
             st.caption(f"- Syöte (Prompt): `{prompt_tokens:,}`\n- Tuotos (Output): `{completion_tokens:,}`")
 
@@ -645,7 +646,7 @@ with st.sidebar:
             rem_budget = max(0.0, 10.0 - total_cost)
             avg_cost = (total_cost / total_reqs) if total_reqs > 0 else 0.00055
             rem_reports = int(rem_budget / avg_cost) if avg_cost > 0 else 18000
-            st.info(f"💡 **10 $ saldolla jäljellä:** n. **${rem_budget:.2f}** (~{rem_reports:,} analyysiä)")
+            st.info(f"💡 **10 $ budjetilla jäljellä:** n. **${rem_budget:.2f}** (~{rem_reports:,} analyysiä)")
 
             if st.button("🗑️ Nollaa laskuri", width="stretch"):
                 tracker.reset_stats()
