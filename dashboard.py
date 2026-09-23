@@ -12,6 +12,7 @@ import sys
 import csv
 import json
 import time
+import logging
 import zoneinfo
 from pathlib import Path
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
+
+logger = logging.getLogger(__name__)
 
 # Setup Base Paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -276,7 +279,9 @@ def record_portfolio_snapshot(
     history_file: Path = PORTFOLIO_HISTORY_JSON,
 ) -> None:
     """Records a new equity snapshot if sufficient time or value delta has occurred."""
-    if total_equity <= 0 or total_equity < 1000.0:
+    # Sanity filter: Ignore zero/anomalously low readings (e.g. temporary API fetch failure dropping stock value to 0)
+    min_reasonable_equity = starting_balance * 0.40  # e.g. 4000 € minimum
+    if total_equity <= 0 or total_equity < min_reasonable_equity:
         return
 
     history = []
@@ -370,6 +375,13 @@ def render_portfolio_equity_chart(history_file: Path = PORTFOLIO_HISTORY_JSON, s
     df_hist["total_equity"] = pd.to_numeric(df_hist["total_equity"], errors="coerce").fillna(starting_capital)
     df_hist["cash_balance"] = pd.to_numeric(df_hist["cash_balance"], errors="coerce").fillna(0.0)
     df_hist["total_stock_value"] = pd.to_numeric(df_hist["total_stock_value"], errors="coerce").fillna(0.0)
+
+    # Filter out corrupted / zero-drop glitch data points (e.g. total_equity < 40% of starting balance)
+    df_hist = df_hist[df_hist["total_equity"] >= (starting_capital * 0.40)]
+    if df_hist.empty:
+        st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
+        return
+
     df_hist["total_return"] = df_hist["total_equity"] - starting_capital
     df_hist["total_return_pct"] = (df_hist["total_return"] / starting_capital * 100.0) if starting_capital > 0 else 0.0
 
@@ -608,6 +620,43 @@ with st.sidebar:
     )
 
     st.divider()
+
+    # Token Usage & Cost Counter (Always accessible directly under navigation)
+    try:
+        from core.token_tracker import get_token_stats, tracker
+        token_stats = get_token_stats()
+        total_tokens = token_stats.get("total_tokens", 0)
+        prompt_tokens = token_stats.get("total_prompt_tokens", 0)
+        completion_tokens = token_stats.get("total_completion_tokens", 0)
+        total_cost = token_stats.get("total_cost_usd", 0.0)
+        total_reqs = token_stats.get("total_requests", 0)
+
+        with st.expander("🪙 Token-laskuri & Kustannus", expanded=True):
+            t_col1, t_col2 = st.columns(2)
+            with t_col1:
+                st.metric("Kokonaiskulutus", f"${total_cost:.4f}")
+            with t_col2:
+                st.metric("Pyyntöjä", f"{total_reqs} kpl")
+
+            st.markdown(f"**Tokenit yhteensä:** `{total_tokens:,}`")
+            st.caption(f"- Syöte (Prompt): `{prompt_tokens:,}`\n- Tuotos (Output): `{completion_tokens:,}`")
+
+            # Estimate capacity from $10 OpenRouter balance
+            rem_budget = max(0.0, 10.0 - total_cost)
+            avg_cost = (total_cost / total_reqs) if total_reqs > 0 else 0.00055
+            rem_reports = int(rem_budget / avg_cost) if avg_cost > 0 else 18000
+            st.info(f"💡 **10 $ saldolla jäljellä:** n. **${rem_budget:.2f}** (~{rem_reports:,} analyysiä)")
+
+            if st.button("🗑️ Nollaa laskuri", width="stretch"):
+                tracker.reset_stats()
+                st.success("Laskuri nollattu!")
+                time.sleep(0.5)
+                st.rerun()
+    except Exception as e:
+        logger.warning(f"Failed to render token tracker in dashboard: {e}")
+        st.caption(f"⚠️ Token-laskuri: {e}")
+
+    st.divider()
     st.subheader("⚙️ Quick Actions")
 
     # Refresh Data button
@@ -752,39 +801,7 @@ with st.sidebar:
                     time.sleep(1.2)
                     st.rerun()
 
-    # Token Usage & Cost Counter
-    try:
-        from core.token_tracker import get_token_stats, tracker
-        token_stats = get_token_stats()
-        total_tokens = token_stats.get("total_tokens", 0)
-        prompt_tokens = token_stats.get("total_prompt_tokens", 0)
-        completion_tokens = token_stats.get("total_completion_tokens", 0)
-        total_cost = token_stats.get("total_cost_usd", 0.0)
-        total_reqs = token_stats.get("total_requests", 0)
-        
-        with st.expander("🪙 Token-laskuri & Kustannus", expanded=False):
-            t_col1, t_col2 = st.columns(2)
-            with t_col1:
-                st.metric("Kokonaiskulutus", f"${total_cost:.4f}")
-            with t_col2:
-                st.metric("Pyyntöjä", f"{total_reqs} kpl")
-                
-            st.markdown(f"**Tokenit yhteensä:** `{total_tokens:,}`")
-            st.caption(f"- Syöte (Prompt): `{prompt_tokens:,}`\n- Tuotos (Output): `{completion_tokens:,}`")
-            
-            # Estimate capacity from $10 OpenRouter balance
-            rem_budget = max(0.0, 10.0 - total_cost)
-            avg_cost = (total_cost / total_reqs) if total_reqs > 0 else 0.00055
-            rem_reports = int(rem_budget / avg_cost) if avg_cost > 0 else 18000
-            st.info(f"💡 **10 $ saldolla jäljellä:** n. **${rem_budget:.2f}** (~{rem_reports:,} analyysiä)")
-            
-            if st.button("🗑️ Nollaa laskuri", width="stretch"):
-                tracker.reset_stats()
-                st.success("Laskuri nollattu!")
-                time.sleep(0.5)
-                st.rerun()
-    except Exception as e:
-        logger.debug(f"Failed to render token tracker in dashboard: {e}")
+
 
     # Environment Info
     st.caption(f"📁 Workspace: `{BASE_DIR.name}`")
