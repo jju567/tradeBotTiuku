@@ -226,6 +226,7 @@ Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forwa
 - **Streamlit-Käyttöliittymä**:
   - Sivupalkin valikosta valittavissa mikä tahansa 10 rinnakkaissalkusta.
   - Avaa ja visualisoi reaaliaikaiset avoimet positiot, KPI-arvot, tuottokäyrän ja toteutuneet kaupat valitulle salkulle reaaliaikaisine FX-muunnoksineen.
+  - **📊 Salkkuvertailu (Kaikki)**: Erillinen välilehti, jossa kaikkien 10 salkun pääomakehitystä ja tuottoja voi vertailla rinnakkain interaktiivisella Plotly-viivakaaviolla (sisältää myös normalisoidun indeksinäkymän lähtötasolla 100 ja yhteenvedon).
 
 
 ```bash
