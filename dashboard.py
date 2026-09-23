@@ -1308,15 +1308,18 @@ def render_dashboard_views(active_menu: str):
                 else:
                     df_pos = pd.DataFrame()
             else:
-                if PAPER_ACCOUNT_JSON.exists():
-                    try:
-                        with open(PAPER_ACCOUNT_JSON, "r", encoding="utf-8") as f_acc:
-                            acc_data = json.load(f_acc)
-                            starting_capital = float(acc_data.get("starting_balance", 10_000.0))
-                            free_cash = float(acc_data.get("cash_balance", 0.72))
-                    except Exception:
-                        pass
-                df_pos = load_csv_safely(OPEN_POSITIONS_CSV)
+                # Portfolio state file not yet created (daemon hasn't run yet).
+                # Show the portfolio as empty — do NOT fall back to the shared
+                # legacy paper_account.json / open_positions.csv which would make
+                # every portfolio show the same data.
+                start_cash = portfolio_meta.get("start_cash", 10_000.0) if portfolio_meta else 10_000.0
+                starting_capital = start_cash
+                free_cash = start_cash
+                df_pos = pd.DataFrame()
+                st.warning(
+                    f"⏳ Salkun `{selected_portfolio}` tiedostoa ei löydy vielä — "
+                    "daemon luo sen ensimmäisessä ajossaan. Käynnistä daemon tai odota seuraavaa ajastettua sykliä."
+                )
 
             if df_pos.empty:
                 st.info(f"Ei avoimia paperipositioita salkussa `{selected_portfolio}`.")
