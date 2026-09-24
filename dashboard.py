@@ -2122,8 +2122,17 @@ def render_dashboard_views(active_menu: str):
 
         col1, col2 = st.columns([2, 3])
         with col1:
-            ticker_input = st.text_input("Enter Ticker:", value="UAVS", help="e.g. UAVS, CHPT, QTCOM.HE, MYPS, ESCA")
-            company_input = st.text_input("Company Name (optional):", value="AgEagle Aerial Systems")
+            ticker_input = st.text_input(
+                "Enter Ticker:",
+                value="",
+                placeholder="e.g. ADMCM.HE, QTCOM.HE, UAVS, CHPT",
+                help="e.g. UAVS, CHPT, QTCOM.HE, MYPS, ESCA, ADMCM.HE",
+            )
+            company_input = st.text_input(
+                "Company Name (optional):",
+                value="",
+                placeholder="e.g. Admicom, Qt Group, AgEagle Aerial Systems",
+            )
             sample_text = st.text_area(
                 "Paste Earnings / Filing Text (or leave blank for web sanity check only):",
                 height=200,
@@ -2132,24 +2141,27 @@ def render_dashboard_views(active_menu: str):
             run_btn = st.button("🚀 Run Dual-Step Analysis", type="primary", width="stretch")
 
         with col2:
-            if run_btn and ticker_input:
-                from screener.nlp_analyzer import analyze_core_fundamentals
-                from screener.web_verifier import WebSearchVerifier
+            if run_btn:
+                if not ticker_input.strip():
+                    st.warning("⚠️ Syötä vähintään osaketikkeri (esim. ADMCM.HE tai UAVS).")
+                else:
+                    from screener.nlp_analyzer import analyze_core_fundamentals
+                    from screener.web_verifier import WebSearchVerifier
 
-                with st.spinner(f"Querying live news & analyzing {ticker_input}..."):
-                    verifier = WebSearchVerifier()
-                    web_res = verifier.verify(ticker_input, company_input)
+                    with st.spinner(f"Querying live news & analyzing {ticker_input.strip().upper()}..."):
+                        verifier = WebSearchVerifier()
+                        web_res = verifier.verify(ticker_input.strip().upper(), company_input.strip())
 
-                    doc_res = {}
-                    if sample_text.strip():
-                        doc_res = analyze_core_fundamentals(sample_text)
+                        doc_res = {}
+                        if sample_text.strip():
+                            doc_res = analyze_core_fundamentals(sample_text)
 
-                st.session_state["scanner_last_result"] = {
-                    "ticker": ticker_input.strip().upper(),
-                    "company_name": company_input.strip() or ticker_input.strip().upper(),
-                    "web_res": web_res,
-                    "doc_res": doc_res,
-                }
+                        st.session_state["scanner_last_result"] = {
+                            "ticker": ticker_input.strip().upper(),
+                            "company_name": company_input.strip() or ticker_input.strip().upper(),
+                            "web_res": web_res,
+                            "doc_res": doc_res,
+                        }
 
             scan_res = st.session_state.get("scanner_last_result")
             if scan_res:
