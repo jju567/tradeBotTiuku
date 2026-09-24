@@ -228,6 +228,13 @@ Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forwa
   - Sivupalkin valikosta valittavissa mikä tahansa 10 rinnakkaissalkusta.
   - Avaa ja visualisoi reaaliaikaiset avoimet positiot, KPI-arvot, tuottokäyrän ja toteutuneet kaupat valitulle salkulle reaaliaikaisine FX-muunnoksineen.
   - **📊 Salkkuvertailu (Kaikki)**: Erillinen välilehti, jossa kaikkien 10 salkun pääomakehitystä ja tuottoja voi vertailla rinnakkain interaktiivisella Plotly-viivakaaviolla (sisältää myös normalisoidun indeksinäkymän lähtötasolla 100 ja yhteenvedon).
+  - **🏛️ Institutional Analytics (`quant_analytics.py`)**: Uusi dedikoitu pääomarahastotason kvantitatiivisen analyysin välilehti Streamlitissä:
+    - **Riskikorjatut tuotot**: 30 päivän rullaava Sharpe-luku, 30 päivän rullaava Sortino-luku (downside deviation), Max Drawdown ja toipumisaika (Time-to-Recovery päivinä).
+    - **Monitestauskorjaus (Multiple Testing Correction)**: Deflated Sharpe Ratio (DSR, Bailey & López de Prado) ja Bonferroni-korjaus 10 rinnakkaissalkun yli, jotka paljastavat onko parhaan salkun tuotto tilastollisesti merkitsevää alfaa vai pelkkää satunnaisvaihtelua (selection bias).
+    - **Tuottoattribuutio & Vinous**: Posiokeskittyminen (% kokonaistuotosta top-1 ja top-2 kaupoista), mediaanipitoaika päivinä sekä mediaanituotto vs. keskituotto.
+    - **10 Salkun Tuottokorrelaatiomatriisi**: Interaktiivinen Plotly-lämpökartta (heatmap) päivä- ja viikkotuottojen riippuvuuksista todellisen hajautushyödyn arvioimiseksi.
+    - **Viikkoaggregointi (Weekly Smoothing)**: Poistaa päivittäistä mikroheilahtelua ja markkinakohinaa.
+    - **Botin Operatiivinen Terveys (`data/operational_metrics.json`)**: Reaaliaikaiset KPI-kortit LLM fallback -asteesta (kuinka usein NLP-haku on aikakatkennut ja siirtynyt sääntöpohjaiseen logiikkaan) sekä datatuoreussuojien (`is_fresh`) estämistä toimeksiannoista.
 
 
 ```bash

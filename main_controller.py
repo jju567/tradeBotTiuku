@@ -87,12 +87,62 @@ DEFAULT_PORTFOLIOS_YAML = BASE_DIR / "portfolios_config.yaml"
 PORTFOLIOS_DIR = BASE_DIR / "data" / "portfolios"
 DEFAULT_CLEAN_UNIVERSE_CSV = BASE_DIR / "data" / "clean_microcap_universe.csv"
 DEFAULT_NLP_ARCHIVE_CSV = BASE_DIR / "data" / "nlp_decisions_archive.csv"
+DEFAULT_OPERATIONAL_METRICS_JSON = BASE_DIR / "data" / "operational_metrics.json"
 
 # Legacy fallback paths for backwards compatibility
 DEFAULT_PAPER_ACCOUNT_JSON = BASE_DIR / "data" / "paper_account.json"
 DEFAULT_OPEN_POSITIONS_CSV = BASE_DIR / "data" / "open_positions.csv"
 DEFAULT_TRADE_HISTORY_CSV = BASE_DIR / "data" / "trade_history.csv"
 DEFAULT_PORTFOLIO_HISTORY_JSON = BASE_DIR / "data" / "portfolio_history.json"
+
+
+def load_operational_metrics(metrics_path: Path = DEFAULT_OPERATIONAL_METRICS_JSON) -> Dict[str, Any]:
+    """Loads lightweight operational health counters (LLM fallback rate, data freshness blocks)."""
+    default_metrics = {
+        "nlp_evaluations_total": 0,
+        "llm_calls_attempted": 0,
+        "llm_fallbacks": 0,
+        "llm_fallback_rate_pct": 0.0,
+        "freshness_checks_total": 0,
+        "freshness_blocks": 0,
+        "freshness_block_rate_pct": 0.0,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "status": "HEALTHY",
+    }
+    if metrics_path.exists():
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                default_metrics.update(saved)
+        except Exception as e:
+            logger.debug(f"Could not load operational metrics from {metrics_path}: {e}")
+    return default_metrics
+
+
+def save_operational_metrics(metrics: Dict[str, Any], metrics_path: Path = DEFAULT_OPERATIONAL_METRICS_JSON) -> None:
+    """Saves updated operational health counters to JSON disk storage."""
+    try:
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        llm_attempts = max(metrics.get("llm_calls_attempted", 0), metrics.get("nlp_evaluations_total", 0))
+        fallbacks = metrics.get("llm_fallbacks", 0)
+        metrics["llm_fallback_rate_pct"] = round((fallbacks / max(llm_attempts, 1)) * 100.0, 1)
+
+        f_checks = metrics.get("freshness_checks_total", 0)
+        f_blocks = metrics.get("freshness_blocks", 0)
+        metrics["freshness_block_rate_pct"] = round((f_blocks / max(f_checks, 1)) * 100.0, 1)
+        metrics["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+        if metrics["llm_fallback_rate_pct"] > 50.0:
+            metrics["status"] = "DEGRADED (High LLM Fallback)"
+        elif metrics["freshness_block_rate_pct"] > 40.0:
+            metrics["status"] = "DATA STALE (High Latency)"
+        else:
+            metrics["status"] = "HEALTHY"
+
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save operational metrics to {metrics_path}: {e}")
 
 
 def append_nlp_decision(
@@ -452,6 +502,8 @@ class MarketDataEngine:
         self.eval_profiles_cache: Dict[str, Dict[str, Any]] = {}
         self.news_radar_cache: Dict[str, Tuple[str, str]] = {}
         self.universe_metadata: Dict[str, Dict[str, Any]] = {}
+        # Operational health tracker (LLM fallback rate, data freshness blocks)
+        self.operational_metrics: Dict[str, Any] = load_operational_metrics()
         # Global cache of evaluated news items (ticker, clean_headline) -> (decision, reason)
         self.evaluated_news_cache: Dict[Tuple[str, str], Tuple[str, str]] = {}
         self._load_evaluated_news_cache()
@@ -607,8 +659,27 @@ class MarketDataEngine:
                                 item_reason = f"Warning '{pattern}' detected in headline: {title or clean_headline}"
                                 break
 
-                        # Core NLP analysis
-                        nlp_res = rule_based_analyze_core_fundamentals(full_text)
+                        # Core NLP analysis with operational health tracking
+                        self.operational_metrics["nlp_evaluations_total"] = self.operational_metrics.get("nlp_evaluations_total", 0) + 1
+                        self.operational_metrics["llm_calls_attempted"] = self.operational_metrics.get("llm_calls_attempted", 0) + 1
+                        nlp_res = None
+
+                        # Check if LLM API is configured and attempt LLM evaluation
+                        if os.getenv("OPENROUTER_API_KEY"):
+                            try:
+                                from screener.nlp_analyzer import analyze_core_fundamentals
+                                nlp_res = analyze_core_fundamentals(full_text)
+                            except Exception as e:
+                                logger.warning(f"⚠️ [OPERATIONAL HEALTH] LLM API call error for {ticker}: {e}")
+                                nlp_res = None
+
+                        # If LLM failed, timed out, or unconfigured, execute rule-based fallback
+                        if not nlp_res or not isinstance(nlp_res, dict) or "financial_safety" not in nlp_res:
+                            if os.getenv("OPENROUTER_API_KEY"):
+                                self.operational_metrics["llm_fallbacks"] = self.operational_metrics.get("llm_fallbacks", 0) + 1
+                                logger.info(f"⚡ [OPERATIONAL HEALTH] LLM check failed/timeout for {ticker}. Seamlessly fallen back to rule-based engine.")
+                            nlp_res = rule_based_analyze_core_fundamentals(full_text)
+
                         safety = nlp_res.get("financial_safety", {})
                         if safety.get("going_concern_risk") or safety.get("erratic_pivots_detected"):
                             item_decision = "REJECT"
@@ -877,9 +948,19 @@ class MasterLiveTradingDaemon:
             if exit_act == "SELL":
                 continue
 
-            # Stale statement guard (>120 days)
+            # Stale statement guard (>120 days) with operational freshness tracking
             dq = hard_facts.get("data_quality", {})
+            self.market_engine.operational_metrics["freshness_checks_total"] = (
+                self.market_engine.operational_metrics.get("freshness_checks_total", 0) + 1
+            )
             if dq.get("is_fresh") is False:
+                self.market_engine.operational_metrics["freshness_blocks"] = (
+                    self.market_engine.operational_metrics.get("freshness_blocks", 0) + 1
+                )
+                logger.info(
+                    f"🚫 [FRESHNESS GUARD] Candidate {ticker} trade blocked due to stale/delayed data (>120d). "
+                    f"Total freshness blocks: {self.market_engine.operational_metrics['freshness_blocks']}"
+                )
                 continue
 
             # Position sizing
@@ -1027,6 +1108,13 @@ class MasterLiveTradingDaemon:
                 f"{r['return_pct']:>+7.2f}%"
             )
         print("-" * 100 + "\n")
+
+        # Save and display operational health metrics
+        save_operational_metrics(self.market_engine.operational_metrics)
+        m = self.market_engine.operational_metrics
+        print(f"🏥 [BOT HEALTH] LLM Fallback Rate: {m.get('llm_fallbacks', 0)} / {max(m.get('llm_calls_attempted', 0), 1)} ({m.get('llm_fallback_rate_pct', 0.0):.1f}%) | "
+              f"Freshness Blocks: {m.get('freshness_blocks', 0)} / {max(m.get('freshness_checks_total', 0), 1)} ({m.get('freshness_block_rate_pct', 0.0):.1f}%) | "
+              f"Status: {m.get('status', 'HEALTHY')}\n")
 
         return results
 

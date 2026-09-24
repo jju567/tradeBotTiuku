@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
+import quant_analytics as qa
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ PAPER_ACCOUNT_JSON = DATA_DIR / "paper_account.json"
 PORTFOLIO_HISTORY_JSON = DATA_DIR / "portfolio_history.json"
 PORTFOLIOS_DIR = DATA_DIR / "portfolios"
 PORTFOLIOS_CONFIG_YAML = BASE_DIR / "portfolios_config.yaml"
+OPERATIONAL_METRICS_JSON = DATA_DIR / "operational_metrics.json"
 
 # Page Configuration
 st.set_page_config(
@@ -1354,8 +1356,9 @@ def render_dashboard_views(active_menu: str):
                 f"Alueet: **{', '.join(portfolio_meta.get('regions', ['FI', 'SE', 'US']))}**{filter_note}"
             )
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab_inst, tab2, tab3, tab4, tab5 = st.tabs([
             "📌 Avoimet Positiot & Trailing Stopit",
+            "🏛️ Institutional Analytics",
             "⚡ Riskinhallinta & Testiosto",
             "📜 Toteutuneet Kaupat (Trade History)",
             "🔔 Hälytysloki (Screener Alerts)",
@@ -1887,6 +1890,224 @@ def render_dashboard_views(active_menu: str):
                                 f"{pos_match['stop_dist_pct']:.1f}%",
                                 f"Stop: {pos_match['cat_stop']:,.2f}",
                             )
+
+        # ------------------------------------------------------------------
+        # TAB: INSTITUTIONAL ANALYTICS
+        # ------------------------------------------------------------------
+        with tab_inst:
+            st.markdown("### 🏛️ Institutional Quantitative & Operational Analytics")
+            st.caption(
+                "Pääomarahastotason riskikorjatut tunnusluvut, usean hypoteesin DSR-korjaus (Multiple Testing Correction), "
+                "kohinaton viikkotuottojen korrelaatiomatriisi ja botin operatiiviset terveysmittarit."
+            )
+
+            # 1. Operational Health KPI Counters (Top of Tab)
+            op_data = {}
+            if OPERATIONAL_METRICS_JSON.exists():
+                try:
+                    with open(OPERATIONAL_METRICS_JSON, "r", encoding="utf-8") as f_op:
+                        op_data = json.load(f_op)
+                except Exception as e:
+                    logger.debug(f"Could not load {OPERATIONAL_METRICS_JSON}: {e}")
+
+            llm_fallback_rate = float(op_data.get("llm_fallback_rate_pct", 0.0))
+            llm_fallbacks = int(op_data.get("llm_fallbacks", 0))
+            llm_attempts = int(op_data.get("llm_calls_attempted", 0))
+            freshness_blocks = int(op_data.get("freshness_blocks", 0))
+            freshness_checks = int(op_data.get("freshness_checks_total", 0))
+            freshness_rate = float(op_data.get("freshness_block_rate_pct", 0.0))
+            nlp_total = int(op_data.get("nlp_evaluations_total", 0))
+            bot_status = str(op_data.get("status", "HEALTHY"))
+            last_op_update = to_helsinki_time(op_data.get("last_updated", ""))
+
+            st.markdown("#### 🏥 Botin Operatiivinen Terveys & Suojamekanismit")
+            c_op1, c_op2, c_op3, c_op4 = st.columns(4)
+            with c_op1:
+                st.metric(
+                    "LLM Fallback Rate",
+                    f"{llm_fallback_rate:.1f}%",
+                    f"{llm_fallbacks} / {max(llm_attempts, 1)} varalla",
+                    delta_color="inverse",
+                    help="Kuinka usein NLP/LLM-tarkistus on aikakatkaistu tai kaatunut, ja siirrytty automaattisesti sääntöpohjaiseen (rule-based) analyysiin.",
+                )
+            with c_op2:
+                st.metric(
+                    "Data Freshness Blocks",
+                    f"{freshness_blocks} kpl",
+                    f"{freshness_rate:.1f}% ostoista estetty",
+                    delta_color="inverse",
+                    help="Kuinka monta kertaa is_fresh -suoja on estänyt ostotoimeksiannon vanhentuneen (>120 pv) tilinpäätösdatan tai yfinance-viiveen vuoksi.",
+                )
+            with c_op3:
+                st.metric(
+                    "NLP-arviointeja yhteensä",
+                    f"{nlp_total} kpl",
+                    "Uutis- & tiedotetutka",
+                    help="Yhteensä läpikäydyt pörssitiedotteet ja uutisotsikot rinnakkaisissa walk-forward -salkuissa.",
+                )
+            with c_op4:
+                status_icon = "🟢" if "HEALTHY" in bot_status.upper() else "🟡"
+                st.metric(
+                    "Järjestelmän tila",
+                    f"{status_icon} {bot_status}",
+                    f"Päivitetty: {last_op_update}" if last_op_update else "Aktiivinen",
+                    help="Daemonin toimintatila. Vihreä = kaikki toimii nimellisesti, Keltainen = korkea fallback-aste tai dataviive.",
+                )
+
+            st.divider()
+
+            # 2. Controls & Noise Reduction Toggle
+            col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 1])
+            with col_ctrl1:
+                weekly_smoothing = st.toggle(
+                    "🗓️ Viikkoaggregointi (Weekly Smoothing)",
+                    value=True,
+                    help="Aggregoi salkkujen pääoman viikkotasolle (perjantain sulkemiset) päivittäisen mikroheilahtelun ja satunnaiskohinan poistamiseksi.",
+                )
+            with col_ctrl2:
+                roll_window = st.select_slider(
+                    "Rullaava analyysi-ikkuna:",
+                    options=[14, 30, 60, 90],
+                    value=30,
+                    help="Päivien määrä rullaavalle Sharpen ja Sortinon laskennalle (oletus: 30 päivää).",
+                )
+            with col_ctrl3:
+                if st.button("🔄 Laske uudelleen", width="stretch", key="btn_recalc_quant"):
+                    st.rerun()
+
+            # 3. Calculation via quant_analytics Engine
+            inst_data = qa.generate_institutional_summary(
+                PORTFOLIOS_DIR,
+                weekly_smoothing=weekly_smoothing,
+                rolling_window=roll_window,
+            )
+            df_summary = inst_data["summary_df"]
+            corr_matrix = inst_data["correlation_matrix"]
+            dsr_report = inst_data["dsr_report"]
+
+            # 4. Unified Summary Table (Rows = 10 Portfolios)
+            # Columns = 30d Sharpe, 30d Sortino, Median Return, Mean Return, Max DD, Top-1 PnL %, Median Hold Days
+            st.markdown("#### 📋 10 Salkun Institutional-Yhteenveto")
+            st.caption("Rivit = 10 salkkua. Sarakkeet = 30d Sharpe, 30d Sortino, Mediaanituotto, Keskituotto, Max Drawdown, Top-1 PnL % ja Mediaanipitoaika.")
+
+            spec_cols = [
+                "Portfolio",
+                "30d Sharpe",
+                "30d Sortino",
+                "Median Return",
+                "Mean Return",
+                "Max DD",
+                "Top-1 PnL %",
+                "Median Hold Days",
+            ]
+            display_df = df_summary[[c for c in spec_cols if c in df_summary.columns]].copy()
+
+            def _highlight_selected_and_best(row):
+                styles = [""] * len(row)
+                pid = row["Portfolio"]
+                if pid == selected_portfolio:
+                    styles = ["background-color: #1e3a5f; font-weight: bold;"] * len(row)
+                elif pid == dsr_report.get("best_portfolio"):
+                    styles = ["background-color: #14382c;"] * len(row)
+                return styles
+
+            styled_summary = display_df.style.apply(_highlight_selected_and_best, axis=1)
+            st.dataframe(styled_summary, width="stretch", hide_index=True)
+            st.caption(
+                f"🔵 **Sininen korostus** = sivupalkista valittu salkku (`{selected_portfolio}`) &nbsp;|&nbsp; "
+                f"🟢 **Vihreä korostus** = korkeimman Sharpen salkku (`{dsr_report.get('best_portfolio', 'P1_Base')}`)."
+            )
+
+            st.divider()
+
+            # 5. Multiple Testing Correction (Deflated Sharpe Ratio & Bonferroni)
+            st.markdown("#### 🔬 Monitestauskorjaus & Tilastollinen Merkitsevyys (DSR)")
+            st.caption(
+                "Kun testataan 10 rinnakkaista strategiaa, paras salkku voi näyttää hyvältä pelkän satunnaiskohinan (selection bias) vuoksi. "
+                "Deflated Sharpe Ratio (DSR) ja Bonferroni-korjaus mittaavat, ylittääkö tuotto satunnaisuuden kynnyksen."
+            )
+
+            best_p = dsr_report.get("best_portfolio", "P1_Base")
+            best_sr = dsr_report.get("best_sharpe", 0.0)
+            dsr_pct = dsr_report.get("dsr", 0.0) * 100.0
+            e_max = dsr_report.get("expected_max_sharpe", 0.0)
+            bonf_p = dsr_report.get("bonferroni_p_value", 1.0)
+            is_sig = dsr_report.get("is_significant", False)
+
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            with m_col1:
+                st.metric("Paras Sharpe (Huippu)", f"{best_sr:.2f}", f"Salkku: {best_p}")
+            with m_col2:
+                st.metric("Odotettu satunnaishuippu (Null E[max])", f"{e_max:.2f}", "N=10 kokeen satunnaisuus")
+            with m_col3:
+                st.metric("Deflated Sharpe (DSR)", f"{dsr_pct:.1f}%", "Luotettavuus (kynnys: 95%)")
+            with m_col4:
+                st.metric("Bonferroni p-arvo", f"{bonf_p:.4f}", "Kynnys: α < 0.005")
+
+            if is_sig:
+                st.success(
+                    f"✅ **Tilastollisesti Merkitsevä Tulos ({dsr_report.get('verdict')})**: "
+                    f"Salkun `{best_p}` Sharpe-luku ({best_sr:.2f}) ylittää 10 strategian satunnaiskorjauksen (DSR: {dsr_pct:.1f}% > 95%). "
+                    "Havaittu ylituotto ei selity pelkällä sattumalla."
+                )
+            else:
+                st.info(
+                    f"ℹ️ **Satunnaisvaihtelun Alueella ({dsr_report.get('verdict')})**: "
+                    f"Salkun `{best_p}` Sharpe ({best_sr:.2f}) on lähellä 10 riippumattoman kokeen odotettua satunnaishuippua ({e_max:.2f}). "
+                    "Datahistoriaa tarvitaan useampia viikkoja tilastollisen merkitsevyyden vahvistamiseksi."
+                )
+
+            st.divider()
+
+            # 6. 10-Portfolio Return Correlation Matrix Heatmap (Plotly)
+            st.markdown("#### 🌐 10 Salkun Tuottokorrelaatiomatriisi")
+            st.caption(
+                "Mittaa strategioiden välistä riippuvuutta. Matala tai negatiivinen korrelaatio "
+                "osoittaa todellista hajautushyötyä (aidosti toisistaan poikkeavat alpha-lähteet)."
+            )
+
+            if not corr_matrix.empty and len(corr_matrix) > 1:
+                fig_corr = px.imshow(
+                    corr_matrix,
+                    text_auto=".2f",
+                    aspect="auto",
+                    color_continuous_scale="RdBu_r",
+                    zmin=-1.0,
+                    zmax=1.0,
+                    labels=dict(x="Salkku", y="Salkku", color="Korrelaatio"),
+                )
+                fig_corr.update_layout(
+                    plot_bgcolor="#0f172a",
+                    paper_bgcolor="#0f172a",
+                    height=520,
+                    font=dict(color="#f1f5f9", size=11),
+                    margin=dict(l=40, r=40, t=40, b=40),
+                    xaxis=dict(tickangle=-45),
+                )
+                st.plotly_chart(fig_corr, width="stretch")
+            else:
+                st.info("Korrelaatiomatriisin laskentaan tarvitaan vähintään kaksi peräkkäistä snapshotia salkuista.")
+
+            st.divider()
+
+            # 7. Attribution & Trade Skewness Deep-Dive
+            with st.expander("🔍 Tuottoattribuutio & Vinousanalyysi (Mediaani vs Keskiarvo & Keskittyminen)", expanded=False):
+                st.markdown(
+                    "**Miksi Mediaani vs Keskiarvo on tärkeä?** Jos keskiarvotuotto on merkittävästi korkeampi kuin mediaani, "
+                    "salkun tuotot nojaavat harvoihin äärimmäisiin 'lottovoittoihin' (oikealle vino jakauma). "
+                    "Jos mediaani on korkeampi, strategian tyypillinen kauppa on tasalaatuisempi."
+                )
+                c_att1, c_att2 = st.columns(2)
+                with c_att1:
+                    st.markdown("##### 🎯 Posiokeskittyminen (Top 1 & Top 2 Kaupat)")
+                    df_conc = df_summary[["Portfolio", "Top-1 PnL %", "_trades_count"]].copy()
+                    df_conc.columns = ["Salkku", "Top-1 Kauppa % PnL", "Suljetut Kaupat"]
+                    st.dataframe(df_conc, width="stretch", hide_index=True)
+                with c_att2:
+                    st.markdown("##### ⏱️ Pitoajat & PnL-jakauma")
+                    df_hold = df_summary[["Portfolio", "Median Return", "Mean Return", "Median Hold Days"]].copy()
+                    df_hold.columns = ["Salkku", "Mediaanituotto", "Keskituotto", "Mediaanipitoaika"]
+                    st.dataframe(df_hold, width="stretch", hide_index=True)
 
         with tab2:
             st.markdown("### ⚡ Avaa Uusi Virtuaalipositio (Paper Trade)")
