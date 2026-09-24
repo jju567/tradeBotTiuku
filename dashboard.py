@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
+import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
@@ -1992,6 +1993,7 @@ def render_dashboard_views(active_menu: str):
                     "Held In (count)",
                     "Premium Tags (e.g., Institutional, Deep Value)",
                     "Portfolios",
+                    "Yahoo Finance",
                 ]
 
                 col_config = {
@@ -2023,6 +2025,11 @@ def render_dashboard_views(active_menu: str):
                         "Portfolios",
                         help="Salkut, jotka omistavat tämän osakkeen",
                     ),
+                    "Yahoo Finance": st.column_config.LinkColumn(
+                        "Lisätiedot & Kurssi",
+                        help="Avaa reaaliaikainen kurssisivu, uutiset ja taloustiedot suoraan Yahoo Financessa",
+                        display_text="🌐 Avaa Yahoo Finance",
+                    ),
                 }
 
                 st.dataframe(
@@ -2031,6 +2038,174 @@ def render_dashboard_views(active_menu: str):
                     width="stretch",
                     hide_index=True,
                 )
+
+                st.divider()
+
+                # --------------------------------------------------------------
+                # Stock Deep-Dive & Multi-Portfolio Inspector
+                # --------------------------------------------------------------
+                st.markdown("#### 🔎 Osakkeen Lisätiedot & Syväanalyysi (Stock Inspector)")
+                st.caption("Valitse mikä tahansa konsensuslistan osake nähdäksesi sen salkkukohtaiset ostotasot, fundamentit, uutishavainnot ja interaktiivisen kurssikaavion.")
+
+                ins_col1, ins_col2 = st.columns([2, 1])
+                with ins_col1:
+                    ticker_options = filtered_df["Ticker"].tolist() if not filtered_df.empty else df_conviction["Ticker"].tolist()
+                    selected_ticker = st.selectbox(
+                        "Valitse tarkasteltava osake:",
+                        ticker_options,
+                        index=0,
+                        key="top_picks_selected_ticker",
+                    )
+                with ins_col2:
+                    period_inspect = st.selectbox(
+                        "Kurssiaikaväli:",
+                        ["1mo", "3mo", "6mo", "1y", "ytd"],
+                        index=1,
+                        key="top_picks_period_select",
+                    )
+
+                if selected_ticker:
+                    row_match = df_conviction[df_conviction["Ticker"] == selected_ticker].iloc[0]
+                    clean_sym = selected_ticker.replace(".HE", "").replace(".ST", "")
+
+                    # Action buttons for external research
+                    b_col1, b_col2, b_col3, b_col4 = st.columns([1.2, 1.2, 1.2, 1.5])
+                    with b_col1:
+                        st.link_button("🌐 Avaa Yahoo Finance", f"https://finance.yahoo.com/quote/{selected_ticker}", use_container_width=True)
+                    with b_col2:
+                        st.link_button("📈 TradingView", f"https://www.tradingview.com/symbols/{clean_sym}/", use_container_width=True)
+                    with b_col3:
+                        st.link_button("🔍 Google Haku", f"https://www.google.com/search?q={selected_ticker}+stock+investor+relations", use_container_width=True)
+                    with b_col4:
+                        st.caption(f"⭐ **Konsensus:** {row_match['Star Rating']} ({row_match['Conviction Score (0-14)']}/14 p) &nbsp;|&nbsp; Omistajia: {row_match['Held In (count)']} salkkua")
+
+                    # Inspect portfolio positions for this ticker across all 10 portfolios
+                    port_positions = []
+                    for pid in [
+                        "P1_Base", "P2_Fast_Cycle", "P3_Diamond_Hands", "P4_Institutional",
+                        "P5_Nordic_Only", "P6_US_Only", "P7_Deep_Value_Extreme",
+                        "P8_Quality_Growth", "P9_High_Conviction", "P10_Micro_Sniper"
+                    ]:
+                        st_file = PORTFOLIOS_DIR / f"portfolio_{pid}_state.json"
+                        if st_file.exists():
+                            try:
+                                with open(st_file, "r", encoding="utf-8") as f_st:
+                                    s_data = json.load(f_st)
+                                for p in s_data.get("positions", []):
+                                    t = (p.get("Ticker") or p.get("ticker", "")).strip().upper()
+                                    if t == selected_ticker:
+                                        port_positions.append({
+                                            "Salkku": pid,
+                                            "Ostopäivä": p.get("Buy Date") or p.get("buy_date", "-"),
+                                            "Ostohinta": float(p.get("Buy Price") or p.get("buy_price", 0.0)),
+                                            "Kpl": int(p.get("Shares") or p.get("shares", 0)),
+                                            "Pääoma": float(p.get("Capital Invested") or p.get("invested_eur", 0.0)),
+                                            "Valuutta": p.get("Currency") or p.get("currency", "EUR"),
+                                            "Strategia": p.get("Strategy") or p.get("strategy", "Profile B"),
+                                        })
+                            except Exception:
+                                pass
+
+                    c_det1, c_det2 = st.columns([3, 2])
+                    with c_det1:
+                        st.markdown("##### 💼 Positiot ja hankintahinnat salkuittain:")
+                        if port_positions:
+                            df_inspect_pos = pd.DataFrame(port_positions)
+                            st.dataframe(
+                                df_inspect_pos,
+                                column_config={
+                                    "Ostohinta": st.column_config.NumberColumn("Ostohinta", format="%,.2f"),
+                                    "Pääoma": st.column_config.NumberColumn("Pääoma", format="%,.2f"),
+                                    "Kpl": st.column_config.NumberColumn("Kpl", format="%,.0f"),
+                                },
+                                width="stretch",
+                                hide_index=True,
+                            )
+                        else:
+                            st.caption("Ei suoria positiotietoja ladattavissa.")
+
+                    with c_det2:
+                        st.markdown("##### 📊 Universumitiedot & Luokitus:")
+                        u_match = None
+                        if (DATA_DIR / "clean_microcap_universe.csv").exists():
+                            try:
+                                df_univ = pd.read_csv(DATA_DIR / "clean_microcap_universe.csv")
+                                if "ticker" in df_univ.columns:
+                                    m_u = df_univ[df_univ["ticker"] == selected_ticker]
+                                    if not m_u.empty:
+                                        u_match = m_u.iloc[0].to_dict()
+                            except Exception:
+                                pass
+
+                        if u_match:
+                            st.markdown(f"- **Pörssimaa:** `{u_match.get('market', '-')}` | **Valuutta:** `{u_match.get('currency', '-')}`")
+                            st.markdown(f"- **Markkina-arvo (USD):** ${u_match.get('market_cap_usd', 0.0):,.0f}")
+                            st.markdown(f"- **20d Vaihto (ADV):** ${u_match.get('adv_20d_usd', 0.0):,.0f} / pv")
+                            st.markdown(f"- **Viimeisin noteeraus:** {u_match.get('current_price', 0.0):,.2f} {u_match.get('currency', '')}")
+                        else:
+                            st.caption("Osaketta ei löydy suoraan clean_microcap_universe.csv -tiedostosta (mahdollinen uusi uutisbongaus).")
+
+                        # Check Turnaround Watchlist
+                        wl_match = None
+                        if WATCHLIST_CSV.exists():
+                            try:
+                                df_wl = pd.read_csv(WATCHLIST_CSV)
+                                if "ticker" in df_wl.columns:
+                                    m_wl = df_wl[df_wl["ticker"] == selected_ticker]
+                                    if not m_wl.empty:
+                                        wl_match = m_wl.iloc[-1].to_dict()
+                            except Exception:
+                                pass
+
+                        if wl_match:
+                            st.markdown("##### 🚀 Käännekatalyytit & Uutislöydökset:")
+                            st.info(f"**{wl_match.get('title', 'Käännehavaitsin')}**\n\n{wl_match.get('web_reasoning', wl_match.get('doc_reasoning', ''))}")
+
+                    # Interactive Stock Price Chart
+                    with st.spinner(f"Noudetaan historiadataa osakkeelle {selected_ticker}..."):
+                        df_hist_insp, _ = fetch_ticker_history(selected_ticker, period=period_inspect)
+
+                    if not df_hist_insp.empty:
+                        fig_insp = go.Figure()
+                        fig_insp.add_trace(go.Scatter(
+                            x=df_hist_insp.index,
+                            y=df_hist_insp["Close"],
+                            mode="lines",
+                            name=f"{selected_ticker} Päätöskurssi",
+                            line=dict(color="#38bdf8", width=2.5),
+                        ))
+
+                        # Average buy price line if available
+                        if port_positions:
+                            avg_buy = float(np.mean([p["Ostohinta"] for p in port_positions if p["Ostohinta"] > 0]))
+                            if avg_buy > 0:
+                                curr_code = port_positions[0]["Valuutta"]
+                                fig_insp.add_hline(
+                                    y=avg_buy,
+                                    line_dash="dash",
+                                    line_color="#10b981",
+                                    line_width=2,
+                                    annotation_text=f"Keskihankintahinta: {avg_buy:,.2f} {curr_code}",
+                                    annotation_position="top left",
+                                    annotation_font_color="#10b981",
+                                )
+
+                        fig_insp.update_layout(
+                            title=dict(
+                                text=f"📈 {selected_ticker} — Kurssikehitys ({period_inspect})",
+                                font=dict(color="#f8fafc", size=14),
+                            ),
+                            template="plotly_dark",
+                            paper_bgcolor="#1e293b",
+                            plot_bgcolor="#0f172a",
+                            height=360,
+                            margin=dict(l=50, r=40, t=50, b=40),
+                            font=dict(color="#f8fafc"),
+                            xaxis=dict(title="Päivämäärä", showgrid=True, gridcolor="#334155"),
+                            yaxis=dict(title=f"Kurssi", showgrid=True, gridcolor="#334155"),
+                            hovermode="x unified",
+                        )
+                        st.plotly_chart(fig_insp, use_container_width=True)
 
                 with st.expander("ℹ️ Miten Conviction Score (0–14) ja tähtiluokitus muodostetaan?", expanded=False):
                     st.markdown("""

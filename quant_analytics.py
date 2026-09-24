@@ -1054,6 +1054,7 @@ def calculate_top_picks_conviction(portfolios_dir: Path) -> pd.DataFrame:
             "Held In (count)": base_score,
             "Premium Tags (e.g., Institutional, Deep Value)": tags_str,
             "Portfolios": portfolios_str,
+            "Yahoo Finance": f"https://finance.yahoo.com/quote/{ticker}",
             "_raw_score": total_score,
             "_strategies": ", ".join(sorted(info["strategies"])),
             "_currency": ", ".join(sorted(info["currencies"])),
