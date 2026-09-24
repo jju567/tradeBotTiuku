@@ -55,7 +55,7 @@ def test_portfolios_yaml_structure():
     assert p11["slots"] == 5
     assert p11["slot_size"] == 2000
     assert p11["min_conviction_score"] == 8
-    assert p11["min_exit_conviction_score"] == 5
+    assert p11["min_exit_conviction_score"] == 6
     assert "Institutional" in p11["required_tags"]
 
 
@@ -280,7 +280,7 @@ def test_meta_consensus_execution(tmp_path):
     Test P11_Meta_Consensus logic:
     1. Only buys when Conviction Score >= 8 and has Institutional + (Deep Value OR Quality Growth).
     2. Uses slot_size (~2,000 €).
-    3. Exits when Conviction Score drops < 5.
+    3. Exits when Conviction Score drops < 6.
     """
     import pandas as pd
 
@@ -294,7 +294,7 @@ portfolios:
     slot_size: 2000
     start_cash: 10000
     min_conviction_score: 8
-    min_exit_conviction_score: 5
+    min_exit_conviction_score: 6
     required_tags: ["Institutional"]
     regions: ["US"]
 """
@@ -355,13 +355,13 @@ portfolios:
         # Slot size ~2,000 EUR in USD (~2,100 USD) / $50 = ~42 shares
         assert p11.positions[0]["Shares"] > 35
 
-        # Test Exit: conviction score drops < 5
+        # Test Exit: conviction score drops < 6
         mock_dropped_conviction = pd.DataFrame([
             {
                 "Ticker": "TOP1",
-                "Conviction Score (0-14)": 3,  # Dropped from 9 to 3 (< 5 threshold)
-                "Star Rating": "⭐⭐",
-                "Held In (count)": 3,
+                "Conviction Score (0-14)": 5,  # Dropped from 9 to 5 (< 6 threshold)
+                "Star Rating": "⭐⭐⭐",
+                "Held In (count)": 5,
                 "Premium Tags (e.g., Institutional, Deep Value)": "-",
                 "Portfolios": "P1_Base",
             }

@@ -86,7 +86,7 @@ portfolios:
     slot_size: 2000
     start_cash: 10000
     min_conviction_score: 8
-    min_exit_conviction_score: 5
+    min_exit_conviction_score: 6
     required_tags: ["Institutional"] # Must have Institutional + (Deep Value OR Quality Growth)
     regions: ["FI", "SE", "US"]
     dead_money_days: 180

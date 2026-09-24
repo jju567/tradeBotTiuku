@@ -811,7 +811,7 @@ class MasterLiveTradingDaemon:
             is_conviction_exit = False
             conviction_reason = ""
             if exit_min_score is not None or portfolio.config.strategy == "Meta_Consensus":
-                thresh = exit_min_score if exit_min_score is not None else 5
+                thresh = exit_min_score if exit_min_score is not None else 6
                 current_score = int(conviction_map.get(ticker.upper(), 0))
                 if current_score < thresh:
                     is_conviction_exit = True

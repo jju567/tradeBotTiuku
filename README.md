@@ -211,7 +211,7 @@ Juuritason päämoottori reaaliaikaiseen 11 rinnakkaisen paperisalkun walk-forwa
     8. `P8_Quality_Growth`: Profile A, sijoittaa kasvu- ja kannattavuussignaaleihin (kasvu > 20 %, kate > 40 %).
     9. `P9_High_Conviction`: Profile B, vain 5 slottia (2,000 €/osto) suurella vakaumuksella.
     10. `P10_Micro_Sniper`: Profile B, 20 pientä slottia (500 €/osto, min ADV 150k).
-    11. `P11_Meta_Consensus`: Meta_Consensus, 5 slottia (2,000 €/osto). Ei skannaa raakamarkkinaa, vaan treidaa P1–P10 -perussalkkujen reaaliaikaista konsensusta: vaatii sisääntuloon Conviction Scoren $\ge 8$ (⭐⭐⭐⭐+) sekä tagit `Institutional` (+1) JA (`Deep Value` (+2) TAI `Quality Growth` (+1)). Myy automaattisesti, jos vakaumuspistemäärä putoaa alle 5 pisteen (`CONVICTION_DROP`) tai suojastopit laukeavat.
+    11. `P11_Meta_Consensus`: Meta_Consensus, 5 slottia (2,000 €/osto). Ei skannaa raakamarkkinaa, vaan treidaa P1–P10 -perussalkkujen reaaliaikaista konsensusta: vaatii sisääntuloon Conviction Scoren $\ge 8$ (⭐⭐⭐⭐+) sekä tagit `Institutional` (+1) JA (`Deep Value` (+2) TAI `Quality Growth` (+1)). Myy automaattisesti, jos vakaumuspistemäärä putoaa alle 6 pisteen (`CONVICTION_DROP`) tai suojastopit laukeavat.
 - **Yhteinen Markkinadatan Nouto (Single-Pass Market Engine)**:
   - Hakee reaaliaikaiset kurssit, 20d ADV:t, uutiset ja deterministiset fundamentit **tiukasti vain kerran syklissä** (säästää API-kutsuja ja estää yfinance-bannit).
 - **Itsenäinen Tilanhallinta (`data/portfolios/`)**:
