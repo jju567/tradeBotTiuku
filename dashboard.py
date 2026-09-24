@@ -1297,7 +1297,7 @@ def render_dashboard_views(active_menu: str):
                 else:
                     catalysts_str = str(catalysts)
 
-                with st.expander(f"📌 **{ticker}** ({comp}) — *{catalysts_str}* | 🕒 {ts}", expanded=True):
+                with st.expander(f"📌 **{ticker}** ({comp}) — *{catalysts_str}* | 🕒 {ts}", expanded=False):
                     c_left, c_right = st.columns(2)
                     with c_left:
                         st.markdown("#### ⚠️ Step 1: Historical Financial Lag (10-Q / PR)")
