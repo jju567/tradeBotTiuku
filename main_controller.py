@@ -100,31 +100,36 @@ def append_nlp_decision(
     headline: str,
     llm_decision: str,
     reasoning: str,
-    archive_path: Path = DEFAULT_NLP_ARCHIVE_CSV,
+    archive_path: Optional[Path] = None,
     timestamp: Optional[str] = None,
 ) -> None:
     """
     Appends an evaluated press release / news decision to the permanent NLP decision archive CSV.
     Header: Timestamp, Ticker, Headline, LLM_Decision, Reasoning
     """
+    clean_headline = " ".join(str(headline).split()) if headline else ""
+    if not clean_headline:
+        # Strictly skip writing empty headlines to the archive CSV
+        return
+
+    target_path = archive_path or DEFAULT_NLP_ARCHIVE_CSV
     try:
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        file_exists = archive_path.exists()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = target_path.exists()
         ts = timestamp or datetime.now(timezone.utc).isoformat()
 
         # Sanitize single-line strings
         clean_ticker = str(ticker).strip().upper()
-        clean_headline = " ".join(str(headline).split())
         clean_decision = str(llm_decision).strip().upper()
         clean_reasoning = " ".join(str(reasoning).split())
 
-        with open(archive_path, "a", encoding="utf-8", newline="") as f:
+        with open(target_path, "a", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            if not file_exists or archive_path.stat().st_size == 0:
+            if not file_exists or target_path.stat().st_size == 0:
                 writer.writerow(["Timestamp", "Ticker", "Headline", "LLM_Decision", "Reasoning"])
             writer.writerow([ts, clean_ticker, clean_headline, clean_decision, clean_reasoning])
     except Exception as e:
-        logger.warning(f"Failed to record NLP decision to {archive_path}: {e}")
+        logger.warning(f"Failed to record NLP decision to {target_path}: {e}")
 
 
 # Strict Fee & Execution Parameters
@@ -447,6 +452,30 @@ class MarketDataEngine:
         self.eval_profiles_cache: Dict[str, Dict[str, Any]] = {}
         self.news_radar_cache: Dict[str, Tuple[str, str]] = {}
         self.universe_metadata: Dict[str, Dict[str, Any]] = {}
+        # Global cache of evaluated news items (ticker, clean_headline) -> (decision, reason)
+        self.evaluated_news_cache: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        self._load_evaluated_news_cache()
+
+    def _load_evaluated_news_cache(self, archive_path: Path = DEFAULT_NLP_ARCHIVE_CSV) -> None:
+        """Pre-populates the in-memory news evaluation cache from existing archive to ensure deduplication."""
+        if not archive_path.exists():
+            return
+        try:
+            with open(archive_path, "r", encoding="utf-8", errors="ignore") as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                for row in reader:
+                    if len(row) >= 5:
+                        ticker = row[1].strip().upper()
+                        headline = " ".join(row[2].split())
+                        decision = row[3].strip().upper()
+                        reason = row[4].strip()
+                        if ticker and headline:
+                            self.evaluated_news_cache[(ticker, headline)] = (decision, reason)
+            if self.evaluated_news_cache:
+                logger.info(f"Loaded {len(self.evaluated_news_cache)} historical news evaluations into NLP cache.")
+        except Exception as e:
+            logger.debug(f"Could not pre-load NLP cache: {e}")
 
     def refresh_data(self, held_tickers: Set[str]) -> None:
         """Fetches live data strictly ONCE for all universe stocks and held tickers."""
@@ -514,61 +543,106 @@ class MarketDataEngine:
         return None
 
     def _evaluate_news_radar(self, ticker: str) -> Tuple[str, str]:
+        """
+        Evaluates news items for a ticker using rule-based/LLM radar.
+        Workflow:
+          1. Extract valid news items with non-empty headlines (supports both yfinance formats).
+          2. Skip empty headlines completely.
+          3. Check global cache:
+             - If (ticker, headline) in self.evaluated_news_cache:
+                 use cached decision and reasoning without re-running NLP and without re-appending to CSV.
+             - If new:
+                 run NLP checks, call append_nlp_decision() EXACTLY ONCE, and store in self.evaluated_news_cache.
+          4. Aggregate decisions: FATAL REJECT overrides WARN overrides HOLD.
+        """
         try:
             t = yf.Ticker(ticker)
-            news_items = getattr(t, "news", []) or []
-            if not news_items:
+            raw_news = getattr(t, "news", []) or []
+            if not raw_news:
                 return "HOLD", "No new press releases"
 
             warning_found = False
             warning_reason = ""
-            warning_headline = ""
+            valid_headline_count = 0
 
-            for item in news_items[:10]:
-                title = str(item.get("title", "")).strip()
-                summary = str(item.get("summary", "")).strip()
-                full_text = f"{title} {summary}"
+            for item in raw_news[:10]:
+                if not isinstance(item, dict):
+                    continue
 
-                item_decision = "HOLD"
-                item_reason = "No fatal red flags detected"
+                # Support both yfinance formats: item["content"]["title"] or item["title"]
+                content = item.get("content", item) if isinstance(item.get("content"), dict) else item
+                title = str(content.get("title", "") or "").strip()
+                summary = str(content.get("summary", "") or "").strip()
 
-                for pattern in FATAL_RED_FLAG_PATTERNS:
-                    if pattern.lower() in full_text.lower():
-                        item_reason = f"Fatal red flag '{pattern}' detected in headline: {title}"
-                        append_nlp_decision(ticker, title or summary, "REJECT", item_reason)
-                        return "REJECT", item_reason
+                # Requirement 1: Skip Empty News strictly
+                clean_headline = " ".join((title or summary).split())
+                if not clean_headline:
+                    continue
 
-                for pattern in WARN_PATTERNS:
-                    if pattern.lower() in full_text.lower():
-                        item_decision = "WARN"
-                        item_reason = f"Warning '{pattern}' detected in headline: {title}"
-                        warning_found = True
-                        warning_reason = item_reason
-                        warning_headline = title
+                valid_headline_count += 1
+                full_text = f"{title} {summary}".strip()
+                cache_key = (ticker, clean_headline)
 
-                nlp_res = rule_based_analyze_core_fundamentals(full_text)
-                safety = nlp_res.get("financial_safety", {})
-                if safety.get("going_concern_risk") or safety.get("erratic_pivots_detected"):
-                    item_reason = f"Fatal NLP Risk triggered: {nlp_res.get('verdict_details', {}).get('reasoning')}"
-                    append_nlp_decision(ticker, title or summary, "REJECT", item_reason)
+                # Requirement 2: Check global cache -> if new, call LLM -> log ONCE -> store in cache
+                if cache_key in self.evaluated_news_cache:
+                    item_decision, item_reason = self.evaluated_news_cache[cache_key]
+                else:
+                    item_decision = "HOLD"
+                    item_reason = "No fatal red flags detected"
+                    fatal_detected = False
+
+                    # Check fatal patterns
+                    for pattern in FATAL_RED_FLAG_PATTERNS:
+                        if pattern.lower() in full_text.lower():
+                            item_decision = "REJECT"
+                            item_reason = f"Fatal red flag '{pattern}' detected in headline: {title or clean_headline}"
+                            fatal_detected = True
+                            break
+
+                    if not fatal_detected:
+                        # Check warning patterns
+                        for pattern in WARN_PATTERNS:
+                            if pattern.lower() in full_text.lower():
+                                item_decision = "WARN"
+                                item_reason = f"Warning '{pattern}' detected in headline: {title or clean_headline}"
+                                break
+
+                        # Core NLP analysis
+                        nlp_res = rule_based_analyze_core_fundamentals(full_text)
+                        safety = nlp_res.get("financial_safety", {})
+                        if safety.get("going_concern_risk") or safety.get("erratic_pivots_detected"):
+                            item_decision = "REJECT"
+                            item_reason = f"Fatal NLP Risk triggered: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+                        elif nlp_res.get("verdict_details", {}).get("verdict") == "WARN" or safety.get("warning_detected"):
+                            if item_decision != "REJECT":
+                                item_decision = "WARN"
+                                item_reason = f"NLP Warning: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+
+                    # Log ONCE to CSV
+                    append_nlp_decision(ticker, clean_headline, item_decision, item_reason)
+
+                    # Store in global cache
+                    self.evaluated_news_cache[cache_key] = (item_decision, item_reason)
+
+                # Aggregate ticker status
+                if item_decision == "REJECT":
                     return "REJECT", item_reason
-                elif nlp_res.get("verdict_details", {}).get("verdict") == "WARN" or safety.get("warning_detected"):
-                    item_decision = "WARN"
-                    item_reason = f"NLP Warning: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+                elif item_decision == "WARN":
                     warning_found = True
                     warning_reason = item_reason
-                    warning_headline = title
-
-                # Log non-fatal evaluation into archive
-                append_nlp_decision(ticker, title or summary, item_decision, item_reason)
 
             if warning_found:
                 return "WARN", warning_reason
 
-            return "HOLD", f"Scanned {len(news_items)} recent news items with no fatal red flags"
+            if valid_headline_count == 0:
+                return "HOLD", "No new press releases"
+
+            return "HOLD", f"Scanned {valid_headline_count} recent news items with no fatal red flags"
+
         except Exception as e:
             logger.debug(f"Error checking news for {ticker}: {e}")
             return "HOLD", "News scan error"
+
 
 
 class MasterLiveTradingDaemon:

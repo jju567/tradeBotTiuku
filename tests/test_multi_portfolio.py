@@ -137,15 +137,70 @@ def test_permanent_nlp_decision_archive(tmp_path):
         timestamp="2026-09-23T11:05:00+00:00",
     )
 
+    # Attempt to append empty headlines (should be strictly skipped)
+    append_nlp_decision(
+        ticker="EMPTY.ST",
+        headline="",
+        llm_decision="HOLD",
+        reasoning="Empty headline",
+        archive_path=test_archive,
+    )
+    append_nlp_decision(
+        ticker="BLANK.ST",
+        headline="    \n   ",
+        llm_decision="HOLD",
+        reasoning="Whitespace headline",
+        archive_path=test_archive,
+    )
+
     with open(test_archive, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f.readlines() if line.strip()]
 
+    # Empty headlines were skipped, line count remains 3 (header + 2 valid rows)
     assert len(lines) == 3
     assert lines[0] == "Timestamp,Ticker,Headline,LLM_Decision,Reasoning"
     assert "BIOA.ST" in lines[1]
     assert "HOLD" in lines[1]
     assert "SEZI.ST" in lines[2]
     assert "REJECT" in lines[2]
+
+
+def test_market_engine_nlp_caching_and_deduplication(tmp_path):
+    """Verify that MarketDataEngine evaluates and logs new headlines EXACTLY ONCE globally."""
+    archive_file = tmp_path / "test_nlp_archive.csv"
+    engine = MarketDataEngine()
+    engine.evaluated_news_cache.clear()
+
+    mock_news = [
+        {"content": {"title": "Company reports record Q2 profit beat", "summary": "Strong sales"}},
+        {"content": {"title": "", "summary": ""}},  # Empty item: must be skipped
+        {"title": None, "summary": None},           # Malformed/empty: must be skipped
+    ]
+
+    with patch("main_controller.DEFAULT_NLP_ARCHIVE_CSV", archive_file):
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_inst = MagicMock()
+            mock_inst.news = mock_news
+            mock_ticker.return_value = mock_inst
+
+            # First evaluation: new headline -> should log to CSV ONCE
+            v1, r1 = engine._evaluate_news_radar("ABC")
+            assert v1 in ("HOLD", "WARN", "REJECT")
+            assert archive_file.exists()
+
+            with open(archive_file, "r", encoding="utf-8") as f:
+                lines_first = [line.strip() for line in f.readlines() if line.strip()]
+            assert len(lines_first) == 2  # Header + 1 record
+
+            # Second evaluation for the same ticker/headline (e.g. subsequent portfolio or cycle)
+            v2, r2 = engine._evaluate_news_radar("ABC")
+            assert (v2, r2) == (v1, r1)
+
+            with open(archive_file, "r", encoding="utf-8") as f:
+                lines_second = [line.strip() for line in f.readlines() if line.strip()]
+            # Must NOT append duplicate line — exactly 2 lines remain
+            assert len(lines_second) == 2
+
 
 
 def test_send_run_summary_email():
