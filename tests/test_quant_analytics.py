@@ -128,3 +128,37 @@ def test_correlation_matrix_builder(sample_equity_curve):
     assert corr.shape == (3, 3)
     assert pytest.approx(corr.loc["P1", "P1"], 0.01) == 1.0
     assert pytest.approx(corr.loc["P2", "P1"], 0.01) == 1.0
+
+
+def test_dsr_data_sufficiency_guard():
+    sharpes = [0.5, 0.2, -0.1, 0.8, 1.2, 0.4, 0.3, 0.1, -0.2, 0.6]
+
+    # Test with insufficient observations (e.g. T = 2 days)
+    short_report = qa.deflated_sharpe_ratio(
+        sharpe=1.2,
+        all_sharpes=sharpes,
+        nb_trials=10,
+        sample_length=2,
+    )
+    assert short_report["has_sufficient_data"] is False
+    assert short_report["days_needed"] == 18
+    # Null E[max] must NOT explode to 15.74; it must report the stable 1-year baseline (~1.57)
+    assert 1.0 <= short_report["expected_max_sharpe"] <= 2.5
+
+    # Test with sufficient observations (T = 50 days)
+    suff_report = qa.deflated_sharpe_ratio(
+        sharpe=1.2,
+        all_sharpes=sharpes,
+        nb_trials=10,
+        sample_length=50,
+    )
+    assert suff_report["has_sufficient_data"] is True
+    assert suff_report["days_needed"] == 0
+
+
+def test_get_market_regime():
+    regime = qa.get_market_regime()
+    assert "regime" in regime
+    assert "badge" in regime
+    assert "volatility_20d_pct" in regime
+    assert regime["volatility_20d_pct"] > 0

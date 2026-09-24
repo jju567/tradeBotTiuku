@@ -1898,65 +1898,12 @@ def render_dashboard_views(active_menu: str):
             st.markdown("### 🏛️ Institutional Quantitative & Operational Analytics")
             st.caption(
                 "Pääomarahastotason riskikorjatut tunnusluvut, usean hypoteesin DSR-korjaus (Multiple Testing Correction), "
-                "kohinaton viikkotuottojen korrelaatiomatriisi ja botin operatiiviset terveysmittarit."
+                "kohinaton viikkotuottojen korrelaatiomatriisi, markkinaregiimiseuranta ja botin operatiiviset terveysmittarit."
             )
 
-            # 1. Operational Health KPI Counters (Top of Tab)
-            op_data = {}
-            if OPERATIONAL_METRICS_JSON.exists():
-                try:
-                    with open(OPERATIONAL_METRICS_JSON, "r", encoding="utf-8") as f_op:
-                        op_data = json.load(f_op)
-                except Exception as e:
-                    logger.debug(f"Could not load {OPERATIONAL_METRICS_JSON}: {e}")
-
-            llm_fallback_rate = float(op_data.get("llm_fallback_rate_pct", 0.0))
-            llm_fallbacks = int(op_data.get("llm_fallbacks", 0))
-            llm_attempts = int(op_data.get("llm_calls_attempted", 0))
-            freshness_blocks = int(op_data.get("freshness_blocks", 0))
-            freshness_checks = int(op_data.get("freshness_checks_total", 0))
-            freshness_rate = float(op_data.get("freshness_block_rate_pct", 0.0))
-            nlp_total = int(op_data.get("nlp_evaluations_total", 0))
-            bot_status = str(op_data.get("status", "HEALTHY"))
-            last_op_update = to_helsinki_time(op_data.get("last_updated", ""))
-
-            st.markdown("#### 🏥 Botin Operatiivinen Terveys & Suojamekanismit")
-            c_op1, c_op2, c_op3, c_op4 = st.columns(4)
-            with c_op1:
-                st.metric(
-                    "LLM Fallback Rate",
-                    f"{llm_fallback_rate:.1f}%",
-                    f"{llm_fallbacks} / {max(llm_attempts, 1)} varalla",
-                    delta_color="inverse",
-                    help="Kuinka usein NLP/LLM-tarkistus on aikakatkaistu tai kaatunut, ja siirrytty automaattisesti sääntöpohjaiseen (rule-based) analyysiin.",
-                )
-            with c_op2:
-                st.metric(
-                    "Data Freshness Blocks",
-                    f"{freshness_blocks} kpl",
-                    f"{freshness_rate:.1f}% ostoista estetty",
-                    delta_color="inverse",
-                    help="Kuinka monta kertaa is_fresh -suoja on estänyt ostotoimeksiannon vanhentuneen (>120 pv) tilinpäätösdatan tai yfinance-viiveen vuoksi.",
-                )
-            with c_op3:
-                st.metric(
-                    "NLP-arviointeja yhteensä",
-                    f"{nlp_total} kpl",
-                    "Uutis- & tiedotetutka",
-                    help="Yhteensä läpikäydyt pörssitiedotteet ja uutisotsikot rinnakkaisissa walk-forward -salkuissa.",
-                )
-            with c_op4:
-                status_icon = "🟢" if "HEALTHY" in bot_status.upper() else "🟡"
-                st.metric(
-                    "Järjestelmän tila",
-                    f"{status_icon} {bot_status}",
-                    f"Päivitetty: {last_op_update}" if last_op_update else "Aktiivinen",
-                    help="Daemonin toimintatila. Vihreä = kaikki toimii nimellisesti, Keltainen = korkea fallback-aste tai dataviive.",
-                )
-
-            st.divider()
-
-            # 2. Controls & Noise Reduction Toggle
+            # ------------------------------------------------------------------
+            # 1. Controls & Noise Reduction Toggle (Evaluated First)
+            # ------------------------------------------------------------------
             col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 1])
             with col_ctrl1:
                 weekly_smoothing = st.toggle(
@@ -1975,7 +1922,9 @@ def render_dashboard_views(active_menu: str):
                 if st.button("🔄 Laske uudelleen", width="stretch", key="btn_recalc_quant"):
                     st.rerun()
 
-            # 3. Calculation via quant_analytics Engine
+            # ------------------------------------------------------------------
+            # 2. Calculation via quant_analytics Engine
+            # ------------------------------------------------------------------
             inst_data = qa.generate_institutional_summary(
                 PORTFOLIOS_DIR,
                 weekly_smoothing=weekly_smoothing,
@@ -1984,9 +1933,87 @@ def render_dashboard_views(active_menu: str):
             df_summary = inst_data["summary_df"]
             corr_matrix = inst_data["correlation_matrix"]
             dsr_report = inst_data["dsr_report"]
+            regime = inst_data.get("market_regime", {})
+            actual_t = inst_data.get("actual_sample_size", 0)
 
+            # ------------------------------------------------------------------
+            # 3. Market Regime Tagging & Operational Health KPI Banner (Top of Tab)
+            # ------------------------------------------------------------------
+            op_data = {}
+            if OPERATIONAL_METRICS_JSON.exists():
+                try:
+                    with open(OPERATIONAL_METRICS_JSON, "r", encoding="utf-8") as f_op:
+                        op_data = json.load(f_op)
+                except Exception as e:
+                    logger.debug(f"Could not load {OPERATIONAL_METRICS_JSON}: {e}")
+
+            llm_fallback_rate = float(op_data.get("llm_fallback_rate_pct", 0.0))
+            llm_fallbacks = int(op_data.get("llm_fallbacks", 0))
+            llm_attempts = int(op_data.get("llm_calls_attempted", 0))
+            freshness_blocks = int(op_data.get("freshness_blocks", 0))
+            freshness_checks = int(op_data.get("freshness_checks_total", 0))
+            freshness_rate = float(op_data.get("freshness_block_rate_pct", 0.0))
+            nlp_total = int(op_data.get("nlp_evaluations_total", 0))
+            
+            # Refined health status logic for early-stage walk-forward
+            raw_status = str(op_data.get("status", "INITIALIZING"))
+            if llm_attempts < 10 or freshness_checks < 10:
+                bot_status = "INITIALIZING (Pieni otos — odottaa syklejä)"
+                status_icon = "🟡"
+            elif "HEALTHY" in raw_status.upper():
+                bot_status = "HEALTHY (Nimellinen toiminta)"
+                status_icon = "🟢"
+            else:
+                bot_status = raw_status
+                status_icon = "🟡"
+            last_op_update = to_helsinki_time(op_data.get("last_updated", ""))
+
+            st.markdown("#### 🏥 Markkinaregiimi & Botin Operatiivinen Terveys")
+            c_op0, c_op1, c_op2, c_op3, c_op4 = st.columns(5)
+            with c_op0:
+                st.metric(
+                    "Markkinaregiimi (^RUT)",
+                    regime.get("badge", "🟡 NEUTRAL"),
+                    f"20d Vol: {regime.get('volatility_20d_pct', 19.5):.1f}% | SMA50: {regime.get('dist_sma50_pct', 0.0):+.1f}%",
+                    help=f"{regime.get('description', '')} (Lähde: {regime.get('benchmark', '^RUT')} Russell 2000)",
+                )
+            with c_op1:
+                st.metric(
+                    "LLM Fallback Rate",
+                    f"{llm_fallback_rate:.1f}%",
+                    f"{llm_fallbacks} / {max(llm_attempts, 1)} varalla",
+                    delta_color="inverse",
+                    help="Kuinka usein NLP/LLM-tarkistus on aikakatkaistu tai kaatunut, ja siirrytty automaattisesti sääntöpohjaiseen (rule-based) analyysiin.",
+                )
+            with c_op2:
+                st.metric(
+                    "Data Freshness Blocks",
+                    f"{freshness_blocks} kpl",
+                    f"{freshness_rate:.1f}% ostoista estetty",
+                    delta_color="inverse",
+                    help="Kuinka monta kertaa is_fresh -suoja on estänyt ostotoimeksiannon vanhentuneen (>120 pv) tilinpäätösdatan tai yfinance-viiveen vuoksi.",
+                )
+            with c_op3:
+                st.metric(
+                    "NLP-arviointeja",
+                    f"{nlp_total} kpl",
+                    "Uutis- & tiedotetutka",
+                    help="Yhteensä läpikäydyt pörssitiedotteet ja uutisotsikot rinnakkaisissa walk-forward -salkuissa.",
+                )
+            with c_op4:
+                st.metric(
+                    "Järjestelmän tila",
+                    f"{status_icon} {bot_status.split()[0]}",
+                    bot_status,
+                    help="Daemonin toimintatila. Alkuvaiheessa (<10 arviointia) tila on INITIALIZING, jotta vältetään väärä turvallisuuden tunne ennen aitoja stressitapahtumia.",
+                )
+
+            st.divider()
+
+            # ------------------------------------------------------------------
             # 4. Unified Summary Table (Rows = 10 Portfolios)
             # Columns = 30d Sharpe, 30d Sortino, Median Return, Mean Return, Max DD, Top-1 PnL %, Median Hold Days
+            # ------------------------------------------------------------------
             st.markdown("#### 📋 10 Salkun Institutional-Yhteenveto")
             st.caption("Rivit = 10 salkkua. Sarakkeet = 30d Sharpe, 30d Sortino, Mediaanituotto, Keskituotto, Max Drawdown, Top-1 PnL % ja Mediaanipitoaika.")
 
@@ -2020,51 +2047,79 @@ def render_dashboard_views(active_menu: str):
 
             st.divider()
 
-            # 5. Multiple Testing Correction (Deflated Sharpe Ratio & Bonferroni)
+            # ------------------------------------------------------------------
+            # 5. Multiple Testing Correction with DATA SUFFICIENCY GUARD
+            # ------------------------------------------------------------------
             st.markdown("#### 🔬 Monitestauskorjaus & Tilastollinen Merkitsevyys (DSR)")
             st.caption(
                 "Kun testataan 10 rinnakkaista strategiaa, paras salkku voi näyttää hyvältä pelkän satunnaiskohinan (selection bias) vuoksi. "
-                "Deflated Sharpe Ratio (DSR) ja Bonferroni-korjaus mittaavat, ylittääkö tuotto satunnaisuuden kynnyksen."
+                "Deflated Sharpe Ratio (DSR, Bailey & López de Prado) ja Bonferroni-korjaus testaavat, ylittääkö tuotto satunnaisuuden kynnyksen."
             )
 
+            has_suff_data = dsr_report.get("has_sufficient_data", False)
             best_p = dsr_report.get("best_portfolio", "P1_Base")
             best_sr = dsr_report.get("best_sharpe", 0.0)
-            dsr_pct = dsr_report.get("dsr", 0.0) * 100.0
-            e_max = dsr_report.get("expected_max_sharpe", 0.0)
-            bonf_p = dsr_report.get("bonferroni_p_value", 1.0)
-            is_sig = dsr_report.get("is_significant", False)
+            e_max = dsr_report.get("expected_max_sharpe", 1.57)
 
-            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-            with m_col1:
-                st.metric("Paras Sharpe (Huippu)", f"{best_sr:.2f}", f"Salkku: {best_p}")
-            with m_col2:
-                st.metric("Odotettu satunnaishuippu (Null E[max])", f"{e_max:.2f}", "N=10 kokeen satunnaisuus")
-            with m_col3:
-                st.metric("Deflated Sharpe (DSR)", f"{dsr_pct:.1f}%", "Luotettavuus (kynnys: 95%)")
-            with m_col4:
-                st.metric("Bonferroni p-arvo", f"{bonf_p:.4f}", "Kynnys: α < 0.005")
-
-            if is_sig:
-                st.success(
-                    f"✅ **Tilastollisesti Merkitsevä Tulos ({dsr_report.get('verdict')})**: "
-                    f"Salkun `{best_p}` Sharpe-luku ({best_sr:.2f}) ylittää 10 strategian satunnaiskorjauksen (DSR: {dsr_pct:.1f}% > 95%). "
-                    "Havaittu ylituotto ei selity pelkällä sattumalla."
+            if not has_suff_data:
+                # DATA SUFFICIENCY GUARD: Block misleading large Null E[max] estimates on tiny samples
+                req_obs = dsr_report.get("min_required_observations", 20)
+                days_needed = dsr_report.get("days_needed", 20)
+                st.warning(
+                    f"⏳ **Datan riittävyysportti aktiivinen (Otoskoko: {actual_t} / {req_obs} havaintopäivää)**\n\n"
+                    f"Tilastollisen monitestauskorjauksen (Deflated Sharpe Ratio / Bonferroni) luotettava arviointi edellyttää "
+                    f"vähintään **{req_obs} tuottohavaintoa** per salkku. "
+                    f"Pienellä otoskoolla ($T < 20$) Sharpe-estimaattorin varianssi kasvaa räjähdysmäisesti "
+                    f"($\\sigma_0 = \\sqrt{{252/T}}$), jolloin toistetun otannan odotettu maksimi ($Null\\ E[\\max]$) antaisi "
+                    f"matemaattisesti vääristyneitä ja harhaanjohtavia suurlukuja.\n\n"
+                    f"➡️ **Tarvitaan vielä {days_needed} päivää lisää salkkuhistoriaa**, ennen kuin DSR-merkitsevyysanalyysi aktivoituu. "
+                    f"*(Standardi 1 vuoden satunnaishuippu 10 strategialle normaalijakaumassa: $Null\\ E[\\max] \\approx {e_max:.2f}$)*."
                 )
             else:
-                st.info(
-                    f"ℹ️ **Satunnaisvaihtelun Alueella ({dsr_report.get('verdict')})**: "
-                    f"Salkun `{best_p}` Sharpe ({best_sr:.2f}) on lähellä 10 riippumattoman kokeen odotettua satunnaishuippua ({e_max:.2f}). "
-                    "Datahistoriaa tarvitaan useampia viikkoja tilastollisen merkitsevyyden vahvistamiseksi."
-                )
+                dsr_pct = dsr_report.get("dsr", 0.0) * 100.0
+                bonf_p = dsr_report.get("bonferroni_p_value", 1.0)
+                is_sig = dsr_report.get("is_significant", False)
+
+                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                with m_col1:
+                    st.metric("Paras Sharpe (Huippu)", f"{best_sr:.2f}", f"Salkku: {best_p}")
+                with m_col2:
+                    st.metric("Odotettu satunnaishuippu (Null E[max])", f"{e_max:.2f}", f"N=10 kokeen satunnaisuus (T={actual_t})")
+                with m_col3:
+                    st.metric("Deflated Sharpe (DSR)", f"{dsr_pct:.1f}%", "Luotettavuus (kynnys: 95%)")
+                with m_col4:
+                    st.metric("Bonferroni p-arvo", f"{bonf_p:.4f}", "Kynnys: α < 0.005")
+
+                if is_sig:
+                    st.success(
+                        f"✅ **Tilastollisesti Merkitsevä Tulos ({dsr_report.get('verdict')})**: "
+                        f"Salkun `{best_p}` Sharpe-luku ({best_sr:.2f}) ylittää 10 strategian satunnaiskorjauksen (DSR: {dsr_pct:.1f}% > 95%). "
+                        "Havaittu ylituotto ei selity pelkällä sattumalla."
+                    )
+                else:
+                    st.info(
+                        f"ℹ️ **Satunnaisvaihtelun Alueella ({dsr_report.get('verdict')})**: "
+                        f"Salkun `{best_p}` Sharpe ({best_sr:.2f}) on lähellä 10 riippumattoman kokeen odotettua satunnaishuippua ({e_max:.2f}). "
+                        "Datahistoriaa tarvitaan useampia viikkoja tilastollisen merkitsevyyden vahvistamiseksi."
+                    )
 
             st.divider()
 
+            # ------------------------------------------------------------------
             # 6. 10-Portfolio Return Correlation Matrix Heatmap (Plotly)
-            st.markdown("#### 🌐 10 Salkun Tuottokorrelaatiomatriisi")
+            # ------------------------------------------------------------------
+            st.markdown("#### 🌐 10 Salkun Tuottokorrelaatiomatriisi & Hajautusanalyysi")
             st.caption(
                 "Mittaa strategioiden välistä riippuvuutta. Matala tai negatiivinen korrelaatio "
-                "osoittaa todellista hajautushyötyä (aidosti toisistaan poikkeavat alpha-lähteet)."
+                "osoittaa todellista hajautushyötyä (aidosti toisistaan poikkeavat alpha-lähteet). "
+                "Viikkoaggregointi suodattaa päivänsisäisen kohinan."
             )
+
+            if actual_t < 5:
+                st.info(
+                    f"⏳ **Korrelaatiomatriisin laskentaan tarvitaan vähintään 5 yhteistä päätöspäivää** "
+                    f"(nykyinen otoskoko: {actual_t} pv). Salkut ovat tällä hetkellä alkutilassa."
+                )
 
             if not corr_matrix.empty and len(corr_matrix) > 1:
                 fig_corr = px.imshow(
@@ -2090,7 +2145,9 @@ def render_dashboard_views(active_menu: str):
 
             st.divider()
 
+            # ------------------------------------------------------------------
             # 7. Attribution & Trade Skewness Deep-Dive
+            # ------------------------------------------------------------------
             with st.expander("🔍 Tuottoattribuutio & Vinousanalyysi (Mediaani vs Keskiarvo & Keskittyminen)", expanded=False):
                 st.markdown(
                     "**Miksi Mediaani vs Keskiarvo on tärkeä?** Jos keskiarvotuotto on merkittävästi korkeampi kuin mediaani, "

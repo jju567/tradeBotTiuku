@@ -132,9 +132,11 @@ def save_operational_metrics(metrics: Dict[str, Any], metrics_path: Path = DEFAU
         metrics["freshness_block_rate_pct"] = round((f_blocks / max(f_checks, 1)) * 100.0, 1)
         metrics["last_updated"] = datetime.now(timezone.utc).isoformat()
 
-        if metrics["llm_fallback_rate_pct"] > 50.0:
+        if llm_attempts < 10 or f_checks < 10:
+            metrics["status"] = "INITIALIZING (Pieni otos — odottaa syklejä)"
+        elif metrics["llm_fallback_rate_pct"] > 30.0:
             metrics["status"] = "DEGRADED (High LLM Fallback)"
-        elif metrics["freshness_block_rate_pct"] > 40.0:
+        elif metrics["freshness_block_rate_pct"] > 30.0:
             metrics["status"] = "DATA STALE (High Latency)"
         else:
             metrics["status"] = "HEALTHY"
