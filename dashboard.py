@@ -2493,11 +2493,11 @@ def render_dashboard_views(active_menu: str):
                         name=pid,
                         line=dict(
                             color=color,
-                            width=3 if is_active else 1.5,
+                            width=3 if is_active else 1.8,
                             dash="solid" if is_active else "dot",
                         ),
-                        marker=dict(size=5 if is_active else 3),
-                        opacity=1.0 if is_active else 0.65,
+                        marker=dict(size=6 if is_active else 4),
+                        opacity=1.0,
                         hovertemplate=(
                             f"<b>{pid}</b><br>"
                             "%{x|%d.%m.%Y %H:%M}<br>"
@@ -2515,20 +2515,43 @@ def render_dashboard_views(active_menu: str):
                     )
 
                 fig_comp.update_layout(
-                    title="📊 Kaikkien Salkkujen Pääomakehitys",
+                    title=dict(
+                        text="📊 Kaikkien Salkkujen Pääomakehitys",
+                        font=dict(color="#f8fafc", size=16),
+                    ),
                     template="plotly_dark",
                     paper_bgcolor="#1e293b",
                     plot_bgcolor="#0f172a",
-                    height=480,
-                    margin=dict(l=60, r=40, t=60, b=50),
+                    height=500,
+                    margin=dict(l=60, r=220, t=60, b=50),
+                    font=dict(color="#f8fafc", family="sans-serif"),
                     legend=dict(
+                        title=dict(
+                            text="Salkut (klikkaa):",
+                            font=dict(color="#cbd5e1", size=12),
+                        ),
                         orientation="v",
-                        x=1.01, y=1,
-                        bgcolor="rgba(0,0,0,0)",
-                        font=dict(size=11),
+                        x=1.02,
+                        y=1,
+                        xanchor="left",
+                        yanchor="top",
+                        bgcolor="rgba(15, 23, 42, 0.85)",
+                        bordercolor="#334155",
+                        borderwidth=1,
+                        font=dict(size=12, color="#f8fafc"),
+                        itemclick="toggle",
+                        itemdoubleclick="toggleothers",
                     ),
-                    xaxis=dict(title="Aika", gridcolor="#1e293b"),
-                    yaxis=dict(title=y_axis_title, gridcolor="#334155"),
+                    xaxis=dict(
+                        title=dict(text="Aika", font=dict(color="#cbd5e1")),
+                        tickfont=dict(color="#94a3b8"),
+                        gridcolor="#1e293b",
+                    ),
+                    yaxis=dict(
+                        title=dict(text=y_axis_title, font=dict(color="#cbd5e1")),
+                        tickfont=dict(color="#94a3b8"),
+                        gridcolor="#334155",
+                    ),
                     hovermode="x unified",
                 )
                 st.plotly_chart(fig_comp, use_container_width=True)
