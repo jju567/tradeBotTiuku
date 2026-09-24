@@ -1970,12 +1970,19 @@ def render_dashboard_views(active_menu: str):
 
             st.markdown("#### 🏥 Markkinaregiimi & Botin Operatiivinen Terveys")
             c_op0, c_op1, c_op2, c_op3, c_op4 = st.columns(5)
+            bm_sym = regime.get("benchmark", "IWC")
+            bm_name = regime.get("benchmark_name", "iShares Micro-Cap ETF (IWC)")
+            u_vol = regime.get("universe_median_vol_pct")
+            vol_delta_str = f"20d Vol: {regime.get('volatility_20d_pct', 22.5):.1f}% | SMA50: {regime.get('dist_sma50_pct', 0.0):+.1f}%"
+            if u_vol is not None:
+                vol_delta_str += f" | Univ: {u_vol:.1f}%"
+
             with c_op0:
                 st.metric(
-                    "Markkinaregiimi (^RUT)",
+                    f"Markkinaregiimi ({bm_sym})",
                     regime.get("badge", "🟡 NEUTRAL"),
-                    f"20d Vol: {regime.get('volatility_20d_pct', 19.5):.1f}% | SMA50: {regime.get('dist_sma50_pct', 0.0):+.1f}%",
-                    help=f"{regime.get('description', '')} (Lähde: {regime.get('benchmark', '^RUT')} Russell 2000)",
+                    vol_delta_str,
+                    help=f"{regime.get('description', '')} (Lähde: {bm_name} mikroyhtiöbenchmark)",
                 )
             with c_op1:
                 st.metric(

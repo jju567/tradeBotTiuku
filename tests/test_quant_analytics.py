@@ -157,8 +157,28 @@ def test_dsr_data_sufficiency_guard():
 
 
 def test_get_market_regime():
-    regime = qa.get_market_regime()
+    # Verify default microcap benchmark is IWC (iShares Micro-Cap ETF)
+    regime = qa.get_market_regime(benchmark_ticker="IWC")
     assert "regime" in regime
     assert "badge" in regime
     assert "volatility_20d_pct" in regime
     assert regime["volatility_20d_pct"] > 0
+    assert regime["benchmark"] == "IWC"
+    assert "iShares Micro-Cap" in regime.get("benchmark_name", "")
+    assert regime["vol_low_threshold"] == 20.0
+    assert regime["vol_high_threshold"] == 30.0
+
+
+def test_internal_universe_volatility_calculation():
+    # Verify clean handling when universe CSV path does not exist
+    vol = qa.calculate_internal_universe_volatility(universe_csv_path=Path("non_existent.csv"))
+    assert vol is None
+
+    # Verify clean handling with actual universe file if available
+    real_csv = Path(__file__).resolve().parent.parent / "data" / "clean_microcap_universe.csv"
+    if real_csv.exists():
+        # Test function runs without crashing
+        vol_real = qa.calculate_internal_universe_volatility(universe_csv_path=real_csv, sample_size=3)
+        if vol_real is not None:
+            assert vol_real > 0.0
+

@@ -243,6 +243,40 @@ def deflated_sharpe_ratio(
     - If sample_length < MIN_DSR_OBSERVATIONS (20 days):
       Flags has_sufficient_data = False, reports the 1-year asymptotic Null E[max] baseline (~1.57),
       and explicitly prevents small-sample variance explosion (such as Null E[max] = 15.74).
+
+    ----------------------------------------------------------------------------
+    MATHEMATICAL DERIVATION OF THE OBSERVED NULL E[max] = 15.74 EARLY ARTIFACT:
+    ----------------------------------------------------------------------------
+    Under the Bailey & López de Prado (2014) extreme value quantile formulation:
+        q_EV(N) = (1 - gamma) * Phi^-1(1 - 1/N) + gamma * Phi^-1(1 - 1/(N * e))
+    where gamma = 0.57721566... is the Euler-Mascheroni constant.
+    For N = 10 trials:
+        1 - 1/10 = 0.90          --> Phi^-1(0.90) = 1.28155
+        1 - 1/(10*e) = 0.963212  --> Phi^-1(0.963212) = 1.78881
+        q_EV(N=10) = (1 - 0.577216) * 1.28155 + 0.577216 * 1.78881 = 1.57434.
+
+    During the initial development run with small sample history (T = 2-3 snapshots),
+    daily portfolio returns annualized by sqrt(252) caused pathological cross-sectional
+    dispersion: 9 portfolios had annualized Sharpe = 0.0, while 1 portfolio with a slight
+    price tick evaluated to an annualized Sharpe of ~31.5.
+    The cross-sectional sample standard deviation across all N=10 portfolios evaluated to:
+        s_cross_sectional = std(all_sharpes, ddof=1) = 9.998 (~10.0).
+
+    Multiplying s_cross_sectional by q_EV:
+        Null E[max] = 9.998 * 1.57434 = 15.7408 (~15.74).
+
+    Note on Single-Strategy Theoretical Sampling Error:
+    For a single strategy at T = 2, the theoretical asymptotic standard error is:
+        sigma_SR = sqrt(252 / 2) = 11.22.
+    Multiplying 11.22 by q_EV gives 11.22 * 1.5743 = 17.67.
+    The exact observed 15.74 was specifically the empirical cross-sectional sample
+    standard deviation (s = 9.998) across the 10 portfolio Sharpe estimates multiplied
+    by the N=10 Gumbel quantile (1.5743).
+
+    The Institutional Data Sufficiency Guard (sample_length >= MIN_DSR_OBSERVATIONS = 20)
+    strictly prevents this artifact by suppressing DSR until T >= 20, returning
+    the stable 1-year null baseline (~1.57) during initialization.
+    ----------------------------------------------------------------------------
     """
     n = max(nb_trials, len(all_sharpes), 2)
     gamma = 0.57721566490153286  # Euler-Mascheroni constant
@@ -326,21 +360,98 @@ def deflated_sharpe_ratio(
     }
 
 
+def calculate_internal_universe_volatility(
+    universe_csv_path: Optional[Path] = None,
+    sample_size: int = 10,
+) -> Optional[float]:
+    """
+    Computes 20-day annualized realized volatility directly from a representative
+    sample of microcaps from the internal clean universe (clean_microcap_universe.csv).
+    
+    Returns the median annualized volatility across the sampled microcap stocks (in %).
+    Single microcap stocks typically exhibit median volatility between 25% and 45%,
+    with stress/breakdown levels exceeding 50%.
+    """
+    csv_path = universe_csv_path or (Path(__file__).resolve().parent / "data" / "clean_microcap_universe.csv")
+    if not csv_path.exists():
+        return None
+
+    try:
+        import yfinance as yf
+        df_u = pd.read_csv(csv_path)
+        if "ticker" not in df_u.columns or df_u.empty:
+            return None
+
+        # Sample across available markets (FI, SE, US) for balanced coverage
+        sample_tickers: List[str] = []
+        if "market" in df_u.columns:
+            for mkt in ["FI", "SE", "US"]:
+                mkt_tickers = df_u[df_u["market"] == mkt]["ticker"].dropna().tolist()
+                sample_tickers.extend(mkt_tickers[:max(2, sample_size // 3)])
+        if not sample_tickers:
+            sample_tickers = df_u["ticker"].dropna().head(sample_size).tolist()
+
+        sample_tickers = sample_tickers[:sample_size]
+        if not sample_tickers:
+            return None
+
+        # Batch download 1 month of prices
+        data = yf.download(sample_tickers, period="1mo", progress=False)
+        if data.empty:
+            return None
+
+        closes = data["Close"] if "Close" in data else data
+        returns = closes.pct_change().dropna()
+        if len(returns) < 10:
+            return None
+
+        vols = returns.tail(20).std() * math.sqrt(TRADING_DAYS_PER_YEAR) * 100.0
+        vols_clean = vols.dropna()
+        if vols_clean.empty:
+            return None
+
+        return float(round(vols_clean.median(), 1))
+    except Exception as e:
+        logger.debug(f"Could not calculate internal universe volatility: {e}")
+        return None
+
+
 def get_market_regime(
-    benchmark_ticker: str = "^RUT",
+    benchmark_ticker: str = "IWC",
     cache_path: Optional[Path] = None,
+    vol_low_threshold: float = 20.0,
+    vol_high_threshold: float = 30.0,
+    sma_buffer_pct: float = 0.95,
+    include_universe_median: bool = False,
+    universe_csv_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
-    Identifies the institutional market regime using microcap benchmark (^RUT - Russell 2000).
-    Evaluates:
-      - 20-day annualized realized volatility
-      - 50-day Simple Moving Average (SMA50) trend
-      - Drawdown from 3-month peak
-      
-    Regimes:
-      - 🟢 BULL / LOW VOL (Risk-On): Price >= SMA50 and 20d Vol < 18%
-      - 🟡 NEUTRAL / RANGE-BOUND: 20d Vol 18-25% or Price oscillating near SMA50
-      - 🔴 HIGH VOLATILITY / BEARISH (Risk-Off): Price < SMA50*0.97 or 20d Vol > 25%
+    Identifies the institutional market regime using the canonical microcap benchmark
+    (IWC - iShares Micro-Cap ETF, representing the Russell Microcap Index).
+    
+    ----------------------------------------------------------------------------
+    BENCHMARK SELECTION RATIONALE (IWC vs ^RUT):
+    ----------------------------------------------------------------------------
+    Russell 2000 (^RUT) has a median market cap > $1.1B, which is 3x to 10x larger
+    than our target microcap universe (< $300M, median ~$100M). Russell 2000 is dominated
+    by larger mid-caps that mask microcap liquidity freezes and structural stress.
+    IWC (iShares Micro-Cap ETF) directly mirrors the Russell Microcap Index (< $300M
+    mandate) and reflects true institutional microcap risk-on / risk-off conditions.
+
+    ----------------------------------------------------------------------------
+    VOLATILITY THRESHOLD METHODOLOGY & CALIBRATION:
+    ----------------------------------------------------------------------------
+    - S&P 500 (^GSPC): Calm 12-16%, High > 22%.
+    - Russell 2000 (^RUT): Calm 16-20%, High > 25%.
+    - Microcap ETF (IWC): Because IWC is a diversified basket of ~1,000 microcaps,
+      its volatility is structurally higher than large-caps:
+        * 🟢 BULL / LOW VOL (Risk-On): 20d Vol < 20.0% AND Price >= SMA50.
+        * 🟡 NEUTRAL / RANGE-BOUND: 20d Vol 20.0% - 30.0% OR Price oscillating near SMA50.
+        * 🔴 HIGH VOLATILITY / BEARISH (Risk-Off): 20d Vol > 30.0% OR Price < SMA50 * 0.95 (-5%).
+    - Note on Single-Stock Microcaps: Individual microcaps have natural volatility of
+      35%-70% (median ~33%). Do not apply ETF index thresholds (20-30%) directly to
+      single stocks; single-stock stress thresholds are > 50%.
+    ----------------------------------------------------------------------------
     """
     target_cache = cache_path or (Path(__file__).resolve().parent / "data" / "market_regime.json")
 
@@ -358,21 +469,28 @@ def get_market_regime(
             peak_3m = float(closes.max())
             dd_pct = float(((last_px - peak_3m) / peak_3m) * 100.0)
 
-            if last_px >= sma_50 and vol_20d < 18.0:
+            # Microcap-calibrated regime classification
+            if last_px >= sma_50 and vol_20d < vol_low_threshold:
                 regime_tag = "BULL / LOW VOL (Risk-On)"
                 status_color = "🟢"
-                desc = "Matala volatiliteetti & nouseva trendi. Suotuisa kasvusalkuille (Profile A) ja mikroyhtiömomentumille."
-            elif vol_20d > 25.0 or last_px < (sma_50 * 0.97):
+                desc = "Matala mikroyhtiövolatiliteetti (<20%) & nouseva trendi. Suotuisa kasvusalkuille (Profile A) ja mikroyhtiömomentumille."
+            elif vol_20d > vol_high_threshold or last_px < (sma_50 * sma_buffer_pct):
                 regime_tag = "HIGH VOL / BEARISH (Risk-Off)"
                 status_color = "🔴"
-                desc = "Korkea volatiliteetti tai laskutrendi. Likviditeetti kuivuu mikroyhtiöissä; tiukat stopit ja käteisen suojaus ensisijaisia."
+                desc = "Korkea mikroyhtiövolatiliteetti (>30%) tai laskutrendi (>-5% SMA50:stä). Likviditeetti kuivuu mikroyhtiöissä; tiukat stopit ja käteisen suojaus ensisijaisia."
             else:
                 regime_tag = "NEUTRAL / CHOPPY"
                 status_color = "🟡"
-                desc = "Vaihteluvälikauppa & keskitason volatiliteetti. Suosii Profile B Deep Value -käänneyhtiöitä."
+                desc = "Vaihteluvälikauppa & normaali mikroyhtiövolatiliteetti (20-30%). Suosii Profile B Deep Value -käänneyhtiöitä."
+
+            # Optional internal universe median volatility
+            u_vol = None
+            if include_universe_median:
+                u_vol = calculate_internal_universe_volatility(universe_csv_path)
 
             regime_data = {
                 "benchmark": benchmark_ticker,
+                "benchmark_name": "iShares Micro-Cap ETF (IWC)" if benchmark_ticker.upper() == "IWC" else benchmark_ticker,
                 "regime": regime_tag,
                 "badge": f"{status_color} {regime_tag}",
                 "status_color": status_color,
@@ -381,6 +499,9 @@ def get_market_regime(
                 "sma_50": round(sma_50, 2),
                 "dist_sma50_pct": round(dist_sma50_pct, 1),
                 "drawdown_3m_pct": round(dd_pct, 1),
+                "universe_median_vol_pct": u_vol,
+                "vol_low_threshold": vol_low_threshold,
+                "vol_high_threshold": vol_high_threshold,
                 "description": desc,
                 "last_updated": datetime.now(timezone.utc).isoformat(),
             }
@@ -402,18 +523,22 @@ def get_market_regime(
         except Exception:
             pass
 
-    # Default static fallback
+    # Default static fallback calibrated to IWC
     return {
         "benchmark": benchmark_ticker,
+        "benchmark_name": "iShares Micro-Cap ETF (IWC)" if benchmark_ticker.upper() == "IWC" else benchmark_ticker,
         "regime": "NEUTRAL / CHOPPY",
         "badge": "🟡 NEUTRAL / CHOPPY",
         "status_color": "🟡",
-        "volatility_20d_pct": 19.5,
-        "last_price": 2838.66,
-        "sma_50": 2850.0,
-        "dist_sma50_pct": -0.4,
-        "drawdown_3m_pct": -3.2,
-        "description": "Markkinaregiimi neutralissa tilassa.",
+        "volatility_20d_pct": 22.5,
+        "last_price": 188.0,
+        "sma_50": 193.0,
+        "dist_sma50_pct": -2.6,
+        "drawdown_3m_pct": -4.5,
+        "universe_median_vol_pct": 33.0,
+        "vol_low_threshold": vol_low_threshold,
+        "vol_high_threshold": vol_high_threshold,
+        "description": "Markkinaregiimi neutralissa tilassa (iShares Micro-Cap ETF / IWC).",
         "last_updated": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -795,8 +920,8 @@ def generate_institutional_summary(
     dsr_report["best_portfolio"] = best_pid
     dsr_report["best_sharpe"] = round(best_sharpe, 2)
 
-    # Fetch live institutional market regime (Russell 2000 / ^RUT)
-    market_regime = get_market_regime()
+    # Fetch live institutional market regime (iShares Micro-Cap ETF / IWC)
+    market_regime = get_market_regime(benchmark_ticker="IWC")
 
     return {
         "summary_df": summary_df,
