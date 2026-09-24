@@ -198,9 +198,9 @@ python -m screener.main_controller --mass-scan
 ```
 
 ### 6. 🚀 Multi-Portfolio Live Walk-Forward Testing Engine (`main_controller.py`)
-Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forward -testaukseen ja tilastojen keräämiseen:
+Juuritason päämoottori reaaliaikaiseen 11 rinnakkaisen paperisalkun walk-forward -testaukseen ja tilastojen keräämiseen:
 - **Konfigurointi YAML-tiedostolla (`portfolios_config.yaml`)**:
-  - Määrittelee 10 toisistaan erotettua salkkua, joilla jokaisella on 10,000 € virtuaalipääoma ja omat riskiparametrit:
+  - Määrittelee 11 toisistaan erotettua salkkua, joilla jokaisella on 10,000 € virtuaalipääoma ja omat riskiparametrit:
     1. `P1_Base`: Profile B, dead money 180d, min ADV 50k, 10 slottia (1,000 €/osto), alueet FI/SE/US.
     2. `P2_Fast_Cycle`: Profile B, lyhyt dead money 90d (nopea pääoman kierrätys).
     3. `P3_Diamond_Hands`: Profile B, pitkä dead money 365d (kestää väliaikaiset pohjamudat).
@@ -211,6 +211,7 @@ Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forwa
     8. `P8_Quality_Growth`: Profile A, sijoittaa kasvu- ja kannattavuussignaaleihin (kasvu > 20 %, kate > 40 %).
     9. `P9_High_Conviction`: Profile B, vain 5 slottia (2,000 €/osto) suurella vakaumuksella.
     10. `P10_Micro_Sniper`: Profile B, 20 pientä slottia (500 €/osto, min ADV 150k).
+    11. `P11_Meta_Consensus`: Meta_Consensus, 5 slottia (2,000 €/osto). Ei skannaa raakamarkkinaa, vaan treidaa P1–P10 -perussalkkujen reaaliaikaista konsensusta: vaatii sisääntuloon Conviction Scoren $\ge 8$ (⭐⭐⭐⭐+) sekä tagit `Institutional` (+1) JA (`Deep Value` (+2) TAI `Quality Growth` (+1)). Myy automaattisesti, jos vakaumuspistemäärä putoaa alle 5 pisteen (`CONVICTION_DROP`) tai suojastopit laukeavat.
 - **Yhteinen Markkinadatan Nouto (Single-Pass Market Engine)**:
   - Hakee reaaliaikaiset kurssit, 20d ADV:t, uutiset ja deterministiset fundamentit **tiukasti vain kerran syklissä** (säästää API-kutsuja ja estää yfinance-bannit).
 - **Itsenäinen Tilanhallinta (`data/portfolios/`)**:
@@ -225,19 +226,19 @@ Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forwa
   - Jokainen arvioitu tiedote tai uutisotsikko tallennetaan pysyvään lokiin (`Timestamp, Ticker, Headline, LLM_Decision, Reasoning`).
   - Kerää pitkän aikavälin dataa LLM- ja sääntöpohjaisista tuomioista (REJECT / WARN / HOLD) mallin ja suodatinten jatkoanalyysiä varten.
 - **Streamlit-Käyttöliittymä**:
-  - Sivupalkin valikosta valittavissa mikä tahansa 10 rinnakkaissalkusta.
+  - Sivupalkin valikosta valittavissa mikä tahansa 11 rinnakkaissalkusta.
   - Avaa ja visualisoi reaaliaikaiset avoimet positiot, KPI-arvot, tuottokäyrän ja toteutuneet kaupat valitulle salkulle reaaliaikaisine FX-muunnoksineen.
-  - **📊 Salkkuvertailu (Kaikki)**: Erillinen välilehti, jossa kaikkien 10 salkun pääomakehitystä ja tuottoja voi vertailla rinnakkain interaktiivisella Plotly-viivakaaviolla (sisältää myös normalisoidun indeksinäkymän lähtötasolla 100 ja yhteenvedon).
+  - **📊 Salkkuvertailu (Kaikki)**: Erillinen välilehti, jossa kaikkien 11 salkun pääomakehitystä ja tuottoja voi vertailla rinnakkain interaktiivisella Plotly-viivakaaviolla (sisältää myös normalisoidun indeksinäkymän lähtötasolla 100 ja yhteenvedon).
   - **⭐ Top Picks & Conviction (`dashboard.py` / `quant_analytics.py`)**: Uusi monisalkkukonsensuksen ja turvallisuusluokituksen välilehti:
-    - **Painotettu konsensuspistemäärä (0–14 p)**: +1 p jokaisesta salkusta (max 10 p) + likviditeettipreemio `P4_Institutional` (+1 p, ADV > 250k) + Deep Value -preemio `P7_Deep_Value_Extreme` (+2 p, Price/Cash < 0.5) + Quality-preemio `P8_Quality_Growth` (+1 p, korkea kasvu ja kannattavuus).
+    - **Painotettu konsensuspistemäärä (0–14 p)**: +1 p jokaisesta perussalkusta (max 10 p) + likviditeettipreemio `P4_Institutional` (+1 p, ADV > 250k) + Deep Value -preemio `P7_Deep_Value_Extreme` (+2 p, Price/Cash < 0.5) + Quality-preemio `P8_Quality_Growth` (+1 p, korkea kasvu ja kannattavuus).
     - **Visuaalinen tähtiluokitus**: >10 p = ⭐⭐⭐⭐⭐, 8–10 p = ⭐⭐⭐⭐, 5–7 p = ⭐⭐⭐, <5 p = ⭐⭐.
     - **Interaktiivinen taulukko**: `st.column_config.ProgressColumn` -edistymispalkit (0–14), tähtiluokitussuodatus ja hakukenttä.
   - **🏛️ Institutional Analytics (`quant_analytics.py`)**: Uusi dedikoitu pääomarahastotason kvantitatiivisen analyysin välilehti Streamlitissä:
     - **Markkinaregiimiseuranta (Market Regime Tagging)**: Seuraa aitoa mikroyhtiöiden vertailuindeksiä (iShares Micro-Cap ETF / `IWC`, Russell Microcap Index $< \$300M$) ja luokittelee markkinan tilaan (*🟢 BULL / LOW VOL, 🟡 NEUTRAL / RANGE-BOUND, 🔴 HIGH VOLATILITY / BEARISH*) 20 päivän toteutuneen volatiliteetin ja 50 päivän liukuvan keskiarvon (SMA50) perusteella mikroyhtiöille kalibroiduin kynnysarvoin (Low Vol $< 20\%$, Stress $> 30\%$, SMA50 puskuri $-5\%$). Tukee myös sisäisen 106 osakkeen puhtaan universumin toteutunutta volatiliteettia (`clean_microcap_universe.csv`).
     - **Riskikorjatut tuotot**: 30 päivän rullaava Sharpe-luku, 30 päivän rullaava Sortino-luku (downside deviation), Max Drawdown ja toipumisaika (Time-to-Recovery päivinä).
-    - **Monitestauskorjaus & Datan Riittävyysportti (Data Sufficiency Guard)**: Deflated Sharpe Ratio (DSR, Bailey & López de Prado) ja Bonferroni-korjaus 10 rinnakkaissalkun yli. Sisältää sisäänrakennetun riittävyysportin ($T \ge 20$ päivää), joka estää pienen otoskoon varianssiräjähdyksen (kuten pienen $T$:n poikkileikkaushajonnasta syntyneen *Null E[max] = 15,74* -laskenta-artefaktin) ja näyttää standardin normalisoidun satunnaishuipun ($SR^* \approx 1.57$) vasta riittävällä datamäärällä.
+    - **Monitestauskorjaus & Datan Riittävyysportti (Data Sufficiency Guard)**: Deflated Sharpe Ratio (DSR, Bailey & López de Prado) ja Bonferroni-korjaus 11 rinnakkaissalkun yli. Sisältää sisäänrakennetun riittävyysportin ($T \ge 20$ päivää), joka estää pienen otoskoon varianssiräjähdyksen (kuten pienen $T$:n poikkileikkaushajonnasta syntyneen *Null E[max] = 15,74* -laskenta-artefaktin) ja näyttää standardin normalisoidun satunnaishuipun ($SR^* \approx 1.57$) vasta riittävällä datamäärällä.
     - **Tuottoattribuutio & Vinous**: Posiokeskittyminen (% kokonaistuotosta top-1 ja top-2 kaupoista), mediaanipitoaika päivinä sekä mediaanituotto vs. keskituotto.
-    - **10 Salkun Tuottokorrelaatiomatriisi**: Interaktiivinen Plotly-lämpökartta (heatmap) päivä- ja viikkotuottojen riippuvuuksista todellisen hajautushyödyn arvioimiseksi.
+    - **11 Salkun Tuottokorrelaatiomatriisi**: Interaktiivinen Plotly-lämpökartta (heatmap) päivä- ja viikkotuottojen riippuvuuksista todellisen hajautushyödyn arvioimiseksi.
     - **Viikkoaggregointi (Weekly Smoothing)**: Poistaa päivittäistä mikroheilahtelua ja markkinakohinaa.
     - **Botin Operatiivinen Terveys (`data/operational_metrics.json`)**: Reaaliaikaiset KPI-kortit LLM fallback -asteesta ja tuoreussuojasta (`is_fresh`). Alkuvaiheen pienillä ajoilla tilana on `🟡 INITIALIZING (Pieni otos — odottaa syklejä)` ennen todistettua stressirasitusta.
 

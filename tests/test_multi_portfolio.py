@@ -26,7 +26,7 @@ def test_portfolios_yaml_structure():
 
     assert "portfolios" in data
     portfolios = data["portfolios"]
-    assert len(portfolios) == 10
+    assert len(portfolios) == 11
 
     expected_portfolios = [
         "P1_Base",
@@ -39,17 +39,24 @@ def test_portfolios_yaml_structure():
         "P8_Quality_Growth",
         "P9_High_Conviction",
         "P10_Micro_Sniper",
+        "P11_Meta_Consensus",
     ]
     for p in expected_portfolios:
         assert p in portfolios, f"Missing portfolio {p}"
         cfg = portfolios[p]
         assert "strategy" in cfg
-        assert "dead_money_days" in cfg
-        assert "min_adv" in cfg
         assert "slots" in cfg
         assert "start_cash" in cfg
-        assert "regions" in cfg
         assert cfg["start_cash"] == 10000
+
+    # Specific checks for P11_Meta_Consensus
+    p11 = portfolios["P11_Meta_Consensus"]
+    assert p11["strategy"] == "Meta_Consensus"
+    assert p11["slots"] == 5
+    assert p11["slot_size"] == 2000
+    assert p11["min_conviction_score"] == 8
+    assert p11["min_exit_conviction_score"] == 5
+    assert "Institutional" in p11["required_tags"]
 
 
 def test_portfolio_instance_creation(tmp_path):
@@ -266,5 +273,106 @@ def test_send_run_summary_email():
             assert "P1_Base" in full_body
             assert "WRAP" in full_body
             assert "Ajon Kauppayhteenveto" in full_body
+
+
+def test_meta_consensus_execution(tmp_path):
+    """
+    Test P11_Meta_Consensus logic:
+    1. Only buys when Conviction Score >= 8 and has Institutional + (Deep Value OR Quality Growth).
+    2. Uses slot_size (~2,000 €).
+    3. Exits when Conviction Score drops < 5.
+    """
+    import pandas as pd
+
+    # Mock MasterLiveTradingDaemon instance with mock portfolios
+    yaml_file = tmp_path / "portfolios.yaml"
+    yaml_content = """
+portfolios:
+  P11_Meta_Consensus:
+    strategy: "Meta_Consensus"
+    slots: 5
+    slot_size: 2000
+    start_cash: 10000
+    min_conviction_score: 8
+    min_exit_conviction_score: 5
+    required_tags: ["Institutional"]
+    regions: ["US"]
+"""
+    yaml_file.write_text(yaml_content, encoding="utf-8")
+
+    daemon = MasterLiveTradingDaemon(config_yaml_path=yaml_file)
+    p11 = daemon.portfolios[0]
+    p11.portfolio_dir = tmp_path / "portfolios"
+    p11.portfolio_dir.mkdir(parents=True, exist_ok=True)
+    p11.state_file = p11.portfolio_dir / "portfolio_P11_Meta_Consensus_state.json"
+    p11.history_file = p11.portfolio_dir / "portfolio_P11_Meta_Consensus_history.csv"
+    p11.ensure_history_csv()
+    p11.save_state()
+
+    # Setup market data
+    daemon.market_engine.prices_cache = {"TOP1": 50.0, "LOW1": 10.0, "NO_TAG": 20.0}
+    daemon.market_engine.universe_metadata = {
+        "TOP1": {"market": "US", "currency": "USD", "adv_20d_local": 1000000.0, "adv_20d_usd": 1000000.0, "current_price": 50.0},
+        "LOW1": {"market": "US", "currency": "USD", "adv_20d_local": 1000000.0, "adv_20d_usd": 1000000.0, "current_price": 10.0},
+        "NO_TAG": {"market": "US", "currency": "USD", "adv_20d_local": 1000000.0, "adv_20d_usd": 1000000.0, "current_price": 20.0},
+    }
+    daemon.market_engine.fx_rates = {"USD": 1.05, "EUR": 1.0}
+
+    # Mock calculate_top_picks_conviction returning candidates
+    mock_df_conviction = pd.DataFrame([
+        {
+            "Ticker": "TOP1",
+            "Conviction Score (0-14)": 9,
+            "Star Rating": "⭐⭐⭐⭐",
+            "Held In (count)": 6,
+            "Premium Tags (e.g., Institutional, Deep Value)": "💧 Institutional (+1), 💎 Deep Value (+2)",
+            "Portfolios": "P1_Base, P4_Institutional, P7_Deep_Value_Extreme",
+        },
+        {
+            "Ticker": "LOW1",
+            "Conviction Score (0-14)": 4,  # Score < 8, should be skipped
+            "Star Rating": "⭐⭐",
+            "Held In (count)": 3,
+            "Premium Tags (e.g., Institutional, Deep Value)": "💧 Institutional (+1)",
+            "Portfolios": "P1_Base, P4_Institutional",
+        },
+        {
+            "Ticker": "NO_TAG",
+            "Conviction Score (0-14)": 8,  # Score >= 8, but missing Deep Value / Quality Growth
+            "Star Rating": "⭐⭐⭐⭐",
+            "Held In (count)": 7,
+            "Premium Tags (e.g., Institutional, Deep Value)": "💧 Institutional (+1)",
+            "Portfolios": "P1, P2, P3, P4, P5, P6, P10",
+        },
+    ])
+
+    with patch("main_controller.calculate_top_picks_conviction", return_value=mock_df_conviction):
+        new_buys = daemon.execute_phase2_screening(p11)
+        assert new_buys == 1
+        assert len(p11.positions) == 1
+        assert p11.positions[0]["Ticker"] == "TOP1"
+        assert p11.positions[0]["Strategy"] == "Meta_Consensus"
+        # Slot size ~2,000 EUR in USD (~2,100 USD) / $50 = ~42 shares
+        assert p11.positions[0]["Shares"] > 35
+
+        # Test Exit: conviction score drops < 5
+        mock_dropped_conviction = pd.DataFrame([
+            {
+                "Ticker": "TOP1",
+                "Conviction Score (0-14)": 3,  # Dropped from 9 to 3 (< 5 threshold)
+                "Star Rating": "⭐⭐",
+                "Held In (count)": 3,
+                "Premium Tags (e.g., Institutional, Deep Value)": "-",
+                "Portfolios": "P1_Base",
+            }
+        ])
+        with patch("main_controller.calculate_top_picks_conviction", return_value=mock_dropped_conviction):
+            closed = daemon.execute_phase1_exits(p11)
+            assert closed == 1
+            assert len(p11.positions) == 0
+            trades = p11.load_trade_history()
+            assert len(trades) == 1
+            assert "CONVICTION_DROP" in trades[0]["Exit Reason"]
+
 
 

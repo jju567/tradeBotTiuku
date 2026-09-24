@@ -754,6 +754,7 @@ def load_portfolio_data(
         "P8_Quality_Growth",
         "P9_High_Conviction",
         "P10_Micro_Sniper",
+        "P11_Meta_Consensus",
     ]
 
     for pid in PORTFOLIO_IDS:
@@ -822,6 +823,7 @@ def generate_institutional_summary(
         "P8_Quality_Growth",
         "P9_High_Conviction",
         "P10_Micro_Sniper",
+        "P11_Meta_Consensus",
     ]
 
     # Pre-compute Sharpes across all portfolios to feed into DSR

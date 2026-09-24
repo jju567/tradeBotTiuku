@@ -864,6 +864,7 @@ with st.sidebar:
         "P8_Quality_Growth",
         "P9_High_Conviction",
         "P10_Micro_Sniper",
+        "P11_Meta_Consensus",
     ]
     portfolio_meta_map = {}
     if PORTFOLIOS_CONFIG_YAML.exists():
@@ -2652,6 +2653,7 @@ def render_dashboard_views(active_menu: str):
                 PALETTE = [
                     "#38bdf8", "#10b981", "#f59e0b", "#f43f5e", "#a78bfa",
                     "#fb923c", "#34d399", "#e879f9", "#facc15", "#60a5fa",
+                    "#ec4899",
                 ]
                 fig_comp = go.Figure()
                 for i, (pid, df_eq) in enumerate(port_traces.items()):

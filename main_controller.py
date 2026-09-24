@@ -64,6 +64,7 @@ from screener.financial_metrics_engine import evaluate_profiles, get_hard_financ
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
 from screener.portfolio_manager import evaluate_position
 from screener.web_verifier import FATAL_RED_FLAG_PATTERNS, RED_FLAG_PATTERNS, WARN_PATTERNS
+from quant_analytics import calculate_top_picks_conviction
 
 # Backwards compatibility exports
 try:
@@ -274,6 +275,10 @@ class PortfolioConfig:
     start_cash: float = 10000.0
     regions: List[str] = field(default_factory=lambda: ["FI", "SE", "US"])
     extra_filter: Optional[str] = None
+    slot_size: Optional[float] = None
+    min_conviction_score: Optional[int] = None
+    min_exit_conviction_score: Optional[int] = None
+    required_tags: List[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, pid: str, data: Dict[str, Any]) -> "PortfolioConfig":
@@ -286,6 +291,10 @@ class PortfolioConfig:
             start_cash=float(data.get("start_cash", 10000.0)),
             regions=data.get("regions", ["FI", "SE", "US"]),
             extra_filter=data.get("extra_filter"),
+            slot_size=float(data["slot_size"]) if data.get("slot_size") is not None else None,
+            min_conviction_score=int(data["min_conviction_score"]) if data.get("min_conviction_score") is not None else None,
+            min_exit_conviction_score=int(data["min_exit_conviction_score"]) if data.get("min_exit_conviction_score") is not None else None,
+            required_tags=data.get("required_tags", []),
         )
 
 
@@ -754,6 +763,16 @@ class MasterLiveTradingDaemon:
         closed_count = 0
         retained_positions: List[Dict[str, Any]] = []
 
+        # Check if portfolio uses consensus conviction exits
+        conviction_map: Dict[str, int] = {}
+        if portfolio.config.strategy == "Meta_Consensus" or portfolio.config.min_exit_conviction_score is not None:
+            try:
+                df_conv = calculate_top_picks_conviction(portfolio.portfolio_dir)
+                if not df_conv.empty and "Ticker" in df_conv.columns and "Conviction Score (0-14)" in df_conv.columns:
+                    conviction_map = dict(zip(df_conv["Ticker"].str.upper(), df_conv["Conviction Score (0-14)"]))
+            except Exception as e:
+                logger.debug(f"Failed to calculate conviction map for {portfolio.config.portfolio_id} exits: {e}")
+
         for pos in portfolio.positions:
             ticker = pos["Ticker"]
             buy_price = float(pos["Buy Price"])
@@ -787,6 +806,17 @@ class MasterLiveTradingDaemon:
                 "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
             }
 
+            # Check conviction drop for Meta_Consensus
+            exit_min_score = portfolio.config.min_exit_conviction_score
+            is_conviction_exit = False
+            conviction_reason = ""
+            if exit_min_score is not None or portfolio.config.strategy == "Meta_Consensus":
+                thresh = exit_min_score if exit_min_score is not None else 5
+                current_score = int(conviction_map.get(ticker.upper(), 0))
+                if current_score < thresh:
+                    is_conviction_exit = True
+                    conviction_reason = f"CONVICTION_DROP (Score {current_score} < {thresh})"
+
             action, reason = evaluate_position(
                 position={"buy_price": buy_price, "ticker": ticker, "buy_date": buy_date},
                 current_price=current_price,
@@ -794,6 +824,10 @@ class MasterLiveTradingDaemon:
                 latest_financials=financials_payload,
                 dead_money_days=portfolio.config.dead_money_days,
             )
+
+            if is_conviction_exit:
+                action = "SELL"
+                reason = conviction_reason
 
             if action == "SELL":
                 gross_sale_value = shares * current_price
@@ -861,7 +895,7 @@ class MasterLiveTradingDaemon:
             logger.info(f"[{cfg.portfolio_id}] Max slots full ({open_count}/{cfg.slots}). Skipping new buys.")
             return 0
 
-        target_allocation_acc = cfg.start_cash / cfg.slots  # Fixed slot sizing (e.g. 10k / 10 = 1,000€)
+        target_allocation_acc = cfg.slot_size if (cfg.slot_size and cfg.slot_size > 0) else (cfg.start_cash / cfg.slots)
         if portfolio.cash_balance < (MIN_BROKER_FEE + 10.0):
             logger.info(f"[{cfg.portfolio_id}] Cash depleted ({portfolio.cash_balance:.2f}€). Skipping new buys.")
             return 0
@@ -883,6 +917,162 @@ class MasterLiveTradingDaemon:
                     pass
 
         new_buys = 0
+
+        # Dedicated execution branch for P11 Meta_Consensus strategy
+        if cfg.strategy == "Meta_Consensus":
+            try:
+                df_conv = calculate_top_picks_conviction(portfolio.portfolio_dir)
+            except Exception as e:
+                logger.error(f"[{cfg.portfolio_id}] Failed to calculate conviction: {e}")
+                df_conv = pd.DataFrame()
+
+            if df_conv.empty:
+                logger.info(f"[{cfg.portfolio_id}] No consensus conviction candidates available.")
+                return 0
+
+            min_score = cfg.min_conviction_score if cfg.min_conviction_score is not None else 8
+
+            for _, row in df_conv.iterrows():
+                if open_count + new_buys >= cfg.slots:
+                    break
+
+                ticker = str(row["Ticker"]).strip().upper()
+                if ticker in held_tickers:
+                    continue
+
+                # Anti-Whipsaw Cooldown
+                if ticker in cooldown_tickers:
+                    days_since_exit = (today - cooldown_tickers[ticker]).days
+                    if days_since_exit < REENTRY_COOLDOWN_DAYS:
+                        continue
+
+                # Conviction Score check (e.g. >= 8)
+                score = int(row.get("Conviction Score (0-14)", 0))
+                if score < min_score:
+                    continue
+
+                # Required tags check: Must have Institutional + (Deep Value OR Quality Growth)
+                tags_str = str(row.get("Premium Tags (e.g., Institutional, Deep Value)", ""))
+                tags_lower = tags_str.lower()
+                has_inst = "institutional" in tags_lower
+                has_dv = "deep value" in tags_lower
+                has_qg = "quality growth" in tags_lower
+
+                if not (has_inst and (has_dv or has_qg)):
+                    continue
+
+                if cfg.required_tags:
+                    if not all(rt.lower() in tags_lower for rt in cfg.required_tags):
+                        continue
+
+                meta = self.market_engine.universe_metadata.get(ticker, {})
+
+                # Region filter
+                market = meta.get("market", "")
+                if cfg.regions and market and market not in cfg.regions:
+                    continue
+
+                # ADV check
+                adv_local = meta.get("adv_20d_local", 0.0)
+                adv_usd = meta.get("adv_20d_usd", 0.0)
+                if cfg.min_adv > 0 and (adv_usd > 0 or adv_local > 0):
+                    if adv_usd < cfg.min_adv and adv_local < cfg.min_adv:
+                        continue
+
+                cand_price = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
+                if not cand_price or cand_price <= 0:
+                    cand_price = self.market_engine._fetch_live_price(ticker)
+                if not cand_price or cand_price <= 0:
+                    continue
+
+                hard_facts = self.market_engine.hard_facts_cache.get(ticker, {})
+                financials_payload = {
+                    "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
+                    "cash_runway_months": hard_facts.get("cash_runway_months"),
+                    "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
+                }
+                exit_act, _ = evaluate_position(
+                    position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
+                    current_price=cand_price,
+                    latest_news_judgment="HOLD",
+                    latest_financials=financials_payload,
+                    dead_money_days=cfg.dead_money_days,
+                )
+                if exit_act == "SELL":
+                    continue
+
+                # Position sizing (slot_size or start_cash/slots)
+                eff_allocation_acc = min(target_allocation_acc, portfolio.cash_balance)
+                ticker_curr = meta.get("currency", get_ticker_currency(ticker))
+                fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
+                fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+                target_allocation_local = eff_allocation_acc * fx_acc_to_local
+                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+
+                max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
+                if max_adv_allowed > 0 and target_allocation_local > max_adv_allowed:
+                    target_allocation_local = max_adv_allowed
+
+                if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
+                    continue
+
+                investable_cash_local = target_allocation_local - min_fee_local
+                if investable_cash_local <= 0:
+                    continue
+
+                shares_to_buy = math.floor(investable_cash_local / cand_price)
+                if shares_to_buy <= 0:
+                    continue
+
+                actual_gross_buy = shares_to_buy * cand_price
+                actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
+                total_cost_local = actual_gross_buy + actual_fee
+                total_cost_acc = total_cost_local * fx_to_acc
+
+                if total_cost_acc > portfolio.cash_balance:
+                    continue
+
+                portfolio.cash_balance -= total_cost_acc
+                new_pos = {
+                    "Ticker": ticker,
+                    "Buy Date": today.strftime("%Y-%m-%d"),
+                    "Buy Price": cand_price,
+                    "Shares": shares_to_buy,
+                    "Capital Invested": round(total_cost_local, 2),
+                    "Strategy": cfg.strategy,
+                    "Currency": ticker_curr,
+                }
+                portfolio.positions.append(new_pos)
+                held_tickers.add(ticker)
+                new_buys += 1
+
+                logger.info(
+                    f"⭐ [{cfg.portfolio_id} BUY] {ticker} ({cfg.strategy}, Score: {score}) | "
+                    f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
+                    f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
+                    f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
+                )
+
+                if run_trades is not None:
+                    run_trades.append({
+                        "portfolio_id": cfg.portfolio_id,
+                        "action": "BUY",
+                        "ticker": ticker,
+                        "details": {
+                            "strategy": cfg.strategy,
+                            "conviction_score": score,
+                            "shares": shares_to_buy,
+                            "buy_price": f"{cand_price:.2f} {ticker_curr}",
+                            "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
+                            "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                        },
+                    })
+
+            if new_buys > 0:
+                portfolio.save_state()
+
+            return new_buys
 
         for ticker, meta in self.market_engine.universe_metadata.items():
             if open_count + new_buys >= cfg.slots:
