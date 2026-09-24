@@ -2196,9 +2196,9 @@ def render_dashboard_views(active_menu: str):
                 styles = [""] * len(row)
                 pid = row["Portfolio"]
                 if pid == selected_portfolio:
-                    styles = ["background-color: #1e3a5f; font-weight: bold;"] * len(row)
+                    styles = ["background-color: #1e40af; color: #ffffff; font-weight: bold;"] * len(row)
                 elif pid == dsr_report.get("best_portfolio"):
-                    styles = ["background-color: #14382c;"] * len(row)
+                    styles = ["background-color: #166534; color: #ffffff; font-weight: bold;"] * len(row)
                 return styles
 
             styled_summary = display_df.style.apply(_highlight_selected_and_best, axis=1)
@@ -2567,7 +2567,7 @@ def render_dashboard_views(active_menu: str):
                     # Highlight active portfolio row
                     def _highlight_active(row):
                         if row["Salkku"] == selected_portfolio:
-                            return ["background-color: #1e3a5f"] * len(row)
+                            return ["background-color: #1e40af; color: #ffffff; font-weight: bold;"] * len(row)
                         return [""] * len(row)
 
                     styled = df_summary.style.apply(_highlight_active, axis=1).format({
