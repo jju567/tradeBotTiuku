@@ -314,6 +314,18 @@ tradeBotTiuku/
 
 ---
 
+## 🔭 Jatkoseuranta & Tuleva Kalibrointi (Roadmap & Monitoring)
+
+Seuraavat kaksi kvantitatiivista kohtaa on kirjattu seurattavaksi ajan mittaan, kun paperisalkut keräävät dataa useamman kuukauden ajalta:
+
+1. **Divergenssihälytyksen kynnysten (20 % / 40 %) empiirinen toimivuus**:
+   - Tarkkaillaan, laukeaako hälytys järkevällä taajuudella: sen tulee varoittaa todellisesta mikroyhtiöstressistä silloin, kun ETF-benchmark (IWC) näyttää vielä matalaa volatiliteettia, muttei laukoa vääriä hälytyksiä jatkuvasti normaalissa markkinatilassa.
+   - Hienosäädetään 20 % / 40 % -kynnyssuhdetta tarvittaessa havaitun korrelaation ja varianssisuhteen perusteella.
+2. **Mikroyhtiöiden persentiilikynnysten päivitys (Q1 / Q3)**:
+   - Nykytilan nyrkkisääntökynnykset (28 % matala / 45–50 % korkea) korvataan täsmällisillä 106-yhtiön historiallisen volatiliteettijakauman $Q_1$- ja $Q_3$-persentiileillä, kunhan 3–6 kuukauden kattava empiirinen aikasarja on kertynyt.
+
+---
+
 ## 🔒 Tietosuoja & Disclaimer
 
 - **Tietosuoja & API-avaimet**: Salkkutiedot ja API-avaimet säilytetään omalla paikallisella laitteellasi.

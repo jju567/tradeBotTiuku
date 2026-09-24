@@ -484,6 +484,11 @@ def get_market_regime(
                 desc = "Vaihteluvälikauppa & normaali mikroyhtiövolatiliteetti (20-30%). Suosii Profile B Deep Value -käänneyhtiöitä."
 
             # Optional internal universe median volatility & divergence guard
+            # [SEURANTAMUISTUTUS / ROADMAP]:
+            # 1. Seuraa 20% (IWC) ja 40% (Universumi) divergenssikynnysten toimivuutta käytännössä
+            #    (laukeamistaajuus: ei liian herkkä eikä koskaan mykkä).
+            # 2. Päivitä universumin karkeat nyrkkisäännöt (28% / 45-50%) aidoiksi Q1/Q3-persentiileiksi,
+            #    kunhan 3-6 kk dataa on kertynyt.
             u_vol = None
             divergence_warning = None
             if include_universe_median:
