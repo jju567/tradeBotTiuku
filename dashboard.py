@@ -106,6 +106,73 @@ def get_batch_status() -> dict:
     except Exception:
         return {"is_running": False}
 
+
+def is_ticker_in_watchlist(watchlist_path: Path, ticker: str) -> bool:
+    """Checks if a ticker is already present in watchlist_turnarounds.csv."""
+    if not watchlist_path.exists():
+        return False
+    try:
+        with open(watchlist_path, "r", encoding="utf-8", errors="ignore") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if str(row.get("ticker", "")).strip().upper() == str(ticker).strip().upper():
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def append_to_turnaround_watchlist(watchlist_path: Path, entry: Dict[str, Any]) -> bool:
+    """Appends a new turnaround candidate entry to watchlist_turnarounds.csv."""
+    try:
+        watchlist_path.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = watchlist_path.exists()
+        fieldnames = [
+            "timestamp", "company_name", "ticker", "strategy_type", "title",
+            "link", "doc_verdict", "doc_reasoning", "positive_catalysts_found", "web_reasoning"
+        ]
+        catalysts = entry.get("positive_catalysts_found", [])
+        if isinstance(catalysts, list):
+            catalysts_str = "; ".join(catalysts) if catalysts else "Turnaround catalysts detected"
+        else:
+            catalysts_str = str(catalysts)
+
+        with open(watchlist_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not file_exists or watchlist_path.stat().st_size == 0:
+                writer.writerow(fieldnames)
+            writer.writerow([
+                entry.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                entry.get("company_name", ""),
+                entry.get("ticker", ""),
+                entry.get("strategy_type", "TURNAROUND"),
+                entry.get("title", ""),
+                entry.get("link", ""),
+                entry.get("doc_verdict", "MANUAL_SCAN"),
+                entry.get("doc_reasoning", ""),
+                catalysts_str,
+                entry.get("web_reasoning", ""),
+            ])
+        return True
+    except Exception as e:
+        logger.error(f"Failed to append to turnaround watchlist {watchlist_path}: {e}")
+        return False
+
+
+def remove_from_turnaround_watchlist(watchlist_path: Path, ticker: str) -> bool:
+    """Removes a ticker entry from watchlist_turnarounds.csv."""
+    if not watchlist_path.exists():
+        return False
+    try:
+        df = pd.read_csv(watchlist_path)
+        if "ticker" in df.columns:
+            df = df[df["ticker"].astype(str).str.strip().str.upper() != ticker.strip().upper()]
+            df.to_csv(watchlist_path, index=False, encoding="utf-8")
+            return True
+    except Exception as e:
+        logger.error(f"Failed to remove {ticker} from {watchlist_path}: {e}")
+    return False
+
 # Custom CSS for modern styling
 st.markdown("""
 <style>
@@ -1241,8 +1308,15 @@ def render_dashboard_views(active_menu: str):
                         st.caption(f"Catalysts: `{catalysts_str}`")
                         st.success(row.get("web_reasoning", "Live search confirms positive restructuring, sales beat, or contract win."))
 
-                    if row.get("link"):
-                        st.markdown(f"[🔗 Open Disclosure / News Article]({row['link']})")
+                    b_col1, b_col2 = st.columns([4, 1])
+                    with b_col1:
+                        if row.get("link"):
+                            st.markdown(f"[🔗 Avaa tiedote / uutisartikkeli]({row['link']})")
+                    with b_col2:
+                        if st.button("🗑️ Poista listalta", key=f"del_watch_{ticker}_{idx}"):
+                            if remove_from_turnaround_watchlist(WATCHLIST_CSV, ticker):
+                                st.success(f"Poistettu {ticker} seurantalistalta.")
+                                st.rerun()
 
     # ------------------------------------------------------------------
     # VIEW 3: PAPER TRADING PORTFOLIO & RISK CONTROLS
@@ -2070,7 +2144,21 @@ def render_dashboard_views(active_menu: str):
                     if sample_text.strip():
                         doc_res = analyze_core_fundamentals(sample_text)
 
-                st.success(f"Analysis complete for **{ticker_input}**!")
+                st.session_state["scanner_last_result"] = {
+                    "ticker": ticker_input.strip().upper(),
+                    "company_name": company_input.strip() or ticker_input.strip().upper(),
+                    "web_res": web_res,
+                    "doc_res": doc_res,
+                }
+
+            scan_res = st.session_state.get("scanner_last_result")
+            if scan_res:
+                t_symbol = scan_res["ticker"]
+                web_res = scan_res["web_res"]
+                doc_res = scan_res["doc_res"]
+                comp_name = scan_res["company_name"]
+
+                st.success(f"Analysis complete for **{t_symbol}**!")
 
                 # Results Display
                 st.markdown("### 📋 Dual-Step Verdict")
@@ -2084,6 +2172,32 @@ def render_dashboard_views(active_menu: str):
                     st.error(f"**Red Flags Detected:** {', '.join(web_res['red_flags_found'])}")
                 if web_res.get("positive_catalysts_found"):
                     st.info(f"**Positive Catalysts:** {', '.join(web_res['positive_catalysts_found'])}")
+
+                # Save to Turnaround Watchlist Button
+                st.markdown("---")
+                is_in_watch = is_ticker_in_watchlist(WATCHLIST_CSV, t_symbol)
+                if is_in_watch:
+                    st.info(f"📌 **{t_symbol}** on jo mukana Turnaround Watchlistissä.")
+                else:
+                    if st.button("➕ Tallenna Turnaround Watchlistiin", type="secondary", key="save_to_watchlist_btn"):
+                        catalysts = web_res.get("positive_catalysts_found", [])
+                        snippets = web_res.get("snippets", [])
+                        news_link = snippets[0] if snippets else ""
+                        entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "company_name": comp_name,
+                            "ticker": t_symbol,
+                            "strategy_type": "TURNAROUND",
+                            "title": f"Manual Scan: {comp_name}",
+                            "link": news_link,
+                            "doc_verdict": doc_res.get("verdict", "MANUAL_SCAN") if doc_res else "MANUAL_SCAN",
+                            "doc_reasoning": doc_res.get("reasoning", "Added via Live Ticker Scanner") if doc_res else "Added via Live Ticker Scanner",
+                            "positive_catalysts_found": catalysts if catalysts else ["Turnaround catalyst detected"],
+                            "web_reasoning": web_res.get("reason", "Live search confirmed turnaround catalysts."),
+                        }
+                        if append_to_turnaround_watchlist(WATCHLIST_CSV, entry):
+                            st.success(f"✅ **{t_symbol}** lisätty onnistuneesti Turnaround Watchlistiin! Näkyy nyt '👀 Turnaround Watchlist' -välilehdellä.")
+                            st.rerun()
 
                 st.markdown("#### 📰 Live News & Snippets Reviewed:")
                 snippets = web_res.get("snippets", [])
