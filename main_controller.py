@@ -828,6 +828,9 @@ class MasterLiveTradingDaemon:
             if is_conviction_exit:
                 action = "SELL"
                 reason = conviction_reason
+            elif portfolio.config.strategy == "Meta_Consensus" and news_verdict in ("WARN", "REJECT"):
+                action = "SELL"
+                reason = f"NLP_{news_verdict} ({news_reason})"
 
             if action == "SELL":
                 gross_sale_value = shares * current_price
@@ -1257,8 +1260,34 @@ class MasterLiveTradingDaemon:
         results: Dict[str, Dict[str, Any]] = {}
         run_trades: List[Dict[str, Any]] = []
 
-        # Process each portfolio independently
-        for p in self.portfolios:
+        # Step 1: Execute Base Portfolios (P1 through P10) first so their state files and active positions are fully updated
+        base_portfolios = [p for p in self.portfolios if p.config.strategy != "Meta_Consensus"]
+        meta_portfolios = [p for p in self.portfolios if p.config.strategy == "Meta_Consensus"]
+
+        logger.info(f"Executing Phase A: Base Signal Portfolios ({len(base_portfolios)} portfolios: P1–P10)")
+        for p in base_portfolios:
+            closed = self.execute_phase1_exits(p, run_trades=run_trades)
+            opened = self.execute_phase2_screening(p, run_trades=run_trades)
+            stock_val_eur = self.calculate_stock_value_eur(p)
+            p.record_snapshot(stock_val_eur)
+
+            total_equity = p.cash_balance + stock_val_eur
+            ret_pct = ((total_equity - p.starting_balance) / p.starting_balance) * 100.0 if p.starting_balance > 0 else 0.0
+
+            results[p.config.portfolio_id] = {
+                "closed": closed,
+                "opened": opened,
+                "positions_count": len(p.positions),
+                "cash": p.cash_balance,
+                "stock_val_eur": stock_val_eur,
+                "total_equity": total_equity,
+                "return_pct": ret_pct,
+            }
+
+        # Step 2: Execute Meta-Portfolios (P11_Meta_Consensus) based on fresh, updated consensus from P1-P10
+        if meta_portfolios:
+            logger.info(f"Executing Phase B: Meta-Portfolios ({len(meta_portfolios)} portfolios: P11_Meta_Consensus)")
+        for p in meta_portfolios:
             closed = self.execute_phase1_exits(p, run_trades=run_trades)
             opened = self.execute_phase2_screening(p, run_trades=run_trades)
             stock_val_eur = self.calculate_stock_value_eur(p)
