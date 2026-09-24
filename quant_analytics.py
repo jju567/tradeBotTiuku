@@ -483,10 +483,24 @@ def get_market_regime(
                 status_color = "🟡"
                 desc = "Vaihteluvälikauppa & normaali mikroyhtiövolatiliteetti (20-30%). Suosii Profile B Deep Value -käänneyhtiöitä."
 
-            # Optional internal universe median volatility
+            # Optional internal universe median volatility & divergence guard
             u_vol = None
+            divergence_warning = None
             if include_universe_median:
                 u_vol = calculate_internal_universe_volatility(universe_csv_path)
+
+            if u_vol is not None:
+                if vol_20d < vol_low_threshold and u_vol >= 40.0:
+                    divergence_warning = (
+                        f"⚠️ Divergenssihälytys: IWC-benchmark ({vol_20d:.1f}%) näyttää matalaa volatiliteettia, "
+                        f"mutta sisäinen 106-yhtiön universumi ({u_vol:.1f}%) kokee kohonnutta stressiä (>40%). "
+                        f"Regiimiluokitus voi olla liian optimistinen."
+                    )
+                elif u_vol >= 50.0:
+                    divergence_warning = (
+                        f"⚠️ Universumistressi: Sisäisen universumin mediaanivolatiliteetti ({u_vol:.1f}%) "
+                        f"on poikkeuksellisen korkealla tasolla (>50%)."
+                    )
 
             regime_data = {
                 "benchmark": benchmark_ticker,
@@ -500,6 +514,7 @@ def get_market_regime(
                 "dist_sma50_pct": round(dist_sma50_pct, 1),
                 "drawdown_3m_pct": round(dd_pct, 1),
                 "universe_median_vol_pct": u_vol,
+                "divergence_warning": divergence_warning,
                 "vol_low_threshold": vol_low_threshold,
                 "vol_high_threshold": vol_high_threshold,
                 "description": desc,
@@ -536,6 +551,7 @@ def get_market_regime(
         "dist_sma50_pct": -2.6,
         "drawdown_3m_pct": -4.5,
         "universe_median_vol_pct": 33.0,
+        "divergence_warning": None,
         "vol_low_threshold": vol_low_threshold,
         "vol_high_threshold": vol_high_threshold,
         "description": "Markkinaregiimi neutralissa tilassa (iShares Micro-Cap ETF / IWC).",

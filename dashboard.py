@@ -2347,14 +2347,17 @@ def render_dashboard_views(active_menu: str):
                     help="Daemonin toimintatila. Alkuvaiheessa (<10 arviointia) tila on INITIALIZING, jotta vältetään väärä turvallisuuden tunne ennen aitoja stressitapahtumia.",
                 )
 
+            if regime.get("divergence_warning"):
+                st.warning(regime["divergence_warning"])
+
             st.divider()
 
             # ------------------------------------------------------------------
-            # 4. Unified Summary Table (Rows = 10 Portfolios)
+            # 4. Unified Summary Table (Rows = 11 Portfolios)
             # Columns = 30d Sharpe, 30d Sortino, Median Return, Mean Return, Max DD, Top-1 PnL %, Median Hold Days
             # ------------------------------------------------------------------
-            st.markdown("#### 📋 10 Salkun Institutional-Yhteenveto")
-            st.caption("Rivit = 10 salkkua. Sarakkeet = 30d Sharpe, 30d Sortino, Mediaanituotto, Keskituotto, Max Drawdown, Top-1 PnL % ja Mediaanipitoaika.")
+            st.markdown("#### 📋 11 Salkun Institutional-Yhteenveto")
+            st.caption("Rivit = 11 salkkua. Sarakkeet = 30d Sharpe, 30d Sortino, Mediaanituotto, Keskituotto, Max Drawdown, Top-1 PnL % ja Mediaanipitoaika.")
 
             spec_cols = [
                 "Portfolio",
