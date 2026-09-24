@@ -932,3 +932,147 @@ def generate_institutional_summary(
         "equity_dict": equity_dict,
         "trades_dict": trades_dict,
     }
+
+
+# ==============================================================================
+# 5. TOP PICKS & CONVICTION SCORE (WEIGHTED CONSENSUS)
+# ==============================================================================
+
+def score_to_star_rating(score: int) -> str:
+    """
+    Converts a Conviction Score (0-14) into a visual Star Rating:
+      - > 10: ⭐⭐⭐⭐⭐ (5 Stars - Elite Multi-Portfolio Consensus)
+      - 8-10: ⭐⭐⭐⭐ (4 Stars - Solid Multi-Strategy Pick)
+      - 5-7:  ⭐⭐⭐ (3 Stars - Moderate Consensus)
+      - < 5:  ⭐⭐ (2 Stars - Low / Emerging Conviction)
+    """
+    if score > 10:
+        return "⭐⭐⭐⭐⭐"
+    elif score >= 8:
+        return "⭐⭐⭐⭐"
+    elif score >= 5:
+        return "⭐⭐⭐"
+    else:
+        return "⭐⭐"
+
+
+def calculate_top_picks_conviction(portfolios_dir: Path) -> pd.DataFrame:
+    """
+    Computes weighted consensus Conviction Scores across all 10 parallel portfolios.
+    
+    Logic:
+      1. Iterates through all 10 `portfolio_*_state.json` files.
+      2. Extracts all currently open positions (tickers).
+      3. Calculates Conviction Score (0-14 points):
+         - Base Score: +1 point for EVERY portfolio holding the ticker (max 10)
+         - Liquidity Premium: +1 point IF held by `P4_Institutional` (ADV > 250k)
+         - Deep Value Premium: +2 points IF held by `P7_Deep_Value_Extreme` (P/Cash < 0.5)
+         - Quality Premium: +1 point IF held by `P8_Quality_Growth` (high margins & growth)
+         Max possible score = 14 points.
+         
+    Returns:
+        pd.DataFrame: Sorted descending by Conviction Score, with columns:
+        - Ticker
+        - Conviction Score (0-14)
+        - Star Rating
+        - Held In (count)
+        - Premium Tags (e.g., Institutional, Deep Value)
+        - Portfolios
+    """
+    PORTFOLIO_IDS = [
+        "P1_Base",
+        "P2_Fast_Cycle",
+        "P3_Diamond_Hands",
+        "P4_Institutional",
+        "P5_Nordic_Only",
+        "P6_US_Only",
+        "P7_Deep_Value_Extreme",
+        "P8_Quality_Growth",
+        "P9_High_Conviction",
+        "P10_Micro_Sniper",
+    ]
+
+    ticker_map: Dict[str, Dict[str, Any]] = {}
+
+    for pid in PORTFOLIO_IDS:
+        state_file = portfolios_dir / f"portfolio_{pid}_state.json"
+        if not state_file.exists():
+            continue
+
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                state_data = json.load(f)
+            positions = state_data.get("positions", [])
+            for pos in positions:
+                ticker = pos.get("Ticker") or pos.get("ticker")
+                if not ticker:
+                    continue
+                ticker = str(ticker).strip().upper()
+                if ticker not in ticker_map:
+                    ticker_map[ticker] = {
+                        "held_portfolios": set(),
+                        "strategies": set(),
+                        "currencies": set(),
+                    }
+                ticker_map[ticker]["held_portfolios"].add(pid)
+                strat = pos.get("Strategy") or pos.get("strategy")
+                if strat:
+                    ticker_map[ticker]["strategies"].add(str(strat))
+                curr = pos.get("Currency") or pos.get("currency")
+                if curr:
+                    ticker_map[ticker]["currencies"].add(str(curr))
+        except Exception as e:
+            logger.debug(f"Could not load positions for {pid} in conviction calculation: {e}")
+
+    rows: List[Dict[str, Any]] = []
+    for ticker, info in ticker_map.items():
+        held = info["held_portfolios"]
+        base_score = len(held)
+
+        liq_prem = 1 if "P4_Institutional" in held else 0
+        dv_prem = 2 if "P7_Deep_Value_Extreme" in held else 0
+        qual_prem = 1 if "P8_Quality_Growth" in held else 0
+
+        total_score = min(14, base_score + liq_prem + dv_prem + qual_prem)
+
+        tags: List[str] = []
+        if liq_prem:
+            tags.append("💧 Institutional (+1)")
+        if dv_prem:
+            tags.append("💎 Deep Value (+2)")
+        if qual_prem:
+            tags.append("🚀 Quality Growth (+1)")
+
+        star_rating = score_to_star_rating(total_score)
+        tags_str = ", ".join(tags) if tags else "-"
+        portfolios_str = ", ".join(sorted(held))
+
+        rows.append({
+            "Ticker": ticker,
+            "Conviction Score (0-14)": total_score,
+            "Star Rating": star_rating,
+            "Held In (count)": base_score,
+            "Premium Tags (e.g., Institutional, Deep Value)": tags_str,
+            "Portfolios": portfolios_str,
+            "_raw_score": total_score,
+            "_strategies": ", ".join(sorted(info["strategies"])),
+            "_currency": ", ".join(sorted(info["currencies"])),
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=[
+            "Ticker",
+            "Conviction Score (0-14)",
+            "Star Rating",
+            "Held In (count)",
+            "Premium Tags (e.g., Institutional, Deep Value)",
+            "Portfolios",
+        ])
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values(
+        by=["Conviction Score (0-14)", "Held In (count)", "Ticker"],
+        ascending=[False, False, True],
+    ).reset_index(drop=True)
+    return df
+

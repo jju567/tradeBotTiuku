@@ -228,6 +228,10 @@ Juuritason päämoottori reaaliaikaiseen 10 rinnakkaisen paperisalkun walk-forwa
   - Sivupalkin valikosta valittavissa mikä tahansa 10 rinnakkaissalkusta.
   - Avaa ja visualisoi reaaliaikaiset avoimet positiot, KPI-arvot, tuottokäyrän ja toteutuneet kaupat valitulle salkulle reaaliaikaisine FX-muunnoksineen.
   - **📊 Salkkuvertailu (Kaikki)**: Erillinen välilehti, jossa kaikkien 10 salkun pääomakehitystä ja tuottoja voi vertailla rinnakkain interaktiivisella Plotly-viivakaaviolla (sisältää myös normalisoidun indeksinäkymän lähtötasolla 100 ja yhteenvedon).
+  - **⭐ Top Picks & Conviction (`dashboard.py` / `quant_analytics.py`)**: Uusi monisalkkukonsensuksen ja turvallisuusluokituksen välilehti:
+    - **Painotettu konsensuspistemäärä (0–14 p)**: +1 p jokaisesta salkusta (max 10 p) + likviditeettipreemio `P4_Institutional` (+1 p, ADV > 250k) + Deep Value -preemio `P7_Deep_Value_Extreme` (+2 p, Price/Cash < 0.5) + Quality-preemio `P8_Quality_Growth` (+1 p, korkea kasvu ja kannattavuus).
+    - **Visuaalinen tähtiluokitus**: >10 p = ⭐⭐⭐⭐⭐, 8–10 p = ⭐⭐⭐⭐, 5–7 p = ⭐⭐⭐, <5 p = ⭐⭐.
+    - **Interaktiivinen taulukko**: `st.column_config.ProgressColumn` -edistymispalkit (0–14), tähtiluokitussuodatus ja hakukenttä.
   - **🏛️ Institutional Analytics (`quant_analytics.py`)**: Uusi dedikoitu pääomarahastotason kvantitatiivisen analyysin välilehti Streamlitissä:
     - **Markkinaregiimiseuranta (Market Regime Tagging)**: Seuraa aitoa mikroyhtiöiden vertailuindeksiä (iShares Micro-Cap ETF / `IWC`, Russell Microcap Index $< \$300M$) ja luokittelee markkinan tilaan (*🟢 BULL / LOW VOL, 🟡 NEUTRAL / RANGE-BOUND, 🔴 HIGH VOLATILITY / BEARISH*) 20 päivän toteutuneen volatiliteetin ja 50 päivän liukuvan keskiarvon (SMA50) perusteella mikroyhtiöille kalibroiduin kynnysarvoin (Low Vol $< 20\%$, Stress $> 30\%$, SMA50 puskuri $-5\%$). Tukee myös sisäisen 106 osakkeen puhtaan universumin toteutunutta volatiliteettia (`clean_microcap_universe.csv`).
     - **Riskikorjatut tuotot**: 30 päivän rullaava Sharpe-luku, 30 päivän rullaava Sortino-luku (downside deviation), Max Drawdown ja toipumisaika (Time-to-Recovery päivinä).

@@ -1356,8 +1356,9 @@ def render_dashboard_views(active_menu: str):
                 f"Alueet: **{', '.join(portfolio_meta.get('regions', ['FI', 'SE', 'US']))}**{filter_note}"
             )
 
-        tab1, tab_inst, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab_top_picks, tab_inst, tab2, tab3, tab4, tab5 = st.tabs([
             "📌 Avoimet Positiot & Trailing Stopit",
+            "⭐ Top Picks & Conviction",
             "🏛️ Institutional Analytics",
             "⚡ Riskinhallinta & Testiosto",
             "📜 Toteutuneet Kaupat (Trade History)",
@@ -1890,6 +1891,161 @@ def render_dashboard_views(active_menu: str):
                                 f"{pos_match['stop_dist_pct']:.1f}%",
                                 f"Stop: {pos_match['cat_stop']:,.2f}",
                             )
+
+        # ------------------------------------------------------------------
+        # TAB: TOP PICKS & CONVICTION SCORE
+        # ------------------------------------------------------------------
+        with tab_top_picks:
+            st.markdown("### ⭐ Top Picks & Consensus Conviction Score")
+            st.caption(
+                "Painotettu monisalkkukonsensus 10 rinnakkaissalkun yli. "
+                "Mitä useampi strategia ja tiukempi suodatus (P4 likviditeetti, P7 deep value, P8 kasvu/kannattavuus) "
+                "on valinnut saman osakkeen, sitä korkeampi on sen institutionaalinen turvamarginaali ja Conviction Score (0–14)."
+            )
+
+            df_conviction = qa.calculate_top_picks_conviction(PORTFOLIOS_DIR)
+
+            if df_conviction.empty:
+                st.info("ℹ️ Yhdelläkään 10 rinnakkaissalkusta ei ole tällä hetkellä avoimia osakepositioita.")
+            else:
+                top_row = df_conviction.iloc[0]
+                top_ticker = top_row["Ticker"]
+                top_score = int(top_row["Conviction Score (0-14)"])
+                top_stars = top_row["Star Rating"]
+                total_unique = len(df_conviction)
+                star5_count = int((df_conviction["Conviction Score (0-14)"] > 10).sum())
+                star4_count = int(((df_conviction["Conviction Score (0-14)"] >= 8) & (df_conviction["Conviction Score (0-14)"] <= 10)).sum())
+                star3_count = int(((df_conviction["Conviction Score (0-14)"] >= 5) & (df_conviction["Conviction Score (0-14)"] <= 7)).sum())
+
+                # Top Metrics Banner
+                cp1, cp2, cp3, cp4 = st.columns(4)
+                with cp1:
+                    st.metric(
+                        "Korkein konsensus",
+                        f"{top_ticker} {top_stars}",
+                        f"Pisteet: {top_score} / 14 ({top_row['Held In (count)']} salkussa)",
+                        help="Osake, jolla on korkein kokonaispistemäärä 10 rinnakkaissalkun painotetussa konsensuksessa.",
+                    )
+                with cp2:
+                    st.metric(
+                        "Uniikkeja avoimia osakkeita",
+                        f"{total_unique} kpl",
+                        "10 salkun avoimet positiot",
+                        help="Kuinka monta uniikkia eri mikroyhtiötä 10 rinnakkaissalkkua pitää tällä hetkellä hallussaan.",
+                    )
+                with cp3:
+                    st.metric(
+                        "⭐⭐⭐⭐⭐ Elite Picks (>10 p)",
+                        f"{star5_count} kpl",
+                        "Huippuvahva konsensus",
+                        help="Osakkeet, joilla on yli 10 pistettä. Vaatii laajan monisalkkuhyväksynnän ja useita laatustamppeja.",
+                    )
+                with cp4:
+                    st.metric(
+                        "⭐⭐⭐⭐ Vankka konsensus (8-10 p)",
+                        f"{star4_count} kpl",
+                        "Laaja hyväksyntä",
+                        help="Osakkeet, joilla on 8–10 pistettä ja vahva tuki useissa eri strategiaprofiileissa.",
+                    )
+
+                st.divider()
+
+                # Filter Controls
+                f_col1, f_col2 = st.columns([1, 2])
+                with f_col1:
+                    filter_stars = st.selectbox(
+                        "Suodata tähtiluokituksen mukaan:",
+                        ["Kaikki luokitukset", "⭐⭐⭐⭐⭐ (Yli 10 p)", "⭐⭐⭐⭐ ja paremmat (≥ 8 p)", "⭐⭐⭐ ja paremmat (≥ 5 p)"],
+                        index=0,
+                        key="filter_top_picks_stars",
+                    )
+                with f_col2:
+                    search_query = st.text_input(
+                        "Etsi tickerillä tai premium-tagilla:",
+                        placeholder="Esim. MOB.ST, Institutional, Deep Value...",
+                        key="search_top_picks_ticker",
+                    )
+
+                # Filter evaluation
+                filtered_df = df_conviction.copy()
+                if "Yli 10" in filter_stars:
+                    filtered_df = filtered_df[filtered_df["Conviction Score (0-14)"] > 10]
+                elif "≥ 8" in filter_stars:
+                    filtered_df = filtered_df[filtered_df["Conviction Score (0-14)"] >= 8]
+                elif "≥ 5" in filter_stars:
+                    filtered_df = filtered_df[filtered_df["Conviction Score (0-14)"] >= 5]
+
+                if search_query.strip():
+                    q = search_query.strip().upper()
+                    filtered_df = filtered_df[
+                        filtered_df["Ticker"].str.contains(q, case=False, na=False) |
+                        filtered_df["Premium Tags (e.g., Institutional, Deep Value)"].str.contains(q, case=False, na=False) |
+                        filtered_df["Portfolios"].str.contains(q, case=False, na=False)
+                    ]
+
+                st.markdown(f"#### 🏆 Konsensuslista ({len(filtered_df)} / {len(df_conviction)} osaketta)")
+
+                display_cols = [
+                    "Ticker",
+                    "Conviction Score (0-14)",
+                    "Star Rating",
+                    "Held In (count)",
+                    "Premium Tags (e.g., Institutional, Deep Value)",
+                    "Portfolios",
+                ]
+
+                col_config = {
+                    "Ticker": st.column_config.TextColumn(
+                        "Ticker",
+                        help="Osakkeen kaupankäyntitunnus pörssissä",
+                    ),
+                    "Conviction Score (0-14)": st.column_config.ProgressColumn(
+                        "Conviction Score (0-14)",
+                        help="Painotettu konsensustulos (0-14 pistettä). Max 10 peruspistettä salkuista + erikoispreemiot (P4, P7, P8).",
+                        format="%d / 14",
+                        min_value=0,
+                        max_value=14,
+                    ),
+                    "Star Rating": st.column_config.TextColumn(
+                        "Star Rating",
+                        help="Tähtiluokitus: >10 ⭐⭐⭐⭐⭐, 8-10 ⭐⭐⭐⭐, 5-7 ⭐⭐⭐, <5 ⭐⭐",
+                    ),
+                    "Held In (count)": st.column_config.NumberColumn(
+                        "Held In (count)",
+                        help="Monessako 10 rinnakkaissalkusta osake on tällä hetkellä avoinna",
+                        format="%d salkkua",
+                    ),
+                    "Premium Tags (e.g., Institutional, Deep Value)": st.column_config.TextColumn(
+                        "Premium Tags (e.g., Institutional, Deep Value)",
+                        help="Laatustampit: 💧 Institutional (P4, ADV > 250k: +1), 💎 Deep Value (P7, P/Cash < 0.5: +2), 🚀 Quality Growth (P8, kasvu & kannattavuus: +1)",
+                    ),
+                    "Portfolios": st.column_config.TextColumn(
+                        "Portfolios",
+                        help="Salkut, jotka omistavat tämän osakkeen",
+                    ),
+                }
+
+                st.dataframe(
+                    filtered_df[display_cols],
+                    column_config=col_config,
+                    width="stretch",
+                    hide_index=True,
+                )
+
+                with st.expander("ℹ️ Miten Conviction Score (0–14) ja tähtiluokitus muodostetaan?", expanded=False):
+                    st.markdown("""
+                    **Miksi monisalkkukonsensus on luotettava signaali?**
+                    Koska ajamme 10 rinnakkaista walk-forward-salkkua eri suodatustiukkuuksilla, salkkujen päällekkäisyys paljastaa algoritmin vahvimmat suosikit:
+                    - **Peruspisteet (+1 p per salkku, max 10 p):** Jokainen salkku, joka omistaa osakkeen, antaa yhden pisteen.
+                    - **Likviditeettipreemio (+1 p):** Jos osake kelpaa salkkuun `P4_Institutional` (ADV > 250 000 €). Varmistaa, että osake on aidosti likvidi eikä pelkkä epälikvidi pikkulappu.
+                    - **Deep Value -preemio (+2 p):** Jos osake kelpaa salkkuun `P7_Deep_Value_Extreme` (Price / Cash < 0.5). Todistaa poikkeuksellisen fundamentaalisen turvamarginaalin.
+                    - **Quality Growth -preemio (+1 p):** Jos osake kelpaa salkkuun `P8_Quality_Growth` (korkea liikevaihdon kasvu ja vankat liikevoittomarginaalit).
+                    - **Tähtiluokitus:**
+                      - **⭐⭐⭐⭐⭐ (Yli 10 pistettä):** Äärimmäisen harvinainen huippukonsensus (vaatii sekä laajan salkkuhyväksynnän että tiukkoja laatustamppeja).
+                      - **⭐⭐⭐⭐ (8–10 pistettä):** Vahva monisalkkuhyväksyntä.
+                      - **⭐⭐⭐ (5–7 pistettä):** Kohtalainen konsensus (3–6 salkkua).
+                      - **⭐⭐ (Alle 5 pistettä):** Yksittäisen profiilin tai orastava positio.
+                    """)
 
         # ------------------------------------------------------------------
         # TAB: INSTITUTIONAL ANALYTICS

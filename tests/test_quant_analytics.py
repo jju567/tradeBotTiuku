@@ -182,3 +182,47 @@ def test_internal_universe_volatility_calculation():
         if vol_real is not None:
             assert vol_real > 0.0
 
+
+def test_score_to_star_rating():
+    assert qa.score_to_star_rating(14) == "⭐⭐⭐⭐⭐"
+    assert qa.score_to_star_rating(11) == "⭐⭐⭐⭐⭐"
+    assert qa.score_to_star_rating(10) == "⭐⭐⭐⭐"
+    assert qa.score_to_star_rating(8) == "⭐⭐⭐⭐"
+    assert qa.score_to_star_rating(7) == "⭐⭐⭐"
+    assert qa.score_to_star_rating(5) == "⭐⭐⭐"
+    assert qa.score_to_star_rating(4) == "⭐⭐"
+    assert qa.score_to_star_rating(1) == "⭐⭐"
+
+
+def test_calculate_top_picks_conviction(tmp_path):
+    import json
+
+    # Create mock portfolio state files
+    p1 = tmp_path / "portfolio_P1_Base_state.json"
+    p4 = tmp_path / "portfolio_P4_Institutional_state.json"
+    p7 = tmp_path / "portfolio_P7_Deep_Value_Extreme_state.json"
+    p8 = tmp_path / "portfolio_P8_Quality_Growth_state.json"
+
+    # AAA is held in P1, P4 (+1 liq), P7 (+2 dv), P8 (+1 qual): 4 portfolios + 4 premiums = 8 points (⭐⭐⭐⭐)
+    # BBB is held only in P1: 1 portfolio = 1 point (⭐⭐)
+    p1.write_text(json.dumps({"positions": [{"Ticker": "AAA"}, {"Ticker": "BBB"}]}))
+    p4.write_text(json.dumps({"positions": [{"Ticker": "AAA"}]}))
+    p7.write_text(json.dumps({"positions": [{"Ticker": "AAA"}]}))
+    p8.write_text(json.dumps({"positions": [{"Ticker": "AAA"}]}))
+
+    df = qa.calculate_top_picks_conviction(tmp_path)
+    assert not df.empty
+    assert len(df) == 2
+    assert df.iloc[0]["Ticker"] == "AAA"
+    assert df.iloc[0]["Conviction Score (0-14)"] == 8
+    assert df.iloc[0]["Star Rating"] == "⭐⭐⭐⭐"
+    assert df.iloc[0]["Held In (count)"] == 4
+    assert "Institutional" in df.iloc[0]["Premium Tags (e.g., Institutional, Deep Value)"]
+    assert "Deep Value" in df.iloc[0]["Premium Tags (e.g., Institutional, Deep Value)"]
+    assert "Quality" in df.iloc[0]["Premium Tags (e.g., Institutional, Deep Value)"]
+
+    assert df.iloc[1]["Ticker"] == "BBB"
+    assert df.iloc[1]["Conviction Score (0-14)"] == 1
+    assert df.iloc[1]["Star Rating"] == "⭐⭐"
+
+
