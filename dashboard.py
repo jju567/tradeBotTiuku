@@ -944,6 +944,39 @@ with st.sidebar:
     if st.button("🔄 Refresh Data", width="stretch"):
         st.rerun()
 
+    # Dynamic Universe Status & Trigger
+    try:
+        from screener.dynamic_universe_updater import load_universe_sync_status, scan_and_update_universe
+        u_status = load_universe_sync_status(DATA_DIR / "universe_sync_status.json")
+        u_count = 0
+        if (DATA_DIR / "clean_microcap_universe.csv").exists():
+            with open(DATA_DIR / "clean_microcap_universe.csv", "r", encoding="utf-8") as _uf:
+                u_count = max(0, len(_uf.readlines()) - 1)
+
+        last_sync_dt = u_status.get("last_sync_timestamp")
+        last_sync_str = to_helsinki_time(last_sync_dt) if last_sync_dt else "Päivittyy 7d välein"
+        with st.expander("🌐 Universumi & Nordnet", expanded=False):
+            st.markdown(f"**Seurantalista:** `{u_count} mikroyhtiötä`")
+            st.markdown(f"**Viimeisin Nordnet-haku:** `{last_sync_str}`")
+            if u_status.get("last_added_tickers"):
+                st.caption(f"Viimeksi lisätty: `{', '.join(u_status['last_added_tickers'])}`")
+            if st.button("🔎 Skannaa uudet listaukset (Nordnet)", width="stretch"):
+                with st.spinner("Skannataan Nordnetin uudet listautumiset ja validoidaan likviditeetti..."):
+                    added_n, added_ticks = scan_and_update_universe(
+                        clean_csv_path=DATA_DIR / "clean_microcap_universe.csv",
+                        status_file=DATA_DIR / "universe_sync_status.json",
+                        force=True,
+                    )
+                if added_n > 0:
+                    st.success(f"Löydettiin ja lisättiin {added_n} uutta osaketta: {', '.join(added_ticks)}!")
+                else:
+                    st.info("Skannaus valmis: ei uusia likviditeettikriteerit (ADV >= 50k €) täyttäviä osakkeita.")
+                time.sleep(1)
+                st.rerun()
+    except Exception as e:
+        logger.debug(f"Could not load dynamic universe widget: {e}")
+
+
     # UI Settings file persistence (stays on even across server restarts)
     UI_SETTINGS_JSON = DATA_DIR / "ui_settings.json"
     def load_ui_settings():

@@ -32,9 +32,10 @@
 ### 2. 🔍 Dual-Lens Mikroyhtiöseulonta & Massa-analyysi (`batch_processor.py`)
 > *Yksityiskohtainen kuvaus poimintalogiikasta löytyy dokumentista: [docs/OSAKEPOIMINTALOGIIKKA.md](docs/OSAKEPOIMINTALOGIIKKA.md). Täydellinen testausmetodologia ja tulokset on koottu raporttiin: [docs/BACKTEST_RAPORTTI.md](docs/BACKTEST_RAPORTTI.md).*
 
-- **Mikroyhtiöuniversumin Eristys (`scripts/clean_universe_builder.py`)**:
+- **Mikroyhtiöuniversumin Eristys (`scripts/clean_universe_builder.py`) & Dynaaminen Universumipäivitys (`screener/dynamic_universe_updater.py`)**:
   - Hakee reaaliaikaiset FX-kurssit ja suodattaa osakeuniversumin tiukasti alle $300M USD markkina-arvoon (`< $300M USD`) estäen suuryhtiökontaminaation.
-  - **Tiukat likviditeetti- ja senttiosakesuodattimet**: Hylkää osakkeet, joiden hinta on alle 0.10 (paikallisessa valuutassa) tai joiden 20 päivän keskimääräinen päivävaihto (20d ADV) on alle $50,000 USD, karsien epälikvidit tilauskirjat ja sub-penny -ansat puhtaaseen 106 laatulikvidin mikroyhtiön universumiin (US, FI, SE).
+  - **Tiukat likviditeetti- ja senttiosakesuodattimet**: Hylkää osakkeet, joiden hinta on alle 0.10 (paikallisessa valuutassa) tai joiden 20 päivän keskimääräinen päivävaihto (20d ADV) on alle $50,000 USD, karsien epälikvidit tilauskirjat ja sub-penny -ansat puhtaaseen laatulikvidin mikroyhtiön universumiin (US, FI, SE).
+  - **Automaattinen Viikkosynkronointi (Nordnet & yfinance)**: Skannaa 7 päivän välein (tai `--sync-universe` -lipulla / Dashboardin pikapainikkeella) Nordnetin rajapinnasta uudet listautujat (esim. uudet First North / Spotlight -yhtiöt). Jos uuden tulokkaan 20d ADV ylittää 50 000 € / $50k ja hinta $\ge$ 0,10, se lisätään atomisesti `clean_microcap_universe.csv`:hen ja otetaan automaattisesti mukaan kaupankäyntiin. Tila tallennetaan tiedostoon `data/universe_sync_status.json`.
   - Päivitetty **Profile A (Quality Growth)**: vaatii liikevaihdon kasvun (> 20 %) ohella vahvaa myyntikatetta (> 40 %) ja eloonjäämistarkastuksen (positiivinen OCF tai kassariittävyys > 18 kk).
 
 - **Yhdistetty Testipatteristo (`run_all_tests.py`)**:

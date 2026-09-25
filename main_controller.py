@@ -551,8 +551,28 @@ class MarketDataEngine:
         except Exception as e:
             logger.debug(f"Could not pre-load NLP cache: {e}")
 
-    def refresh_data(self, held_tickers: Set[str]) -> None:
+    def maybe_update_universe(self, force: bool = False, max_age_days: float = 7.0) -> Tuple[int, List[str]]:
+        """
+        Triggers periodic dynamic universe update (weekly) to scan Nordnet for new liquid listings.
+        If new tickers were added, re-reads universe metadata into memory.
+        """
+        try:
+            from screener.dynamic_universe_updater import scan_and_update_universe
+            added_cnt, added_tickers = scan_and_update_universe(
+                clean_csv_path=self.clean_universe_path,
+                force=force,
+                max_age_days=max_age_days,
+            )
+            return added_cnt, added_tickers
+        except Exception as e:
+            logger.warning(f"Dynamic universe update encountered an error: {e}")
+            return 0, []
+
+    def refresh_data(self, held_tickers: Set[str], force_universe_sync: bool = False) -> None:
         """Fetches live data strictly ONCE for all universe stocks and held tickers."""
+        # 0. Check periodic dynamic universe update (weekly scan from Nordnet)
+        self.maybe_update_universe(force=force_universe_sync)
+
         logger.info("📡 [MARKET ENGINE] Refreshing shared market data strictly ONCE for this cycle...")
         self.fx_rates = get_live_fx_rates()
         logger.info(f"📡 [MARKET ENGINE] Live FX Rates: EURUSD={self.fx_rates.get('EURUSD', 1.08):.4f}, EURSEK={self.fx_rates.get('EURSEK', 11.30):.4f}")
@@ -1793,10 +1813,16 @@ def main() -> None:
     parser.add_argument("--interval-hours", type=float, default=24.0, help="Interval in hours for loop mode (default: 24)")
     parser.add_argument("--reset-portfolios", action="store_true", help="Reset all 10 portfolios to 10,000 EUR starting capital")
     parser.add_argument("--portfolio", type=str, default=None, help="Optionally run or test a single portfolio by ID")
+    parser.add_argument("--sync-universe", action="store_true", help="Force an immediate dynamic universe scan for new listings from Nordnet")
 
     args = parser.parse_args()
 
     daemon = MasterLiveTradingDaemon()
+
+    if args.sync_universe:
+        logger.info("🔄 [CLI] Forcing immediate dynamic universe scan from Nordnet...")
+        added_cnt, added_tickers = daemon.market_engine.maybe_update_universe(force=True)
+        logger.info(f"Scan complete. Added {added_cnt} new stocks: {added_tickers}")
 
     if args.reset_portfolios:
         for p in daemon.portfolios:

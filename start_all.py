@@ -52,6 +52,11 @@ def main() -> None:
         action="store_true",
         help="Run a single papertrader cycle instead of continuous loop",
     )
+    parser.add_argument(
+        "--sync-universe",
+        action="store_true",
+        help="Force an immediate dynamic universe scan for new listings from Nordnet",
+    )
 
     args = parser.parse_args()
 
@@ -78,6 +83,8 @@ def main() -> None:
             mode_desc = "kerran (--run-once)" if args.run_once else f"silmukassa ({args.interval_hours}h välein)"
             print(f"🤖 [2/2] Käynnistetään Paper Trader Daemon ({mode_desc})...")
             daemon_cmd = [sys.executable, str(BASE_DIR / "main_controller.py")]
+            if args.sync_universe:
+                daemon_cmd.append("--sync-universe")
             if args.run_once:
                 daemon_cmd.append("--run-once")
             else:
