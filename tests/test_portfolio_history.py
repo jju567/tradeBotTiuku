@@ -79,3 +79,18 @@ def test_compute_live_portfolio_history_structure():
         assert "total_return" in df_hist.columns
         assert "total_return_pct" in df_hist.columns
         assert (df_hist["total_equity"] > 0).all()
+
+
+def test_mixed_microsecond_iso_timestamps_parsing():
+    """Verify that pd.to_datetime parses mixed ISO timestamps (with and without microseconds)."""
+    raw_timestamps = [
+        "2026-09-21T09:46:00+00:00",
+        "2026-09-21T11:00:55.968391+00:00",
+        "2026-09-25T07:33:12.123456+00:00",
+    ]
+    df = pd.DataFrame({"timestamp": raw_timestamps, "total_equity": [10000.0, 9726.27, 10041.87]})
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="ISO8601", utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp", "total_equity"])
+    assert len(df) == 3
+    assert not df["timestamp"].isna().any()
+

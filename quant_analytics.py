@@ -791,7 +791,7 @@ def load_portfolio_data(
                 if isinstance(eq_data, list) and len(eq_data) > 0:
                     df_eq = pd.DataFrame(eq_data)
                     if "timestamp" in df_eq.columns and "total_equity" in df_eq.columns:
-                        df_eq["timestamp"] = pd.to_datetime(df_eq["timestamp"], utc=True, errors="coerce")
+                        df_eq["timestamp"] = pd.to_datetime(df_eq["timestamp"], format="ISO8601", utc=True, errors="coerce")
                         df_eq["total_equity"] = pd.to_numeric(df_eq["total_equity"], errors="coerce")
                         df_eq = df_eq.dropna(subset=["timestamp", "total_equity"]).sort_values("timestamp")
                         if not df_eq.empty:
