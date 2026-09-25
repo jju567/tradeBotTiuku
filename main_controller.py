@@ -477,6 +477,13 @@ class PortfolioInstance:
             except Exception:
                 pass
 
+        # Guard: If portfolio has open positions but valuation returned 0.0 (API/feed glitch), skip snapshot
+        if self.positions and stock_value_eur <= 0.0:
+            logger.warning(
+                f"[{self.config.portfolio_id}] Skipping snapshot: {len(self.positions)} positions exist but stock_value_eur is 0.0"
+            )
+            return
+
         if should_append:
             snapshot = {
                 "timestamp": now_dt.isoformat(),
@@ -491,11 +498,15 @@ class PortfolioInstance:
             history.append(snapshot)
             if len(history) > 10000:
                 history = history[-10000:]
+            tmp_file = self.equity_file.with_suffix(".tmp")
             try:
-                with open(self.equity_file, "w", encoding="utf-8") as f:
+                with open(tmp_file, "w", encoding="utf-8") as f:
                     json.dump(history, f, indent=2, ensure_ascii=False)
+                tmp_file.replace(self.equity_file)
             except Exception as e:
                 logger.debug(f"[{self.config.portfolio_id}] Failed to save snapshot: {e}")
+                if tmp_file.exists():
+                    tmp_file.unlink(missing_ok=True)
 
 
 class MarketDataEngine:
