@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import yaml
 import pytest
+import pandas as pd
 
 from email_notifier import send_portfolio_alert
 from main_controller import (
@@ -307,6 +308,8 @@ portfolios:
     p11.state_file = p11.portfolio_dir / "portfolio_P11_Meta_Consensus_state.json"
     p11.history_file = p11.portfolio_dir / "portfolio_P11_Meta_Consensus_history.csv"
     p11.ensure_history_csv()
+    p11.positions = []
+    p11.cash_balance = 10000.0
     p11.save_state()
 
     # Setup market data
@@ -373,6 +376,76 @@ portfolios:
             trades = p11.load_trade_history()
             assert len(trades) == 1
             assert "CONVICTION_DROP" in trades[0]["Exit Reason"]
+
+
+def test_p11_meta_consensus_blocks_nlp_reject(tmp_path):
+    """Verifies that P11 strictly blocks buying a high-conviction candidate if NLP status is REJECT."""
+    portfolio_dir = tmp_path / "data" / "portfolios"
+    portfolio_dir.mkdir(parents=True)
+    p11_cfg = PortfolioConfig(
+        portfolio_id="P11_Meta_Consensus",
+        strategy="Meta_Consensus",
+        slots=5,
+        slot_size=2000.0,
+        start_cash=10000.0,
+        min_conviction_score=8,
+        required_tags=["Institutional"],
+    )
+    p11 = PortfolioInstance(p11_cfg, base_dir=tmp_path)
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.portfolios = [p11]
+    daemon.market_engine = MarketDataEngine(clean_universe_path=tmp_path / "universe.csv")
+    daemon.market_engine.fx_rates = {"EURUSD": 1.0, "EURSEK": 10.0}
+    daemon.market_engine.universe_metadata = {
+        "HOLO": {
+            "market": "US",
+            "adv_20d_usd": 1000000.0,
+            "adv_20d_local": 1000000.0,
+            "currency": "USD",
+            "current_price": 2.0,
+        }
+    }
+    daemon.market_engine.prices_cache = {"HOLO": 2.0}
+    daemon.market_engine.hard_facts_cache = {
+        "HOLO": {
+            "revenue_growth_yoy_pct": 25.0,
+            "cash_runway_months": 24.0,
+            "operating_cash_flow_ttm": 100000.0,
+            "data_quality": {"is_fresh": True},
+        }
+    }
+
+    mock_df_conviction = pd.DataFrame([
+        {
+            "Ticker": "HOLO",
+            "Conviction Score (0-14)": 10,
+            "Star Rating": "⭐⭐⭐⭐⭐",
+            "Held In (count)": 8,
+            "Premium Tags (e.g., Institutional, Deep Value)": "💧 Institutional (+1), 💎 Deep Value (+2)",
+            "Portfolios": "P1, P4, P7",
+        }
+    ])
+
+    # Case 1: Global NLP state has REJECT for HOLO -> Must be BLOCKED
+    daemon.market_engine.evaluated_news_cache[("HOLO", "Toxic dilution warning")] = (
+        "REJECT", "Fatal red flag 'dilution' detected"
+    )
+
+    with patch("main_controller.calculate_top_picks_conviction", return_value=mock_df_conviction):
+        new_buys = daemon.execute_phase2_screening(p11)
+        assert new_buys == 0
+        assert len(p11.positions) == 0
+
+    # Case 2: Once REJECT is cleared/replaced with HOLD -> Buy is ALLOWED
+    daemon.market_engine.evaluated_news_cache.clear()
+    daemon.market_engine.news_radar_cache["HOLO"] = ("HOLD", "Clean press releases")
+
+    with patch("main_controller.calculate_top_picks_conviction", return_value=mock_df_conviction):
+        new_buys = daemon.execute_phase2_screening(p11)
+        assert new_buys == 1
+        assert len(p11.positions) == 1
+        assert p11.positions[0]["Ticker"] == "HOLO"
+
 
 
 

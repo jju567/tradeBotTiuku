@@ -756,6 +756,50 @@ class MarketDataEngine:
             logger.debug(f"Error checking news for {ticker}: {e}")
             return "HOLD", "News scan error"
 
+    def get_ticker_nlp_status(self, ticker: str) -> Tuple[str, str]:
+        """
+        Determines the active global NLP status for a ticker.
+        Checks:
+          1. Any REJECT in evaluated_news_cache (populated from nlp_decisions_archive.csv & runtime)
+          2. Cached result in news_radar_cache
+          3. Direct archive CSV scan fallback
+          4. On-demand evaluation via _evaluate_news_radar(ticker)
+        Returns (decision, reason), e.g. ("REJECT", "Fatal red flag...") or ("HOLD", "...").
+        """
+        ticker_clean = ticker.strip().upper()
+
+        # 1. Any historical or cached REJECT in evaluated_news_cache overrides everything
+        for (t, _), (dec, rsn) in self.evaluated_news_cache.items():
+            if t == ticker_clean and dec == "REJECT":
+                return "REJECT", rsn
+
+        # 2. Check pre-fetched news radar cache
+        if ticker_clean in self.news_radar_cache:
+            v, r = self.news_radar_cache[ticker_clean]
+            if v == "REJECT":
+                return v, r
+
+        # 3. Direct archive scan fallback
+        archive_file = self.clean_universe_path.parent / "nlp_decisions_archive.csv"
+        if archive_file.exists():
+            try:
+                with open(archive_file, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = csv.reader(f)
+                    next(reader, None)
+                    for row in reader:
+                        if len(row) >= 5 and row[1].strip().upper() == ticker_clean and row[3].strip().upper() == "REJECT":
+                            return "REJECT", row[4].strip()
+            except Exception:
+                pass
+
+        if ticker_clean in self.news_radar_cache:
+            return self.news_radar_cache[ticker_clean]
+
+        # 4. On-demand evaluation if never checked
+        verdict, reason = self._evaluate_news_radar(ticker_clean)
+        self.news_radar_cache[ticker_clean] = (verdict, reason)
+        return verdict, reason
+
 
 
 class MasterLiveTradingDaemon:
@@ -1013,6 +1057,17 @@ class MasterLiveTradingDaemon:
                     if adv_usd < cfg.min_adv and adv_local < cfg.min_adv:
                         continue
 
+                # -----------------------------------------------------------------
+                # Global NLP Safety Guard: Block if active NLP status is REJECT
+                # -----------------------------------------------------------------
+                news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
+                if news_verdict == "REJECT":
+                    logger.warning(
+                        f"🚨 [{cfg.portfolio_id} BUY BLOCKED] {ticker} has high conviction "
+                        f"(Score {score}) but an active NLP REJECT status: {news_reason}"
+                    )
+                    continue
+
                 cand_price = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
                 if not cand_price or cand_price <= 0:
                     cand_price = self.market_engine._fetch_live_price(ticker)
@@ -1028,7 +1083,7 @@ class MasterLiveTradingDaemon:
                 exit_act, _ = evaluate_position(
                     position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
                     current_price=cand_price,
-                    latest_news_judgment="HOLD",
+                    latest_news_judgment=news_verdict,
                     latest_financials=financials_payload,
                     dead_money_days=cfg.dead_money_days,
                 )
