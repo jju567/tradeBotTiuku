@@ -1418,10 +1418,19 @@ def render_dashboard_views(active_menu: str):
                 st.session_state["selected_portfolio"] = v
                 st.rerun()
 
-        def _switch_portfolio(new_pid: str):
+        def _on_prev_portfolio():
+            curr = st.session_state.get("selected_portfolio", p_options[0])
+            idx = p_options.index(curr) if curr in p_options else 0
+            new_pid = p_options[(idx - 1) % len(p_options)]
             st.session_state["selected_portfolio"] = new_pid
             st.session_state["main_selected_portfolio"] = new_pid
-            st.rerun()
+
+        def _on_next_portfolio():
+            curr = st.session_state.get("selected_portfolio", p_options[0])
+            idx = p_options.index(curr) if curr in p_options else 0
+            new_pid = p_options[(idx + 1) % len(p_options)]
+            st.session_state["selected_portfolio"] = new_pid
+            st.session_state["main_selected_portfolio"] = new_pid
 
         port_state_file = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_state.json"
         port_history_csv = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.csv"
@@ -1460,13 +1469,9 @@ def render_dashboard_views(active_menu: str):
                 st.markdown('<div style="height: 28px;"></div>', unsafe_allow_html=True)
                 btn_prev_col, btn_next_col = st.columns(2)
                 with btn_prev_col:
-                    if st.button("◀ Edellinen", key="btn_prev_port", use_container_width=True):
-                        prev_p = p_options[(curr_idx - 1) % len(p_options)]
-                        _switch_portfolio(prev_p)
+                    st.button("◀ Edellinen", key="btn_prev_port", on_click=_on_prev_portfolio, use_container_width=True)
                 with btn_next_col:
-                    if st.button("Seuraava ▶", key="btn_next_port", use_container_width=True):
-                        next_p = p_options[(curr_idx + 1) % len(p_options)]
-                        _switch_portfolio(next_p)
+                    st.button("Seuraava ▶", key="btn_next_port", on_click=_on_next_portfolio, use_container_width=True)
 
         if portfolio_meta:
             alloc_eur = portfolio_meta.get("start_cash", 10000) / max(portfolio_meta.get("slots", 10), 1)
