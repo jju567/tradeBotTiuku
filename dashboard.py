@@ -1436,7 +1436,7 @@ def render_dashboard_views(active_menu: str):
         port_state_file = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_state.json"
         port_history_csv = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.csv"
         port_equity_json = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.json"
-        active_equity_file = port_equity_json if port_equity_json.exists() else PORTFOLIO_HISTORY_JSON
+        active_equity_file = port_equity_json
 
         # Display portfolio metadata card
         portfolio_meta = {}
