@@ -43,6 +43,7 @@ PORTFOLIO_HISTORY_JSON = DATA_DIR / "portfolio_history.json"
 PORTFOLIOS_DIR = DATA_DIR / "portfolios"
 PORTFOLIOS_CONFIG_YAML = BASE_DIR / "portfolios_config.yaml"
 OPERATIONAL_METRICS_JSON = DATA_DIR / "operational_metrics.json"
+ORACLE_EQUITY_CSV = DATA_DIR / "oracle_equity_curve.csv"
 
 # Page Configuration
 st.set_page_config(
@@ -2865,6 +2866,43 @@ def render_dashboard_views(active_menu: str):
                             + "<extra></extra>"
                         ),
                     ))
+
+                # ------------------------------------------------------------------
+                # Oracle Benchmark (Omniscient 5-Slot Theoretical Ceiling)
+                # ------------------------------------------------------------------
+                if ORACLE_EQUITY_CSV.exists():
+                    try:
+                        df_oracle = pd.read_csv(ORACLE_EQUITY_CSV)
+                        if "Date" in df_oracle.columns and "Total_Equity" in df_oracle.columns:
+                            df_oracle["Date"] = pd.to_datetime(df_oracle["Date"], utc=True, errors="coerce")
+                            df_oracle["Total_Equity"] = pd.to_numeric(df_oracle["Total_Equity"], errors="coerce")
+                            df_oracle = df_oracle.dropna(subset=["Date", "Total_Equity"]).sort_values("Date")
+                            if not df_oracle.empty:
+                                df_oracle["Date"] = df_oracle["Date"].dt.tz_convert(HELSINKI_TZ)
+                                y_oracle = df_oracle["Total_Equity"].tolist()
+                                if norm_toggle and y_oracle:
+                                    base_o = y_oracle[0]
+                                    y_oracle = [v / base_o * 100 for v in y_oracle] if base_o else y_oracle
+
+                                fig_comp.add_trace(go.Scatter(
+                                    x=df_oracle["Date"].tolist(),
+                                    y=y_oracle,
+                                    mode="lines",
+                                    name="👑 Oracle Benchmark",
+                                    line=dict(
+                                        color="#f59e0b",  # Golden amber
+                                        width=2.8,
+                                        dash="dash",      # Prominent dashed line
+                                    ),
+                                    hovertemplate=(
+                                        "<b>👑 Oracle Benchmark</b><br>"
+                                        "%{x|%d.%m.%Y}<br>"
+                                        + ("Indeksi: %{y:.1f}" if norm_toggle else "Pääoma: %{y:,.2f} €")
+                                        + "<extra></extra>"
+                                    ),
+                                ))
+                    except Exception as e:
+                        logger.debug(f"Failed to render Oracle benchmark trace: {e}")
 
                 y_axis_title = "Indeksi (lähtötaso=100)" if norm_toggle else "Kokonaispääoma (€)"
                 if norm_toggle:

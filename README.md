@@ -62,9 +62,16 @@
   - Tuottaa kattavat institutionaaliset riskimittarit: keskituotto vs. mediaani (vinouden paljastamiseksi), Sharpe-luku (3 % Rf), volatiliteetti (Std Dev), keskimääräinen Max Drawdown sekä segmentoidut alfat suhteessa Russell 2000 (`^RUT`) -indeksiin.
 
 - **2.5x ATR Trailing Stop-Loss -Simulaattori (`scripts/stop_loss_simulator.py`)**:
-
   - Simuloi mekaanisen 14 päivän 2.5x ATR dynaamisen liukuvan tappionpysäytyksen toteutusta fundamenttisignaaleille (`data/institutional_backtest_results.csv`).
   - Vertailee 6 kk Buy & Hold -tuottoa ja hallittua riskiä, rajoittaen suurimman tappion (-27.83 %) ja vapauttaen pääoman uusiin ideoihin (ka. pitoaika 26.9 pv).
+
+- **👑 Oracle Benchmark (Omniscient Benchmark, `oracle_benchmark.py`)**:
+  - Laskee teoreettisen maksimituoton (teoreettinen tuottokatto / vertailuline) historialliselle aikaikkunalle täydellisellä jälkiviisaudella, mutta **tiukasti realistisilla markkinamekaniikan rajoitteilla**:
+    - **Pääoma & Slottikoko**: 10 000 € lähtöpääoma, enintään 5 yhtäaikaista positiota, tasan 2 000 € per slotti.
+    - **Tiukka 2 % Likviditeettirajoite**: Oracle ei saa ottaa yli 2 % osakkeen toteutuneesta päivävaihdosta (`Close * Volume` EUR) ostopäivänä (jos 2 000 € > 2 % päivävaihdosta, kauppa hylätään epärealistisena).
+    - **Realistiset Toteutushinnat**: Ostot ja myynnit suoritetaan puhtaasti päivän päätöskurssiin (`Close`) ilman alimpien (`Low`) tai ylimpien (`High`) kurssien hyväksikäyttöä.
+    - **Greedy Hindsight -optimointi**: Etsii universumin (`data/clean_microcap_universe.csv`) tuottavimmat päällekkäistymättömät noususwingit ja allokoi ne dynaamisesti 5 vapaaseen slottiin.
+    - **Pääomakäyrä & Dashboard-integraatio**: Laskee päivittäisen mark-to-market -pääoman ja tallentaa sen tiedostoon `data/oracle_equity_curve.csv` (`Date`, `Total_Equity`), joka piirretään automaattisesti Streamlit-hallintapaneelin (`dashboard.py`) Salkkuvertailu-välilehdelle kultaisena katkoviivana rinnakkain P1–P11 -salkkujen kanssa.
 
 - **Vaihe 0: Deterministinen Tase- ja Kassavirtalaskenta (`screener/financial_metrics_engine.py`)**:
   - Hakee taseen ja kassavirrat yfinancesta ja laskee kovat talousluvut (`net_cash`, `operating_cash_flow_ttm`, `cash_runway_months`, `revenue_growth_yoy_pct`) puhtaalla Pythonilla ennen LLM-kutsua.
