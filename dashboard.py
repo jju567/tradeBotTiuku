@@ -43,7 +43,6 @@ PORTFOLIO_HISTORY_JSON = DATA_DIR / "portfolio_history.json"
 PORTFOLIOS_DIR = DATA_DIR / "portfolios"
 PORTFOLIOS_CONFIG_YAML = BASE_DIR / "portfolios_config.yaml"
 OPERATIONAL_METRICS_JSON = DATA_DIR / "operational_metrics.json"
-ORACLE_EQUITY_CSV = DATA_DIR / "oracle_equity_curve.csv"
 
 # Page Configuration
 st.set_page_config(
@@ -2867,43 +2866,6 @@ def render_dashboard_views(active_menu: str):
                         ),
                     ))
 
-                # ------------------------------------------------------------------
-                # Oracle Benchmark (Omniscient 5-Slot Theoretical Ceiling)
-                # ------------------------------------------------------------------
-                if ORACLE_EQUITY_CSV.exists():
-                    try:
-                        df_oracle = pd.read_csv(ORACLE_EQUITY_CSV)
-                        if "Date" in df_oracle.columns and "Total_Equity" in df_oracle.columns:
-                            df_oracle["Date"] = pd.to_datetime(df_oracle["Date"], utc=True, errors="coerce")
-                            df_oracle["Total_Equity"] = pd.to_numeric(df_oracle["Total_Equity"], errors="coerce")
-                            df_oracle = df_oracle.dropna(subset=["Date", "Total_Equity"]).sort_values("Date")
-                            if not df_oracle.empty:
-                                df_oracle["Date"] = df_oracle["Date"].dt.tz_convert(HELSINKI_TZ)
-                                y_oracle = df_oracle["Total_Equity"].tolist()
-                                if norm_toggle and y_oracle:
-                                    base_o = y_oracle[0]
-                                    y_oracle = [v / base_o * 100 for v in y_oracle] if base_o else y_oracle
-
-                                fig_comp.add_trace(go.Scatter(
-                                    x=df_oracle["Date"].tolist(),
-                                    y=y_oracle,
-                                    mode="lines",
-                                    name="👑 Oracle Benchmark",
-                                    line=dict(
-                                        color="#f59e0b",  # Golden amber
-                                        width=2.8,
-                                        dash="dash",      # Prominent dashed line
-                                    ),
-                                    hovertemplate=(
-                                        "<b>👑 Oracle Benchmark</b><br>"
-                                        "%{x|%d.%m.%Y}<br>"
-                                        + ("Indeksi: %{y:.1f}" if norm_toggle else "Pääoma: %{y:,.2f} €")
-                                        + "<extra></extra>"
-                                    ),
-                                ))
-                    except Exception as e:
-                        logger.debug(f"Failed to render Oracle benchmark trace: {e}")
-
                 y_axis_title = "Indeksi (lähtötaso=100)" if norm_toggle else "Kokonaispääoma (€)"
                 if norm_toggle:
                     fig_comp.add_hline(
@@ -2981,40 +2943,6 @@ def render_dashboard_views(active_menu: str):
                         "Tuotto (%)": "{:+.2f}%",
                     })
                     st.dataframe(styled, use_container_width=True, hide_index=True)
-
-                # Oracle Benchmark Detailed Summary & Trades Table
-                if ORACLE_EQUITY_CSV.exists():
-                    try:
-                        df_oracle_sum = pd.read_csv(ORACLE_EQUITY_CSV)
-                        if not df_oracle_sum.empty and "Total_Equity" in df_oracle_sum.columns:
-                            st.markdown("---")
-                            st.markdown("#### 👑 Oracle Benchmark — Teoreettinen Tuottokatto (5 Slottia)")
-                            st.caption(
-                                "Täydellisen jälkiviisauden vertailulinja: 10 000 € pääoma, max 5 slottia (2 000 €/slotti), "
-                                "tiukka max 2 % päivävaihtorajoite (ADV) ja puhtaat Close-päätöskurssit ilman huijauksia."
-                            )
-                            o_start = float(df_oracle_sum["Total_Equity"].iloc[0])
-                            o_final = float(df_oracle_sum["Total_Equity"].iloc[-1])
-                            o_profit = o_final - o_start
-                            o_pct = (o_profit / o_start) * 100.0 if o_start else 0.0
-
-                            c_o1, c_o2, c_o3, c_o4 = st.columns(4)
-                            with c_o1:
-                                st.metric("Oracle Lähtöpääoma", f"{o_start:,.2f} €")
-                            with c_o2:
-                                st.metric("Oracle Loppupääoma", f"{o_final:,.2f} €", f"{o_pct:+.1f} %")
-                            with c_o3:
-                                st.metric("Oracle Nettovoitto", f"{o_profit:+,.2f} €")
-                            with c_o4:
-                                st.metric("Salkkurajoite", "5 slottia (2 000 €/slotti)", "Max 2 % ADV")
-
-                            trades_csv = DATA_DIR / "oracle_trades.csv"
-                            if trades_csv.exists():
-                                with st.expander("🔍 Tarkastele Oraclen toteuttamia swing-kauppoja"):
-                                    df_ot = pd.read_csv(trades_csv)
-                                    st.dataframe(df_ot, use_container_width=True, hide_index=True)
-                    except Exception as e:
-                        logger.debug(f"Failed to render Oracle summary: {e}")
 
     # ------------------------------------------------------------------
     # VIEW 4: LIVE TICKER SCANNER
