@@ -647,6 +647,21 @@ class MarketDataEngine:
                         cur_price = float(valid.iloc[-1])
                     day_vol = float(hist["Volume"].iloc[-1]) if "Volume" in hist else 0.0
                     prev = float(valid.iloc[-2]) if len(valid) >= 2 else (float(getattr(info, "previous_close", 0.0) or 0.0) if info else 0.0)
+
+                    # Split sanity check: If overnight ratio > 2.0 or < 0.5, verify if an unadjusted stock split occurred
+                    if prev > 0 and (cur_price / prev > 2.0 or cur_price / prev < 0.5):
+                        try:
+                            sp = t.splits
+                            if not sp.empty:
+                                last_sp_date = pd.Timestamp(sp.index[-1]).tz_convert(None).floor("D") if getattr(sp.index[-1], "tz", None) else pd.Timestamp(sp.index[-1]).floor("D")
+                                today_dt = pd.Timestamp.now().floor("D")
+                                if (today_dt - last_sp_date).days <= 7:
+                                    factor = float(sp.iloc[-1])
+                                    if factor > 0 and factor != 1.0:
+                                        prev = prev / factor
+                        except Exception:
+                            pass
+
                     chg_pct = round(((cur_price - prev) / prev) * 100.0, 2) if prev > 0 else 0.0
                     self.momentum_cache[ticker] = {
                         "price": cur_price,
@@ -1244,6 +1259,11 @@ class MasterLiveTradingDaemon:
                     news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
                     if news_verdict == "REJECT":
                         continue
+                    # Extra protection for momentum breakouts: reject reverse splits and dilutive consolidation warnings
+                    split_patterns = ["reverse split", "omvänd split", "käänteinen split", "share consolidation", "sammanläggning"]
+                    if any(sp in (news_reason or "").lower() for sp in split_patterns):
+                        logger.info(f"[{cfg.portfolio_id}] 🛡️ Skipping {ticker}: Reverse split / consolidation news detected ({news_reason}).")
+                        continue
 
                 # Retrieve momentum metrics from cache or live query
                 mom = self.market_engine.momentum_cache.get(ticker)
@@ -1259,6 +1279,11 @@ class MasterLiveTradingDaemon:
 
                 day_change_pct = float(mom.get("day_change_pct", 0.0) or 0.0)
                 day_volume_shares = float(mom.get("day_volume", 0.0) or 0.0)
+
+                # Sanity guard: reject unadjusted glitch jumps exceeding +300% on a single day
+                if day_change_pct > 300.0:
+                    logger.warning(f"[{cfg.portfolio_id}] ⚠️ Skipping {ticker}: Suspicious parabolic spike (+{day_change_pct:.1f}%), likely split glitch.")
+                    continue
 
                 # Volume surge multiplier: current volume in local currency vs 20d ADV
                 day_volume_curr = day_volume_shares * cand_price

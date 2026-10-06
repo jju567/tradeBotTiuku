@@ -80,6 +80,61 @@ def load_universe(universe_csv: Path) -> Tuple[List[str], Dict[str, str]]:
     return tickers, currency_map
 
 
+def backadjust_unadjusted_splits(close_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detects un-adjusted reverse and forward stock splits in Yahoo Finance data.
+    When an overnight jump (> 2.0x or < 0.5x) occurs:
+    1. Checks yfinance Ticker.splits for the symbol.
+    2. If a split factor S occurred and Yahoo failed to back-adjust historical prices,
+       multiplies pre-split prices by (1 / S) so historical prices are properly on the post-split basis.
+    """
+    df = close_df.copy()
+
+    for sym in df.columns:
+        if sym in ["EURUSD=X", "EURSEK=X"]:
+            continue
+        s_clean = df[sym].dropna()
+        if len(s_clean) < 2:
+            continue
+        col_ratios = s_clean / s_clean.shift(1)
+        if (col_ratios > 2.0).any() or (col_ratios < 0.5).any():
+            try:
+                t = yf.Ticker(sym)
+                sp = t.splits
+                if sp.empty:
+                    continue
+
+                s = df[sym]
+                for sp_dt, factor in sp.items():
+                    if factor <= 0 or factor == 1.0:
+                        continue
+                    # Normalize split timestamp cleanly with or without tz
+                    sp_date = pd.Timestamp(sp_dt).tz_convert(None).floor("D") if getattr(sp_dt, "tz", None) else pd.Timestamp(sp_dt).floor("D")
+                    pre_dates = s.index[s.index < sp_date]
+                    post_dates = s.index[s.index >= sp_date]
+
+                    valid_pre = s.loc[pre_dates].dropna()
+                    valid_post = s.loc[post_dates].dropna()
+
+                    if not valid_pre.empty and not valid_post.empty:
+                        p_pre = float(valid_pre.iloc[-1])
+                        p_post = float(valid_post.iloc[0])
+                        if p_pre > 0:
+                            ratio = p_post / p_pre
+                            # If jump matches split direction (e.g. ratio > 2.0 for reverse split factor < 1.0),
+                            # Yahoo Finance failed to back-adjust: adjust pre-split prices now!
+                            if (factor < 1.0 and ratio > 2.0) or (factor > 1.0 and ratio < 0.5):
+                                df.loc[pre_dates, sym] = df.loc[pre_dates, sym] / factor
+                                logger.info(
+                                    f"Applied split adjustment for {sym} on {sp_date.strftime('%Y-%m-%d')} "
+                                    f"(factor {factor:.4f}, multiplied pre-split prices by {1.0 / factor:.2f}x)"
+                                )
+            except Exception as e:
+                logger.debug(f"Could not check splits for {sym}: {e}")
+
+    return df
+
+
 def fetch_historical_market_data(
     tickers: List[str],
     lookback_days: int = 30,
@@ -87,6 +142,7 @@ def fetch_historical_market_data(
     """
     Downloads historical Close and Volume data for all tickers and FX pairs (EURUSD=X, EURSEK=X).
     Requests buffer window to guarantee lookback_days trading days.
+    Strictly uses Adj Close and automatically back-adjusts unadjusted splits.
     """
     fx_symbols = ["EURUSD=X", "EURSEK=X"]
     all_symbols = list(set(tickers + fx_symbols))
@@ -100,7 +156,7 @@ def fetch_historical_market_data(
             all_symbols,
             period=download_period,
             interval="1d",
-            auto_adjust=True,
+            auto_adjust=False,
             progress=False,
             threads=True,
         )
@@ -108,11 +164,16 @@ def fetch_historical_market_data(
         logger.error(f"Failed to download market data via yfinance: {e}")
         raise
 
-    if data.empty or "Close" not in data:
-        raise ValueError("yfinance returned empty data or missing 'Close' level")
+    if data.empty:
+        raise ValueError("yfinance returned empty data")
 
-    close_df = data["Close"]
-    volume_df = data["Volume"]
+    # Strictly use 'Adj Close' instead of 'Close' to naturally account for splits
+    price_col = "Adj Close" if "Adj Close" in data else "Close"
+    close_df = data[price_col]
+    volume_df = data["Volume"] if "Volume" in data else pd.DataFrame(index=close_df.index)
+
+    # Apply Option B: Detect and back-adjust unadjusted splits from Yahoo Finance
+    close_df = backadjust_unadjusted_splits(close_df)
 
     # Extract FX series with fallbacks
     if "EURUSD=X" in close_df:
@@ -227,9 +288,20 @@ def generate_candidate_swings(
                 if np.isnan(p_out) or p_out <= 0:
                     continue
 
-                ret = (p_out - p_in) / p_in
+                price_ratio = p_out / p_in
+                ret = price_ratio - 1.0
                 if ret > 0:
                     days_held = j - i
+
+                    # Calculate average daily volume in EUR during holding period [i, j]
+                    holding_vols = vols[i : j + 1]
+                    avg_holding_vol_eur = float(np.mean(holding_vols)) if len(holding_vols) > 0 else 0.0
+
+                    # Hard Sanity Filter: Reject swings where total return (exit/entry) > 5.0 (+400%)
+                    # AND average daily volume during holding period is less than 50,000 €
+                    if price_ratio > 5.0 and avg_holding_vol_eur < 50_000.0:
+                        continue
+
                     profit_eur = slot_capital * ret
                     volume_pct = (slot_capital / v_in) * 100.0 if v_in > 0 else 0.0
 
@@ -242,9 +314,11 @@ def generate_candidate_swings(
                         "days": days_held,
                         "entry_price_eur": p_in,
                         "exit_price_eur": p_out,
+                        "price_ratio": price_ratio,
                         "ret": ret,
                         "profit_eur": profit_eur,
                         "entry_vol_eur": v_in,
+                        "avg_holding_vol_eur": avg_holding_vol_eur,
                         "volume_pct": volume_pct,
                     })
 
@@ -262,8 +336,9 @@ def optimize_greedy_schedule(
     Greedy Hindsight Algorithm:
     Iterates through candidate swings ordered by total profitability (profit_eur descending).
     Assigns each swing into an available portfolio slot provided:
-    1. The ticker is NOT already held in any slot during the trade interval [entry, exit].
-    2. A slot is free during the trade interval [entry, exit].
+    1. Sanity rule: total return (exit/entry) <= 5.0 OR avg holding daily volume >= 50,000 €.
+    2. The ticker is NOT already held in any slot during the trade interval [entry, exit].
+    3. A slot is free during the trade interval [entry, exit].
     """
     # Sort candidates greedily by profit_eur descending (tie-break: shorter holding period first)
     sorted_candidates = sorted(
@@ -283,6 +358,12 @@ def optimize_greedy_schedule(
     for cand in sorted_candidates:
         sym = cand["ticker"]
         ci, cj = cand["i"], cand["j"]
+
+        # Hard Sanity Filter: reject if return > 5.0 and avg holding daily volume < 50,000 €
+        price_ratio = cand.get("price_ratio", cand["exit_price_eur"] / cand["entry_price_eur"])
+        avg_holding_vol = cand.get("avg_holding_vol_eur", 0.0)
+        if price_ratio > 5.0 and avg_holding_vol < 50_000.0:
+            continue
 
         # Check ticker conflict: a ticker cannot be held in two slots at the same time
         sym_intervals = ticker_intervals.get(sym, [])
@@ -488,7 +569,7 @@ def run_oracle_benchmark(
         export_cols = [
             "slot", "ticker", "entry_date", "exit_date", "days",
             "entry_price_eur", "exit_price_eur", "ret", "profit_eur",
-            "entry_vol_eur", "volume_pct"
+            "entry_vol_eur", "avg_holding_vol_eur", "volume_pct"
         ]
         available_cols = [c for c in export_cols if c in df_trades.columns]
         df_trades[available_cols].to_csv(trades_path, index=False)
