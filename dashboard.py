@@ -243,6 +243,38 @@ st.markdown("""
     div[data-testid="stStatusWidget"] {
         visibility: hidden !important;
     }
+    /* Mobile-first & Responsive Enhancements */
+    @media (max-width: 768px) {
+        .main-header {
+            font-size: 1.45rem !important;
+            line-height: 1.25 !important;
+        }
+        .sub-header {
+            font-size: 0.85rem !important;
+            margin-bottom: 0.8rem !important;
+        }
+        /* Touch-friendly tab scroll */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 4px !important;
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            -webkit-overflow-scrolling: touch !important;
+            padding-bottom: 4px !important;
+        }
+        .stTabs [data-baseweb="tab"] {
+            padding: 6px 10px !important;
+            font-size: 0.82rem !important;
+        }
+        /* Wrap radio buttons cleanly */
+        div[data-testid="stRadio"] > div {
+            flex-wrap: wrap !important;
+            gap: 6px !important;
+        }
+        /* Mobile metric cards padding */
+        .metric-card {
+            padding: 10px !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -879,12 +911,24 @@ with st.sidebar:
         except Exception as e:
             logger.debug(f"Failed to load {PORTFOLIOS_CONFIG_YAML}: {e}")
 
+    # Initialize session state keys for portfolio selection
+    if "selected_portfolio" not in st.session_state:
+        st.session_state["selected_portfolio"] = portfolio_options[0] if portfolio_options else "P1_Base"
+    if "main_selected_portfolio" not in st.session_state:
+        st.session_state["main_selected_portfolio"] = st.session_state["selected_portfolio"]
+
+    def _on_sidebar_portfolio_change():
+        v = st.session_state.get("selected_portfolio")
+        if v:
+            st.session_state["main_selected_portfolio"] = v
+
     st.subheader("📂 Paper-salkku")
     selected_portfolio = st.selectbox(
         "Valitse seurattava salkku:",
         portfolio_options,
-        index=0,
+        index=portfolio_options.index(st.session_state["selected_portfolio"]) if st.session_state["selected_portfolio"] in portfolio_options else 0,
         key="selected_portfolio",
+        on_change=_on_sidebar_portfolio_change,
         help="Valitse tarkasteltava paperisalkku 10 rinnakkaisen walk-forward-testisalkun joukosta.",
     )
     if selected_portfolio in portfolio_meta_map:
@@ -1362,7 +1406,23 @@ def render_dashboard_views(active_menu: str):
         st.markdown('<div class="main-header">💰 Virtual Paper Trading Portfolio & Risk Controls</div>', unsafe_allow_html=True)
         st.markdown('<div class="sub-header">Multi-Portfolio Walk-Forward Live Testing, parameterized position sizing, and Tri-Layer Exit enforcement.</div>', unsafe_allow_html=True)
 
-        selected_portfolio = st.session_state.get("selected_portfolio", "P1_Base")
+        # Available portfolios and metadata
+        p_options = portfolio_options if portfolio_options else ["P1_Base"]
+        selected_portfolio = st.session_state.get("selected_portfolio", p_options[0])
+        if "main_selected_portfolio" not in st.session_state:
+            st.session_state["main_selected_portfolio"] = selected_portfolio
+
+        def _on_main_portfolio_change():
+            v = st.session_state.get("main_selected_portfolio")
+            if v:
+                st.session_state["selected_portfolio"] = v
+                st.rerun()
+
+        def _switch_portfolio(new_pid: str):
+            st.session_state["selected_portfolio"] = new_pid
+            st.session_state["main_selected_portfolio"] = new_pid
+            st.rerun()
+
         port_state_file = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_state.json"
         port_history_csv = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.csv"
         port_equity_json = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.json"
@@ -1378,6 +1438,35 @@ def render_dashboard_views(active_menu: str):
                     portfolio_meta = ydata.get("portfolios", {}).get(selected_portfolio, {})
             except Exception:
                 pass
+
+        # Top Portfolio Switcher (Direct access on mobile & desktop without opening sidebar)
+        curr_idx = p_options.index(selected_portfolio) if selected_portfolio in p_options else 0
+        with st.container():
+            col_port_sel, col_port_nav = st.columns([3, 2])
+            with col_port_sel:
+                st.selectbox(
+                    "📂 Valittu Paper-salkku (P1–P11):",
+                    p_options,
+                    index=curr_idx,
+                    key="main_selected_portfolio",
+                    format_func=lambda pid: (
+                        f"{pid} — {portfolio_meta_map.get(pid, {}).get('strategy', 'Strategy')} ({portfolio_meta_map.get(pid, {}).get('slots', 10)} slots)"
+                        if pid in portfolio_meta_map else pid
+                    ),
+                    on_change=_on_main_portfolio_change,
+                    help="Vaihda tarkasteltavaa salkkua suoraan tästä ilman vasemman sivupalkin avaamista.",
+                )
+            with col_port_nav:
+                st.markdown('<div style="height: 28px;"></div>', unsafe_allow_html=True)
+                btn_prev_col, btn_next_col = st.columns(2)
+                with btn_prev_col:
+                    if st.button("◀ Edellinen", key="btn_prev_port", use_container_width=True):
+                        prev_p = p_options[(curr_idx - 1) % len(p_options)]
+                        _switch_portfolio(prev_p)
+                with btn_next_col:
+                    if st.button("Seuraava ▶", key="btn_next_port", use_container_width=True):
+                        next_p = p_options[(curr_idx + 1) % len(p_options)]
+                        _switch_portfolio(next_p)
 
         if portfolio_meta:
             alloc_eur = portfolio_meta.get("start_cash", 10000) / max(portfolio_meta.get("slots", 10), 1)
@@ -2624,24 +2713,17 @@ def render_dashboard_views(active_menu: str):
         # TAB 5: Multi-Portfolio Equity Curve Comparison
         # ------------------------------------------------------------------
         with tab5:
-            st.markdown("### 📊 Kaikkien Salkkujen Kehitysvertailu")
+            st.markdown("### 📊 Salkkujen Kehitysvertailu")
             st.caption(
-                "Vertaile kaikkien 10 rinnakkaisen walk-forward-testisalkun pääoman kehitystä. "
-                "Jokainen käyrä edustaa yhtä salkun kokonaispääoman (käteinen + osakkeet) kehitystä ajan kuluessa."
-            )
-
-            # Toggle: absolute vs normalised (base 100)
-            norm_toggle = st.toggle(
-                "Normalisoitu vertailu (lähtötaso = 100)",
-                value=False,
-                help="Normalisoitu näkymä poistaa alkupääoman eron ja näyttää suhteellisen tuoton.",
+                "Vertaile rinnakkaisten walk-forward-testisalkkujen pääoman kehitystä. "
+                "Jokainen käyrä edustaa salkun kokonaispääoman (käteinen + osakkeet) kehitystä ajan kuluessa."
             )
 
             # Load all portfolio history files
             port_traces = {}
             summary_rows = []
 
-            all_port_ids = portfolio_options if portfolio_options else [f"P{i}" for i in range(1, 11)]
+            all_port_ids = portfolio_options if portfolio_options else [f"P{i}" for i in range(1, 12)]
 
             for pid in all_port_ids:
                 eq_file = PORTFOLIOS_DIR / f"portfolio_{pid}_history.json"
@@ -2688,6 +2770,54 @@ def render_dashboard_views(active_menu: str):
                     "`data/portfolios/portfolio_<ID>_history.json`."
                 )
             else:
+                # ------------------------------------------------------------------
+                # Responsive controls for Mobile & Desktop
+                # ------------------------------------------------------------------
+                ctrl_col1, ctrl_col2 = st.columns([3, 2])
+                with ctrl_col1:
+                    filter_mode = st.radio(
+                        "Näytettävät salkut:",
+                        ["Kaikki salkut", "⭐ Vain aktiivinen", "🏆 Top 3 + Aktiivinen", "Mukautettu valinta..."],
+                        horizontal=True,
+                        key="comp_filter_mode",
+                        help="Valitse kuinka monta salkkua näytetään kuvaajassa. Mobiilissa 'Vain aktiivinen' tai 'Top 3' tekee kuvaajasta erittäin selkeän.",
+                    )
+                with ctrl_col2:
+                    sub_col1, sub_col2 = st.columns(2)
+                    with sub_col1:
+                        norm_toggle = st.toggle(
+                            "Normalisoitu (100)",
+                            value=False,
+                            key="comp_norm_toggle",
+                            help="Normalisoitu näkymä poistaa alkupääoman eron ja vertailee tuottokehitystä suhteellisesti.",
+                        )
+                    with sub_col2:
+                        unified_hover = st.toggle(
+                            "Monirivi-tooltip",
+                            value=False,
+                            key="comp_unified_hover",
+                            help="Päällä: näyttää kaikkien salkkujen arvot samalla ajanhetkellä. Pois: näyttää vain lähimmän salkun tiedot (suositeltu mobiilille).",
+                        )
+
+                # Filter which portfolios to plot
+                if filter_mode == "Mukautettu valinta...":
+                    chosen_ports = st.multiselect(
+                        "Valitse näytettävät salkut:",
+                        list(port_traces.keys()),
+                        default=[selected_portfolio] if selected_portfolio in port_traces else list(port_traces.keys())[:3],
+                        key="comp_custom_ports",
+                    )
+                elif filter_mode == "⭐ Vain aktiivinen":
+                    chosen_ports = [selected_portfolio] if selected_portfolio in port_traces else list(port_traces.keys())[:1]
+                elif filter_mode == "🏆 Top 3 + Aktiivinen":
+                    sorted_by_ret = sorted(summary_rows, key=lambda r: r["Tuotto (%)"], reverse=True)
+                    top_pids = [r["Salkku"] for r in sorted_by_ret[:3]]
+                    if selected_portfolio in port_traces and selected_portfolio not in top_pids:
+                        top_pids.append(selected_portfolio)
+                    chosen_ports = top_pids
+                else:
+                    chosen_ports = list(port_traces.keys())
+
                 # Build Plotly figure
                 PALETTE = [
                     "#38bdf8", "#10b981", "#f59e0b", "#f43f5e", "#a78bfa",
@@ -2695,25 +2825,34 @@ def render_dashboard_views(active_menu: str):
                     "#ec4899",
                 ]
                 fig_comp = go.Figure()
-                for i, (pid, df_eq) in enumerate(port_traces.items()):
+
+                for i, pid in enumerate(all_port_ids):
+                    if pid not in port_traces or pid not in chosen_ports:
+                        continue
+                    df_eq = port_traces[pid]
                     y_vals = df_eq["total_equity"].tolist()
                     if norm_toggle and y_vals:
                         base = y_vals[0]
                         y_vals = [v / base * 100 for v in y_vals] if base else y_vals
                     color = PALETTE[i % len(PALETTE)]
                     is_active = (pid == selected_portfolio)
+                    trace_name = f"⭐ {pid} (Aktiivinen)" if is_active else pid
+                    line_width = 3.5 if is_active else 1.8
+                    plot_mode = "lines" if len(df_eq) > 15 and not is_active else "lines+markers"
+                    marker_size = 6 if is_active else 4
+
                     fig_comp.add_trace(go.Scatter(
                         x=df_eq["timestamp"].tolist(),
                         y=y_vals,
-                        mode="lines+markers",
-                        name=pid,
+                        mode=plot_mode,
+                        name=trace_name,
                         line=dict(
                             color=color,
-                            width=3 if is_active else 1.8,
-                            dash="solid" if is_active else "dot",
+                            width=line_width,
+                            dash="solid",
                         ),
-                        marker=dict(size=6 if is_active else 4),
-                        opacity=1.0,
+                        marker=dict(size=marker_size),
+                        opacity=1.0 if is_active else 0.8,
                         hovertemplate=(
                             f"<b>{pid}</b><br>"
                             "%{x|%d.%m.%Y %H:%M}<br>"
@@ -2732,48 +2871,55 @@ def render_dashboard_views(active_menu: str):
 
                 fig_comp.update_layout(
                     title=dict(
-                        text="📊 Kaikkien Salkkujen Pääomakehitys",
-                        font=dict(color="#f8fafc", size=16),
+                        text="📊 Salkkujen Pääomakehitys",
+                        font=dict(color="#f8fafc", size=15),
                     ),
                     template="plotly_dark",
                     paper_bgcolor="#1e293b",
                     plot_bgcolor="#0f172a",
-                    height=500,
-                    margin=dict(l=60, r=220, t=60, b=50),
+                    height=460,
+                    margin=dict(l=40, r=20, t=45, b=60),
                     font=dict(color="#f8fafc", family="sans-serif"),
                     legend=dict(
-                        title=dict(
-                            text="Salkut (klikkaa):",
-                            font=dict(color="#cbd5e1", size=12),
-                        ),
-                        orientation="v",
-                        x=1.02,
-                        y=1,
+                        orientation="h",
+                        y=-0.22,
+                        x=0,
                         xanchor="left",
                         yanchor="top",
                         bgcolor="rgba(15, 23, 42, 0.85)",
                         bordercolor="#334155",
                         borderwidth=1,
-                        font=dict(size=12, color="#f8fafc"),
+                        font=dict(size=11, color="#f8fafc"),
                         itemclick="toggle",
                         itemdoubleclick="toggleothers",
                     ),
                     xaxis=dict(
-                        title=dict(text="Aika", font=dict(color="#cbd5e1")),
-                        tickfont=dict(color="#94a3b8"),
+                        title=dict(text="Aika", font=dict(color="#cbd5e1", size=11)),
+                        tickfont=dict(color="#94a3b8", size=10),
                         gridcolor="#1e293b",
+                        rangeselector=dict(
+                            buttons=list([
+                                dict(count=7, label="7 pv", step="day", stepmode="backward"),
+                                dict(count=14, label="14 pv", step="day", stepmode="backward"),
+                                dict(count=30, label="30 pv", step="day", stepmode="backward"),
+                                dict(step="all", label="Kaikki"),
+                            ]),
+                            bgcolor="#1e293b",
+                            activecolor="#2563eb",
+                            font=dict(color="#f8fafc", size=10),
+                        ),
                     ),
                     yaxis=dict(
-                        title=dict(text=y_axis_title, font=dict(color="#cbd5e1")),
-                        tickfont=dict(color="#94a3b8"),
+                        title=dict(text=y_axis_title, font=dict(color="#cbd5e1", size=11)),
+                        tickfont=dict(color="#94a3b8", size=10),
                         gridcolor="#334155",
                     ),
-                    hovermode="x unified",
+                    hovermode="x unified" if unified_hover else "closest",
                 )
                 st.plotly_chart(fig_comp, use_container_width=True)
                 st.caption(
-                    f"🔵 **Paksu viiva** = aktiivinen salkku ({selected_portfolio}). "
-                    "Pisteet piirtyvät daemon-ajojen yhteydessä tallennetuista snapshotista."
+                    f"⭐ **Paksu viiva** = aktiivinen salkku ({selected_portfolio}). "
+                    "Voit rajata tai valita näytettävät salkut yllä olevilla pikanapeilla."
                 )
 
                 # Summary table
