@@ -27,7 +27,7 @@ def test_portfolios_yaml_structure():
 
     assert "portfolios" in data
     portfolios = data["portfolios"]
-    assert len(portfolios) == 11
+    assert len(portfolios) == 12
 
     expected_portfolios = [
         "P1_Base",
@@ -41,6 +41,7 @@ def test_portfolios_yaml_structure():
         "P9_High_Conviction",
         "P10_Micro_Sniper",
         "P11_Meta_Consensus",
+        "P12_Momentum_Breakout",
     ]
     for p in expected_portfolios:
         assert p in portfolios, f"Missing portfolio {p}"
@@ -58,6 +59,17 @@ def test_portfolios_yaml_structure():
     assert p11["min_conviction_score"] == 8
     assert p11["min_exit_conviction_score"] == 6
     assert "Institutional" in p11["required_tags"]
+
+    # Specific checks for P12_Momentum_Breakout
+    p12 = portfolios["P12_Momentum_Breakout"]
+    assert p12["strategy"] == "Momentum_Breakout"
+    assert p12["slots"] == 5
+    assert p12["slot_size"] == 2000
+    assert p12["volume_surge_multiplier"] == 3.0
+    assert p12["min_price_change_pct"] == 2.0
+    assert p12["trailing_stop_pct"] == 0.06
+    assert p12["max_holding_days"] == 21
+    assert p12["require_nlp_clean"] is True
 
 
 def test_portfolio_instance_creation(tmp_path):

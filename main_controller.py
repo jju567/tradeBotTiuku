@@ -279,6 +279,11 @@ class PortfolioConfig:
     min_conviction_score: Optional[int] = None
     min_exit_conviction_score: Optional[int] = None
     required_tags: List[str] = field(default_factory=list)
+    volume_surge_multiplier: float = 3.0
+    min_price_change_pct: float = 2.0
+    trailing_stop_pct: float = 0.06
+    max_holding_days: int = 21
+    require_nlp_clean: bool = True
 
     @classmethod
     def from_dict(cls, pid: str, data: Dict[str, Any]) -> "PortfolioConfig":
@@ -295,6 +300,11 @@ class PortfolioConfig:
             min_conviction_score=int(data["min_conviction_score"]) if data.get("min_conviction_score") is not None else None,
             min_exit_conviction_score=int(data["min_exit_conviction_score"]) if data.get("min_exit_conviction_score") is not None else None,
             required_tags=data.get("required_tags", []),
+            volume_surge_multiplier=float(data.get("volume_surge_multiplier", 3.0)),
+            min_price_change_pct=float(data.get("min_price_change_pct", 2.0)),
+            trailing_stop_pct=float(data.get("trailing_stop_pct", 0.06)),
+            max_holding_days=int(data.get("max_holding_days", 21)),
+            require_nlp_clean=bool(data.get("require_nlp_clean", True)),
         )
 
 
@@ -523,6 +533,7 @@ class MarketDataEngine:
         self.hard_facts_cache: Dict[str, Dict[str, Any]] = {}
         self.eval_profiles_cache: Dict[str, Dict[str, Any]] = {}
         self.news_radar_cache: Dict[str, Tuple[str, str]] = {}
+        self.momentum_cache: Dict[str, Dict[str, Any]] = {}
         self.universe_metadata: Dict[str, Dict[str, Any]] = {}
         # Operational health tracker (LLM fallback rate, data freshness blocks)
         self.operational_metrics: Dict[str, Any] = load_operational_metrics()
@@ -624,14 +635,27 @@ class MarketDataEngine:
     def _fetch_live_price(self, ticker: str) -> Optional[float]:
         try:
             t = yf.Ticker(ticker)
+            cur_price = None
             info = getattr(t, "fast_info", None)
             if info and hasattr(info, "last_price") and info.last_price:
-                return float(info.last_price)
+                cur_price = float(info.last_price)
             hist = t.history(period="5d")
             if not hist.empty:
                 valid = hist["Close"].dropna()
                 if not valid.empty:
-                    return float(valid.iloc[-1])
+                    if not cur_price:
+                        cur_price = float(valid.iloc[-1])
+                    day_vol = float(hist["Volume"].iloc[-1]) if "Volume" in hist else 0.0
+                    prev = float(valid.iloc[-2]) if len(valid) >= 2 else (float(getattr(info, "previous_close", 0.0) or 0.0) if info else 0.0)
+                    chg_pct = round(((cur_price - prev) / prev) * 100.0, 2) if prev > 0 else 0.0
+                    self.momentum_cache[ticker] = {
+                        "price": cur_price,
+                        "day_volume": day_vol,
+                        "day_change_pct": chg_pct,
+                    }
+                    return cur_price
+            if cur_price:
+                return cur_price
         except Exception as e:
             logger.debug(f"Could not fetch price for {ticker}: {e}")
         return None
@@ -907,6 +931,33 @@ class MasterLiveTradingDaemon:
                 action = "SELL"
                 reason = f"NLP_{news_verdict} ({news_reason})"
 
+            # Dedicated Momentum Breakout Exits (Strict Trailing Stop 6%, Stalled Momentum 21d, NLP Clean Guard)
+            cur_peak = float(pos.get("Peak Price") or pos.get("peak_price") or buy_price)
+            if current_price > cur_peak:
+                cur_peak = current_price
+                pos["Peak Price"] = cur_peak
+
+            if portfolio.config.strategy == "Momentum_Breakout":
+                drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
+                try:
+                    b_date = datetime.strptime(str(buy_date)[:10], "%Y-%m-%d").date()
+                    holding_days = (today - b_date).days
+                except Exception:
+                    holding_days = 0
+
+                if drawdown_from_peak >= portfolio.config.trailing_stop_pct:
+                    action = "SELL"
+                    reason = f"TRAILING_STOP (Peak {cur_peak:.2f} -> {current_price:.2f}, -{drawdown_from_peak*100:.1f}%)"
+                elif holding_days >= portfolio.config.max_holding_days:
+                    action = "SELL"
+                    reason = f"MOMENTUM_STALL ({holding_days}d >= {portfolio.config.max_holding_days}d)"
+                elif portfolio.config.require_nlp_clean and news_verdict == "REJECT":
+                    action = "SELL"
+                    reason = f"NLP_REJECT ({news_reason})"
+                else:
+                    action = "HOLD"
+                    reason = ""
+
             if action == "SELL":
                 gross_sale_value = shares * current_price
                 ticker_curr = get_ticker_currency(ticker)
@@ -1151,6 +1202,154 @@ class MasterLiveTradingDaemon:
                         "details": {
                             "strategy": cfg.strategy,
                             "conviction_score": score,
+                            "shares": shares_to_buy,
+                            "buy_price": f"{cand_price:.2f} {ticker_curr}",
+                            "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
+                            "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                        },
+                    })
+
+            if new_buys > 0:
+                portfolio.save_state()
+
+            return new_buys
+
+        # Dedicated execution branch for P12 Momentum_Breakout strategy
+        if cfg.strategy == "Momentum_Breakout":
+            breakout_candidates = []
+            for ticker, meta in self.market_engine.universe_metadata.items():
+                if ticker in held_tickers:
+                    continue
+
+                # Region filter
+                market = meta.get("market", "")
+                if cfg.regions and market and market not in cfg.regions:
+                    continue
+
+                # Anti-whipsaw cooldown
+                if ticker in cooldown_tickers:
+                    days_since_exit = (today - cooldown_tickers[ticker]).days
+                    if days_since_exit < REENTRY_COOLDOWN_DAYS:
+                        continue
+
+                # ADV baseline check
+                adv_local = meta.get("adv_20d_local", 0.0)
+                adv_usd = meta.get("adv_20d_usd", 0.0)
+                if cfg.min_adv > 0 and (adv_usd > 0 or adv_local > 0):
+                    if adv_usd < cfg.min_adv and adv_local < cfg.min_adv:
+                        continue
+
+                # NLP clean guard: Must NOT have an active NLP REJECT
+                if cfg.require_nlp_clean:
+                    news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
+                    if news_verdict == "REJECT":
+                        continue
+
+                # Retrieve momentum metrics from cache or live query
+                mom = self.market_engine.momentum_cache.get(ticker)
+                if not mom:
+                    cand_px = self.market_engine.prices_cache.get(ticker, 0.0)
+                    if not cand_px or cand_px <= 0:
+                        cand_px = self.market_engine._fetch_live_price(ticker)
+                    mom = self.market_engine.momentum_cache.get(ticker, {})
+
+                cand_price = mom.get("price") or self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
+                if not cand_price or cand_price <= 0:
+                    continue
+
+                day_change_pct = float(mom.get("day_change_pct", 0.0) or 0.0)
+                day_volume_shares = float(mom.get("day_volume", 0.0) or 0.0)
+
+                # Volume surge multiplier: current volume in local currency vs 20d ADV
+                day_volume_curr = day_volume_shares * cand_price
+                adv_curr = adv_local if adv_local > 0 else adv_usd
+                vol_surge = (day_volume_curr / adv_curr) if adv_curr > 0 else 0.0
+
+                # Check breakout criteria:
+                # 1. Price change >= min_price_change_pct (default +2.0%)
+                # 2. Volume surge >= volume_surge_multiplier (default 3.0x ADV)
+                if day_change_pct >= cfg.min_price_change_pct and vol_surge >= cfg.volume_surge_multiplier:
+                    breakout_candidates.append({
+                        "ticker": ticker,
+                        "cand_price": cand_price,
+                        "day_change_pct": day_change_pct,
+                        "vol_surge": vol_surge,
+                        "meta": meta,
+                        "score": vol_surge * day_change_pct,
+                    })
+
+            # Sort breakout candidates by momentum anomaly strength (score descending)
+            breakout_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+            for cand in breakout_candidates:
+                if open_count + new_buys >= cfg.slots:
+                    break
+
+                ticker = cand["ticker"]
+                cand_price = cand["cand_price"]
+                meta = cand["meta"]
+                score = cand["score"]
+                vol_surge = cand["vol_surge"]
+                day_change_pct = cand["day_change_pct"]
+
+                eff_allocation_acc = min(target_allocation_acc, portfolio.cash_balance)
+                ticker_curr = meta.get("currency", get_ticker_currency(ticker))
+                fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
+                fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+                target_allocation_local = eff_allocation_acc * fx_acc_to_local
+                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+
+                if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
+                    continue
+
+                investable_cash_local = target_allocation_local - min_fee_local
+                if investable_cash_local <= 0:
+                    continue
+
+                shares_to_buy = math.floor(investable_cash_local / cand_price)
+                if shares_to_buy <= 0:
+                    continue
+
+                actual_gross_buy = shares_to_buy * cand_price
+                actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
+                total_cost_local = actual_gross_buy + actual_fee
+                total_cost_acc = total_cost_local * fx_to_acc
+
+                if total_cost_acc > portfolio.cash_balance:
+                    continue
+
+                portfolio.cash_balance -= total_cost_acc
+                new_pos = {
+                    "Ticker": ticker,
+                    "Buy Date": today.strftime("%Y-%m-%d"),
+                    "Buy Price": cand_price,
+                    "Shares": shares_to_buy,
+                    "Capital Invested": round(total_cost_local, 2),
+                    "Strategy": cfg.strategy,
+                    "Currency": ticker_curr,
+                    "Peak Price": cand_price,
+                }
+                portfolio.positions.append(new_pos)
+                held_tickers.add(ticker)
+                new_buys += 1
+
+                logger.info(
+                    f"🚀 [{cfg.portfolio_id} BUY] {ticker} (Momentum Surge: {vol_surge:.1f}x ADV, +{day_change_pct:.1f}%) | "
+                    f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
+                    f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
+                    f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
+                )
+
+                if run_trades is not None:
+                    run_trades.append({
+                        "portfolio_id": cfg.portfolio_id,
+                        "action": "BUY",
+                        "ticker": ticker,
+                        "details": {
+                            "strategy": cfg.strategy,
+                            "volume_surge": f"{vol_surge:.1f}x ADV",
+                            "day_change": f"+{day_change_pct:.1f}%",
                             "shares": shares_to_buy,
                             "buy_price": f"{cand_price:.2f} {ticker_curr}",
                             "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",

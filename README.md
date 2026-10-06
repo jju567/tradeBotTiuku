@@ -24,7 +24,7 @@
   - 📊 **ETF-Seuranta**: Buy the Dip -indikaattorit ja kuukausisäästön allokaatio.
   - 💼 **Salkun Yhteenveto & Paper Trading Portfolio (`data/open_positions.csv`)**: Reaaliaikaiset spot-hinnat, automaattiset FX-valuuttakurssimuunnokset (EUR), avoin PnL (€ ja %), salkun kokonaisarvo ja käteissaldo, tilastollinen KPI-yhteenveto. **Reaaliaikainen markkinapohjainen salkkurekonstruktio (`compute_live_portfolio_history`)**: salkun tuottokäyrää ei enää lueta pelkistä staattisista JSON-tallenteista, vaan se rekonstruoidaan suoraan salkun avointen osakkeiden todellisista historiallisista päätöskursseista (`yfinance`, 1h ja 1d -palkit, valuuttamuunnokset EUR). Näin graafi heijastaa aina 100 % tarkasti osakkeiden todellista kurssikehitystä ilman teennäisiä tasoheilahteluita. Valittavissa aikavälit (24h, 7d, 30d, 3kk, kaikki historia), resoluutiot (tunti 1h, kaikki mittauspisteet, päivä 1d, viikko 1vk, kuukausi 1kk) ja mittarit (kokonaisarvo €, tuotto € / %, käteinen vs. osakkeet). **Kaikissa graafeissa esitetään reaaliaikaiset aikaleimat**: graafin päivityshetki (`🕒 Päivitetty`), mittauspisteen tai markkinanoteerauksen uusin aikaleima (`📅 Uusin data`) sekä moottorimerkintä (`📡 Moottori`).
   - 📱 **Mobiili- & Selaintuki ja Responsiivinen Salkunvalinta**:
-    - **Pikasalkunvalitsin päänäkymässä**: Paper-salkun (P1–P11) voi valita ja selata suoraan päänäkymän yläreunasta pudotusvalikolla tai `◀ Edellinen` / `Seuraava ▶` -pikapainikkeilla ilman vasemman reunan sivupalkin avaamista. Valinta on täysin kaksisuuntaisesti synkronoitu sivupalkin kanssa, joten selain-/työpöytäkäyttö säilyy koskemattomana.
+    - **Pikasalkunvalitsin päänäkymässä**: Paper-salkun (P1–P12) voi valita ja selata suoraan päänäkymän yläreunasta pudotusvalikolla tai `◀ Edellinen` / `Seuraava ▶` -pikapainikkeilla ilman vasemman reunan sivupalkin avaamista. Valinta on täysin kaksisuuntaisesti synkronoitu sivupalkin kanssa, joten selain-/työpöytäkäyttö säilyy koskemattomana.
     - **Selkeä & Responsiivinen Salkkuvertailu (`Salkkuvertailu (Kaikki)`)**: Kuvaajan sivumarginaalit ja vaakasuuntainen alapuolinen selite on optimoitu siten, että mobiililaitteilla käyrät hyödyntävät koko ruudun leveyden ilman tiukkaan puristumista. Pikavalinnat (*Kaikki salkut, ⭐ Vain aktiivinen, 🏆 Top 3 + Aktiivinen, Mukautettu valinta*), aikavälin pikanapit (*7 pv, 14 pv, 30 pv, Kaikki*) sekä mobiiliystävällinen tooltip tekevät vertailusta selkeää ja luettavaa niin puhelimella kuin tietokoneellakin.
   - 🪙 **Token-Laskuri & Kustannusseuranta**: Reaaliaikainen syöte-/tuotostokenien laskenta, pyyntömäärät, arvioitu dollarikulu ja jäljellä oleva analyysikapasiteetti.
   - ⚙️ **Massa-ajon Hallinta**: Suora käynnistyspainike raporteille valinnaisella reaaliaikaisella web-uutistarkistuksella.
@@ -71,7 +71,7 @@
     - **Tiukka 2 % Likviditeettirajoite**: Oracle ei saa ottaa yli 2 % osakkeen toteutuneesta päivävaihdosta (`Close * Volume` EUR) ostopäivänä (jos 2 000 € > 2 % päivävaihdosta, kauppa hylätään epärealistisena).
     - **Realistiset Toteutushinnat**: Ostot ja myynnit suoritetaan puhtaasti päivän päätöskurssiin (`Close`) ilman alimpien (`Low`) tai ylimpien (`High`) kurssien hyväksikäyttöä.
     - **Greedy Hindsight -optimointi**: Etsii universumin (`data/clean_microcap_universe.csv`) tuottavimmat päällekkäistymättömät noususwingit ja allokoi ne dynaamisesti 5 vapaaseen slottiin.
-    - **Pääomakäyrä & Dashboard-integraatio**: Laskee päivittäisen mark-to-market -pääoman ja tallentaa sen tiedostoon `data/oracle_equity_curve.csv` (`Date`, `Total_Equity`), joka piirretään automaattisesti Streamlit-hallintapaneelin (`dashboard.py`) Salkkuvertailu-välilehdelle kultaisena katkoviivana rinnakkain P1–P11 -salkkujen kanssa.
+    - **Pääomakäyrä & Dashboard-integraatio**: Laskee päivittäisen mark-to-market -pääoman ja tallentaa sen tiedostoon `data/oracle_equity_curve.csv` (`Date`, `Total_Equity`), joka piirretään automaattisesti Streamlit-hallintapaneelin (`dashboard.py`) Salkkuvertailu-välilehdelle kultaisena katkoviivana rinnakkain P1–P12 -salkkujen kanssa.
 
 - **Vaihe 0: Deterministinen Tase- ja Kassavirtalaskenta (`screener/financial_metrics_engine.py`)**:
   - Hakee taseen ja kassavirrat yfinancesta ja laskee kovat talousluvut (`net_cash`, `operating_cash_flow_ttm`, `cash_runway_months`, `revenue_growth_yoy_pct`) puhtaalla Pythonilla ennen LLM-kutsua.
@@ -208,9 +208,9 @@ python -m screener.main_controller --mass-scan
 ```
 
 ### 6. 🚀 Multi-Portfolio Live Walk-Forward Testing Engine (`main_controller.py`)
-Juuritason päämoottori reaaliaikaiseen 11 rinnakkaisen paperisalkun walk-forward -testaukseen ja tilastojen keräämiseen:
+Juuritason päämoottori reaaliaikaiseen 12 rinnakkaisen paperisalkun walk-forward -testaukseen ja tilastojen keräämiseen:
 - **Konfigurointi YAML-tiedostolla (`portfolios_config.yaml`)**:
-  - Määrittelee 11 toisistaan erotettua salkkua, joilla jokaisella on 10,000 € virtuaalipääoma ja omat riskiparametrit:
+  - Määrittelee 12 toisistaan erotettua salkkua, joilla jokaisella on 10,000 € virtuaalipääoma ja omat riskiparametrit:
     1. `P1_Base`: Profile B, dead money 180d, min ADV 50k, 10 slottia (1,000 €/osto), alueet FI/SE/US.
     2. `P2_Fast_Cycle`: Profile B, lyhyt dead money 90d (nopea pääoman kierrätys).
     3. `P3_Diamond_Hands`: Profile B, pitkä dead money 365d (kestää väliaikaiset pohjamudat).
@@ -222,6 +222,7 @@ Juuritason päämoottori reaaliaikaiseen 11 rinnakkaisen paperisalkun walk-forwa
     9. `P9_High_Conviction`: Profile B, vain 5 slottia (2,000 €/osto) suurella vakaumuksella.
     10. `P10_Micro_Sniper`: Profile B, 20 pientä slottia (500 €/osto, min ADV 150k).
     11. `P11_Meta_Consensus`: Meta_Consensus, 5 slottia (2,000 €/osto). Ei skannaa raakamarkkinaa, vaan treidaa P1–P10 -perussalkkujen reaaliaikaista konsensusta: vaatii sisääntuloon Conviction Scoren $\ge 8$ (⭐⭐⭐⭐+) sekä tagit `Institutional` (+1) JA (`Deep Value` (+2) TAI `Quality Growth` (+1)). **Globaali NLP-turvasulku**: vaikka vakaumuspisteet täyttyisivät, osto estetään tiukasti (`BUY BLOCKED`), mikäli osakkeella on aktiivinen globaali NLP `REJECT` -status (esim. diluutio- tai petosriski `nlp_decisions_archive.csv` / uutistutkassa). Myy automaattisesti, jos vakaumuspistemäärä putoaa alle 6 pisteen (`CONVICTION_DROP`) tai suojastopit laukeavat.
+    12. `P12_Momentum_Breakout`: Momentum_Breakout, 5 slottia (2,000 €/osto). Ketterä satelliittisalkku äärimmäisten volyymi- ja kurssibreakout-anomalioiden nappaamiseen (esim. NANEXA.ST, ELON.ST) ilman tase- tai kassariittävyysrajoitteita. Sisääntuloehdot: Päivävaihto $\ge 3.0 \times$ 20d ADV ja päivän päätöskurssin muutos $\ge +2.0\%$, eikä aktiivista NLP REJECT -leimaa. Tiukka 6.0 % liukuva trailing stop huippukurssista (`Peak Price`), 21 päivän maksimipitoaika (momentum stall exit) ja osakkeiden järjestys anomalialuvun (`Volume Surge * Day Change %`) mukaan.
 - **Yhteinen Markkinadatan Nouto (Single-Pass Market Engine)**:
   - Hakee reaaliaikaiset kurssit, 20d ADV:t, uutiset ja deterministiset fundamentit **tiukasti vain kerran syklissä** (säästää API-kutsuja ja estää yfinance-bannit).
 - **Itsenäinen Tilanhallinta (`data/portfolios/`)**:
@@ -236,9 +237,9 @@ Juuritason päämoottori reaaliaikaiseen 11 rinnakkaisen paperisalkun walk-forwa
   - Jokainen arvioitu tiedote tai uutisotsikko tallennetaan pysyvään lokiin (`Timestamp, Ticker, Headline, LLM_Decision, Reasoning`).
   - Kerää pitkän aikavälin dataa LLM- ja sääntöpohjaisista tuomioista (REJECT / WARN / HOLD) mallin ja suodatinten jatkoanalyysiä varten.
 - **Streamlit-Käyttöliittymä**:
-  - Sivupalkin valikosta valittavissa mikä tahansa 11 rinnakkaissalkusta.
+  - Sivupalkin valikosta valittavissa mikä tahansa 12 rinnakkaissalkusta.
   - Avaa ja visualisoi reaaliaikaiset avoimet positiot, KPI-arvot, tuottokäyrän ja toteutuneet kaupat valitulle salkulle reaaliaikaisine FX-muunnoksineen.
-  - **📊 Salkkuvertailu (Kaikki)**: Erillinen välilehti, jossa kaikkien 11 salkun pääomakehitystä ja tuottoja voi vertailla rinnakkain interaktiivisella Plotly-viivakaaviolla (sisältää myös normalisoidun indeksinäkymän lähtötasolla 100 ja yhteenvedon).
+  - **📊 Salkkuvertailu (Kaikki)**: Erillinen välilehti, jossa kaikkien 12 salkun pääomakehitystä ja tuottoja voi vertailla rinnakkain interaktiivisella Plotly-viivakaaviolla (sisältää myös normalisoidun indeksinäkymän lähtötasolla 100 ja yhteenvedon).
   - **⭐ Top Picks & Conviction (`dashboard.py` / `quant_analytics.py`)**: Uusi monisalkkukonsensuksen ja turvallisuusluokituksen välilehti:
     - **Painotettu konsensuspistemäärä (0–14 p)**: +1 p jokaisesta perussalkusta (max 10 p) + likviditeettipreemio `P4_Institutional` (+1 p, ADV > 250k) + Deep Value -preemio `P7_Deep_Value_Extreme` (+2 p, Price/Cash < 0.5) + Quality-preemio `P8_Quality_Growth` (+1 p, korkea kasvu ja kannattavuus).
     - **Visuaalinen tähtiluokitus**: >10 p = ⭐⭐⭐⭐⭐, 8–10 p = ⭐⭐⭐⭐, 5–7 p = ⭐⭐⭐, <5 p = ⭐⭐.
@@ -246,15 +247,15 @@ Juuritason päämoottori reaaliaikaiseen 11 rinnakkaisen paperisalkun walk-forwa
   - **🏛️ Institutional Analytics (`quant_analytics.py`)**: Uusi dedikoitu pääomarahastotason kvantitatiivisen analyysin välilehti Streamlitissä:
     - **Markkinaregiimiseuranta (Market Regime Tagging)**: Seuraa aitoa mikroyhtiöiden vertailuindeksiä (iShares Micro-Cap ETF / `IWC`, Russell Microcap Index $< \$300M$) ja luokittelee markkinan tilaan (*🟢 BULL / LOW VOL, 🟡 NEUTRAL / RANGE-BOUND, 🔴 HIGH VOLATILITY / BEARISH*) 20 päivän toteutuneen volatiliteetin ja 50 päivän liukuvan keskiarvon (SMA50) perusteella mikroyhtiöille kalibroiduin kynnysarvoin (Low Vol $< 20\%$, Stress $> 30\%$, SMA50 puskuri $-5\%$). Tukee myös sisäisen 106 osakkeen puhtaan universumin toteutunutta volatiliteettia (`clean_microcap_universe.csv`).
     - **Riskikorjatut tuotot**: 30 päivän rullaava Sharpe-luku, 30 päivän rullaava Sortino-luku (downside deviation), Max Drawdown ja toipumisaika (Time-to-Recovery päivinä).
-    - **Monitestauskorjaus & Datan Riittävyysportti (Data Sufficiency Guard)**: Deflated Sharpe Ratio (DSR, Bailey & López de Prado) ja Bonferroni-korjaus 11 rinnakkaissalkun yli. Sisältää sisäänrakennetun riittävyysportin ($T \ge 20$ päivää), joka estää pienen otoskoon varianssiräjähdyksen (kuten pienen $T$:n poikkileikkaushajonnasta syntyneen *Null E[max] = 15,74* -laskenta-artefaktin) ja näyttää standardin normalisoidun satunnaishuipun ($SR^* \approx 1.57$) vasta riittävällä datamäärällä.
+    - **Monitestauskorjaus & Datan Riittävyysportti (Data Sufficiency Guard)**: Deflated Sharpe Ratio (DSR, Bailey & López de Prado) ja Bonferroni-korjaus 12 rinnakkaissalkun yli. Sisältää sisäänrakennetun riittävyysportin ($T \ge 20$ päivää), joka estää pienen otoskoon varianssiräjähdyksen (kuten pienen $T$:n poikkileikkaushajonnasta syntyneen *Null E[max] = 15,74* -laskenta-artefaktin) ja näyttää standardin normalisoidun satunnaishuipun ($SR^* \approx 1.57$) vasta riittävällä datamäärällä.
     - **Tuottoattribuutio & Vinous**: Posiokeskittyminen (% kokonaistuotosta top-1 ja top-2 kaupoista), mediaanipitoaika päivinä sekä mediaanituotto vs. keskituotto.
-    - **11 Salkun Tuottokorrelaatiomatriisi**: Interaktiivinen Plotly-lämpökartta (heatmap) päivä- ja viikkotuottojen riippuvuuksista todellisen hajautushyödyn arvioimiseksi.
+    - **12 Salkun Tuottokorrelaatiomatriisi**: Interaktiivinen Plotly-lämpökartta (heatmap) päivä- ja viikkotuottojen riippuvuuksista todellisen hajautushyödyn arvioimiseksi.
     - **Viikkoaggregointi (Weekly Smoothing)**: Poistaa päivittäistä mikroheilahtelua ja markkinakohinaa.
     - **Botin Operatiivinen Terveys (`data/operational_metrics.json`)**: Reaaliaikaiset KPI-kortit LLM fallback -asteesta ja tuoreussuojasta (`is_fresh`). Alkuvaiheen pienillä ajoilla tilana on `🟡 INITIALIZING (Pieni otos — odottaa syklejä)` ennen todistettua stressirasitusta.
 
 
 ```bash
-# Aja yksi walk-forward-sykli kaikille 10 salkulle:
+# Aja yksi walk-forward-sykli kaikille 12 salkulle:
 python main_controller.py --run-once
 
 # Aja vain tietty salkku (esim. P5_Nordic_Only):
@@ -263,7 +264,7 @@ python main_controller.py --run-once --portfolio P5_Nordic_Only
 # Käynnistä jatkuva silmukka (oletus 24h välein):
 python main_controller.py --loop --interval-hours 24
 
-# Nollaa kaikki 10 salkkua aloitustilaan (10,000 €):
+# Nollaa kaikki 12 salkkua aloitustilaan (10,000 €):
 python main_controller.py --reset-portfolios
 
 # Single-Stock Time Machine: Testaa Layer 2 -uutistutka historiallisilla tiedotteilla:

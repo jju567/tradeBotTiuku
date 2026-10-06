@@ -897,6 +897,7 @@ with st.sidebar:
         "P9_High_Conviction",
         "P10_Micro_Sniper",
         "P11_Meta_Consensus",
+        "P12_Momentum_Breakout",
     ]
     portfolio_meta_map = {}
     if PORTFOLIOS_CONFIG_YAML.exists():
@@ -1454,7 +1455,7 @@ def render_dashboard_views(active_menu: str):
             col_port_sel, col_port_nav = st.columns([3, 2])
             with col_port_sel:
                 st.selectbox(
-                    "📂 Valittu Paper-salkku (P1–P11):",
+                    "📂 Valittu Paper-salkku (P1–P12):",
                     p_options,
                     index=curr_idx,
                     key="main_selected_portfolio",
