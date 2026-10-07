@@ -318,10 +318,13 @@ tradeBotTiuku/
 │   ├── historical_reports/  # Tilinpäätös- ja osavuosikatsausraportit (PDF/TXT)
 │   ├── batch_results.csv    # Seulonnan konsolidoidut tulokset
 │   ├── watchlist_turnarounds.csv # Tunnistetut käänneyhtiöt
-│   ├── batch_status.json    # Massa-ajon reaaliaikainen edistymistila
-│   └── etf_watchlist.json   # ETF-seurantalistan konfiguraatio
-└── tests/                   # Kattava pytest-testikokoelma (261 testiä)
+├── scripts/
+│   ├── run_daily_sync.bat   # Windows-ajuri päivittäiselle walk-forward synkronoinnille klo 23:05
+│   ├── schedule_daily_sync.ps1 # Task Scheduler -asennin automaattiselle päiväajolle
+│   └── run_research_backtests.py # Tutkimusbäkkärit (P12, stop sweep, overlap, friction)
+└── tests/                   # Kattava pytest-testikokoelma (296 testiä)
 ```
+
 
 ---
 
