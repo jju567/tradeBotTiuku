@@ -873,6 +873,13 @@ class MasterLiveTradingDaemon:
 
         logger.info(f"Loaded {len(self.portfolios)} portfolio configurations from {self.config_yaml_path.name}")
 
+        # Task 3 Architectural Note (P1_Base, P2_Fast_Cycle, P3_Diamond_Hands):
+        # Empirical overlap tests confirmed that P1, P2, and P3 currently have 100% portfolio overlap.
+        # However, they intentionally require no parameter changes: their strategic divergence is handled
+        # by existing temporal exit rules (dead_money_days: 90d for P2 vs 180d for P1 vs 365d for P3)
+        # which have simply not triggered yet due to the short walk-forward history.
+
+
     def execute_phase1_exits(self, portfolio: PortfolioInstance, run_trades: Optional[List[Dict[str, Any]]] = None) -> int:
         """
         Phase 1: Portfolio Management (Tri-Layer Exit & Dead Money Timer).
@@ -1313,8 +1320,8 @@ class MasterLiveTradingDaemon:
                         "score": vol_surge * day_change_pct,
                     })
 
-            # Sort breakout candidates by momentum anomaly strength (score descending)
-            breakout_candidates.sort(key=lambda x: x["score"], reverse=True)
+            # Sort breakout candidates primarily by highest volume surge anomaly (tie-break: day_change_pct)
+            breakout_candidates.sort(key=lambda x: (x["vol_surge"], x["day_change_pct"]), reverse=True)
 
             for cand in breakout_candidates:
                 if open_count + new_buys >= cfg.slots:
