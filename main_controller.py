@@ -284,14 +284,17 @@ class PortfolioConfig:
     trailing_stop_pct: float = 0.06
     max_holding_days: int = 21
     require_nlp_clean: bool = True
+    min_adv_20d: Optional[float] = None
 
     @classmethod
     def from_dict(cls, pid: str, data: Dict[str, Any]) -> "PortfolioConfig":
+        adv_val = float(data.get("min_adv_20d", data.get("min_adv", 50000.0)))
         return cls(
             portfolio_id=pid,
             strategy=data.get("strategy", "Profile B"),
             dead_money_days=int(data.get("dead_money_days", 180)),
-            min_adv=float(data.get("min_adv", 50000.0)),
+            min_adv=adv_val,
+            min_adv_20d=adv_val,
             slots=int(data.get("slots", 10)),
             start_cash=float(data.get("start_cash", 10000.0)),
             regions=data.get("regions", ["FI", "SE", "US"]),
@@ -306,6 +309,7 @@ class PortfolioConfig:
             max_holding_days=int(data.get("max_holding_days", 21)),
             require_nlp_clean=bool(data.get("require_nlp_clean", True)),
         )
+
 
 
 class PortfolioInstance:
@@ -1036,7 +1040,13 @@ class MasterLiveTradingDaemon:
         cfg = portfolio.config
         open_count = len(portfolio.positions)
         if open_count >= cfg.slots:
-            logger.info(f"[{cfg.portfolio_id}] Max slots full ({open_count}/{cfg.slots}). Skipping new buys.")
+            if open_count > cfg.slots:
+                logger.info(
+                    f"[{cfg.portfolio_id}] ⏳ Transition limit active: open positions ({open_count}) exceed new target slots ({cfg.slots}). "
+                    f"Gracefully retaining existing {open_count} positions with active SELL stops; no new BUY orders permitted until count naturally drops below {cfg.slots}."
+                )
+            else:
+                logger.info(f"[{cfg.portfolio_id}] Max slots full ({open_count}/{cfg.slots}). Skipping new buys.")
             return 0
 
         target_allocation_acc = cfg.slot_size if (cfg.slot_size and cfg.slot_size > 0) else (cfg.start_cash / cfg.slots)

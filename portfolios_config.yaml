@@ -76,7 +76,8 @@ portfolios:
     strategy: "Profile B"
     dead_money_days: 180
     min_adv: 150000
-    slots: 20
+    slots: 5
+    slot_size: 2000
     start_cash: 10000
     regions: ["FI", "SE", "US"]
 
@@ -97,12 +98,11 @@ portfolios:
     slots: 5
     slot_size: 2000
     start_cash: 10000
-    volume_surge_multiplier: 3.0   # Current Volume >= 3.0 * 20-day ADV
-    min_price_change_pct: 2.0      # Daily close change >= +2.0%
-    trailing_stop_pct: 0.06        # Strict 6% trailing stop
-    max_holding_days: 21           # Rotate out after 21 days if momentum stalls
-    require_nlp_clean: true        # Must NOT have an active NLP REJECT
-    regions: ["FI", "SE", "US"]
-    min_adv: 50000
-    dead_money_days: 21
+    volume_surge_multiplier: 3.0   # Today_Volume >= 3.0 * ADV_20d
+    min_price_change_pct: 2.0      # Today_Return >= +2.0%
+    min_adv_20d: 50000             # Minimum 20-day ADV of 50,000 €
+    trailing_stop_pct: 0.06        # STRICT 6% trailing stop (based on parameter sweep)
+    max_holding_days: 21           # Time stop
+    require_nlp_clean: true        # Must bypass if NLP verdict is REJECT
+
 

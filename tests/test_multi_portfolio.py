@@ -51,6 +51,11 @@ def test_portfolios_yaml_structure():
         assert "start_cash" in cfg
         assert cfg["start_cash"] == 10000
 
+    # Specific checks for P10_Micro_Sniper
+    p10 = portfolios["P10_Micro_Sniper"]
+    assert p10["slots"] == 5
+    assert p10["slot_size"] == 2000
+
     # Specific checks for P11_Meta_Consensus
     p11 = portfolios["P11_Meta_Consensus"]
     assert p11["strategy"] == "Meta_Consensus"
@@ -67,9 +72,11 @@ def test_portfolios_yaml_structure():
     assert p12["slot_size"] == 2000
     assert p12["volume_surge_multiplier"] == 3.0
     assert p12["min_price_change_pct"] == 2.0
+    assert p12["min_adv_20d"] == 50000
     assert p12["trailing_stop_pct"] == 0.06
     assert p12["max_holding_days"] == 21
     assert p12["require_nlp_clean"] is True
+
 
 
 def test_portfolio_instance_creation(tmp_path):
@@ -457,6 +464,92 @@ def test_p11_meta_consensus_blocks_nlp_reject(tmp_path):
         assert new_buys == 1
         assert len(p11.positions) == 1
         assert p11.positions[0]["Ticker"] == "HOLO"
+
+
+def test_p10_graceful_transition_limit(tmp_path):
+    """
+    Verify Task 1: P10 gracefully transitions from 20 positions to 5 slots:
+    1. Blocks any new BUY orders while open positions (20) >= new target slots (5).
+    2. Maintains active SELL logic for all 20 existing positions.
+    3. Resumes BUY orders at 2,000 EUR slot size once positions drop below 5.
+    """
+    cfg = PortfolioConfig(
+        portfolio_id="P10_Micro_Sniper",
+        strategy="Profile B",
+        dead_money_days=180,
+        min_adv=150000.0,
+        slots=5,
+        slot_size=2000.0,
+        start_cash=10000.0,
+        regions=["FI", "SE", "US"],
+    )
+    inst = PortfolioInstance(cfg, base_dir=tmp_path)
+    inst.cash_balance = 1000.0
+
+    # Populate 20 existing positions
+    inst.positions = [
+        {
+            "Ticker": f"STOCK_{i}.ST",
+            "Buy Date": "2026-09-23",
+            "Buy Price": 10.0,
+            "Shares": 50,
+            "Capital Invested": 500.0,
+            "Strategy": "Profile B",
+            "Currency": "SEK",
+        }
+        for i in range(20)
+    ]
+    assert len(inst.positions) == 20
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = MagicMock()
+    daemon.market_engine.prices_cache = {f"STOCK_{i}.ST": 10.0 for i in range(20)}
+    daemon.market_engine.fx_rates = {"SEK": 11.30, "USD": 1.08}
+    daemon.market_engine.news_radar_cache = {}
+    daemon.market_engine.hard_facts_cache = {}
+    daemon.market_engine.universe_metadata = {}
+
+
+    # Step 1: execute_phase2_screening must block buys because 20 >= 5
+    new_buys = daemon.execute_phase2_screening(inst)
+    assert new_buys == 0
+    assert len(inst.positions) == 20
+
+    # Step 2: execute_phase1_exits evaluates ALL 20 positions
+    # Simulate 16 positions hitting stop-loss / exit
+    with patch("main_controller.evaluate_position") as mock_eval:
+        def side_eval(position, current_price, latest_news_judgment, latest_financials, dead_money_days):
+            idx = int(position["ticker"].split("_")[1].split(".")[0])
+            if idx < 16:
+                return "SELL", "STOP_LOSS"
+            return "HOLD", ""
+        mock_eval.side_effect = side_eval
+
+        closed_count = daemon.execute_phase1_exits(inst)
+        assert closed_count == 16
+        assert len(inst.positions) == 4  # Exactly 4 remaining (< 5)
+
+    # Step 3: Now open_count (4) < cfg.slots (5), BUY is permitted!
+    daemon.market_engine.universe_metadata = {
+        "NEW_BUY.ST": {
+            "current_price": 20.0,
+            "market": "SE",
+            "adv_20d_local": 300000.0,
+            "adv_20d_usd": 30000.0,
+            "currency": "SEK",
+            "debt_to_equity": 0.2,
+            "pe_ratio": 8.0,
+        }
+    }
+    daemon.market_engine.prices_cache["NEW_BUY.ST"] = 20.0
+    daemon.market_engine.get_ticker_nlp_status = MagicMock(return_value=("BUY", "Clean"))
+    inst.cash_balance = 3000.0
+
+    new_buys_after = daemon.execute_phase2_screening(inst)
+    assert new_buys_after == 1
+    assert len(inst.positions) == 5
+    assert inst.positions[-1]["Ticker"] == "NEW_BUY.ST"
+
 
 
 
