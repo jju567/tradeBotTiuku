@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
+import schedule
 import yfinance as yf
 import yaml
 
@@ -1682,6 +1683,43 @@ class MasterLiveTradingDaemon:
                 logger.error(f"Unexpected error in daemon loop: {e}. Retrying in 60s...")
                 time.sleep(60)
 
+    def run_scheduler(
+        self,
+        daily_at: str = "23:05",
+        interval_hours: Optional[float] = None,
+        run_immediately: bool = True,
+    ) -> None:
+        """Runs the multi-portfolio engine on an autonomous schedule using Python's schedule library.
+
+        Designed for 24/7 background deployment on Linux servers (e.g. systemd).
+        Executes daily post-market close sync at daily_at (Nordic + US markets close by 23:00).
+        """
+        if run_immediately:
+            logger.info("🚀 [Scheduler] Suoritetaan välitön alkukierros käynnistyksen yhteydessä...")
+            try:
+                self.run_cycle()
+            except Exception as e:
+                logger.error(f"Virhe alkukierroksessa: {e}")
+
+        logger.info(f"⏰ [Scheduler] Ajastin aktivoitu: Päivittäinen ajo asetettu klo {daily_at} (järjestelmäaika)")
+        schedule.every().day.at(daily_at).do(self.run_cycle)
+
+        if interval_hours and interval_hours > 0:
+            logger.info(f"⏰ [Scheduler] Lisätty jaksottainen ajo {interval_hours} tunnin välein")
+            schedule.every(interval_hours).hours.do(self.run_cycle)
+
+        logger.info("⏳ [Scheduler] Valmiustilassa. Odotetaan ajastettua ajoa (tarkistus 30s välein)...")
+        while True:
+            try:
+                schedule.run_pending()
+                time.sleep(30)
+            except KeyboardInterrupt:
+                logger.info("🛑 [Scheduler] Ajastin pysäytetty käyttäjän toimesta.")
+                break
+            except Exception as e:
+                logger.error(f"❌ [Scheduler] Odottamaton virhe ajastinsilmukassa: {e}. Yritetään uudelleen 60s kuluttua...")
+                time.sleep(60)
+
 
 KNOWN_ENTRY_PRICES: Dict[str, float] = {
     "VIAFIN.HE": 19.80,
@@ -2104,10 +2142,13 @@ class LiveTradingDaemon:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="tradeBotTiuku Multi-Portfolio Walk-Forward Engine")
-    parser.add_argument("--run-once", action="store_true", help="Execute a single daily cycle across all 10 portfolios and exit")
+    parser.add_argument("--run-once", action="store_true", help="Execute a single daily cycle across all portfolios and exit")
+    parser.add_argument("--schedule", action="store_true", help="Run with in-code scheduler at configured daily time (e.g. 23:05)")
+    parser.add_argument("--daily-at", type=str, default="23:05", help="Daily execution time in HH:MM format (default: 23:05)")
+    parser.add_argument("--no-initial-run", action="store_true", help="Skip the initial execution upon startup in schedule mode")
     parser.add_argument("--loop", action="store_true", help="Run continuously in a sleep loop")
     parser.add_argument("--interval-hours", type=float, default=24.0, help="Interval in hours for loop mode (default: 24)")
-    parser.add_argument("--reset-portfolios", action="store_true", help="Reset all 10 portfolios to 10,000 EUR starting capital")
+    parser.add_argument("--reset-portfolios", action="store_true", help="Reset all portfolios to 10,000 EUR starting capital")
     parser.add_argument("--portfolio", type=str, default=None, help="Optionally run or test a single portfolio by ID")
     parser.add_argument("--sync-universe", action="store_true", help="Force an immediate dynamic universe scan for new listings from Nordnet")
 
@@ -2123,7 +2164,7 @@ def main() -> None:
     if args.reset_portfolios:
         for p in daemon.portfolios:
             p.reset()
-        logger.info("All 10 portfolios reset successfully.")
+        logger.info("All portfolios reset successfully.")
 
     if args.portfolio:
         selected = [p for p in daemon.portfolios if p.config.portfolio_id.lower() == args.portfolio.lower()]
@@ -2132,10 +2173,16 @@ def main() -> None:
             return
         daemon.portfolios = selected
 
-    if args.run_once or not args.loop:
-        daemon.run_cycle()
-    else:
+    if args.schedule:
+        daemon.run_scheduler(
+            daily_at=args.daily_at,
+            interval_hours=args.interval_hours if args.loop else None,
+            run_immediately=not args.no_initial_run,
+        )
+    elif args.loop:
         daemon.run_loop(interval_hours=args.interval_hours)
+    else:
+        daemon.run_cycle()
 
 
 if __name__ == "__main__":

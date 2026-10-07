@@ -100,7 +100,7 @@ sudo cp deploy/tradebot-tiuku-ui.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 
-# Käynnistä Paper Trader -daemon (tarkistaa 4h välein)
+# Käynnistä Paper Trader -daemon (koodiajastin: suorittaa päivittäisen markkinasynkronoinnin klo 23:05)
 sudo systemctl enable tradebot-tiuku-daemon
 sudo systemctl start tradebot-tiuku-daemon
 

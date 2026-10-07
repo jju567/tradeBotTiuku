@@ -551,6 +551,32 @@ def test_p10_graceful_transition_limit(tmp_path):
     assert inst.positions[-1]["Ticker"] == "NEW_BUY.ST"
 
 
+def test_master_daemon_run_scheduler(tmp_path):
+    """Test that MasterLiveTradingDaemon.run_scheduler configures daily schedule properly."""
+    dummy_yaml = tmp_path / "portfolios.yaml"
+    dummy_yaml.write_text("portfolios:\n  P1_Base:\n    strategy: PROFILE_B\n    slots: 5\n    slot_size: 2000\n", encoding="utf-8")
+
+    with patch("main_controller.DEFAULT_PORTFOLIOS_YAML", dummy_yaml), \
+         patch("main_controller.PORTFOLIOS_DIR", tmp_path), \
+         patch("main_controller.schedule") as mock_schedule:
+
+        daemon = MasterLiveTradingDaemon(config_yaml_path=dummy_yaml)
+        daemon.run_cycle = MagicMock(return_value={})
+
+        # Configure mock_schedule
+        mock_job = MagicMock()
+        mock_schedule.every.return_value.day.at.return_value.do.return_value = mock_job
+        # Simulate run_pending raising KeyboardInterrupt to exit loop cleanly
+        mock_schedule.run_pending.side_effect = KeyboardInterrupt
+
+        daemon.run_scheduler(daily_at="23:05", run_immediately=True)
+
+        assert daemon.run_cycle.call_count == 1
+        mock_schedule.every.return_value.day.at.assert_called_with("23:05")
+        mock_schedule.every.return_value.day.at.return_value.do.assert_called_with(daemon.run_cycle)
+
+
+
 
 
 

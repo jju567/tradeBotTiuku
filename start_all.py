@@ -53,6 +53,17 @@ def main() -> None:
         help="Run a single papertrader cycle instead of continuous loop",
     )
     parser.add_argument(
+        "--schedule",
+        action="store_true",
+        help="Run Paper Trader Daemon with in-code scheduler at daily specified time (e.g. 23:05)",
+    )
+    parser.add_argument(
+        "--daily-at",
+        type=str,
+        default="23:05",
+        help="Daily execution time for scheduler in HH:MM format (default: 23:05)",
+    )
+    parser.add_argument(
         "--sync-universe",
         action="store_true",
         help="Force an immediate dynamic universe scan for new listings from Nordnet",
@@ -80,12 +91,19 @@ def main() -> None:
 
         # 2. Start Paper Trader Daemon
         if not args.ui_only:
-            mode_desc = "kerran (--run-once)" if args.run_once else f"silmukassa ({args.interval_hours}h välein)"
+            if args.schedule:
+                mode_desc = f"ajastimella (päivittäin klo {args.daily_at})"
+            elif args.run_once:
+                mode_desc = "kerran (--run-once)"
+            else:
+                mode_desc = f"silmukassa ({args.interval_hours}h välein)"
             print(f"🤖 [2/2] Käynnistetään Paper Trader Daemon ({mode_desc})...")
             daemon_cmd = [sys.executable, str(BASE_DIR / "main_controller.py")]
             if args.sync_universe:
                 daemon_cmd.append("--sync-universe")
-            if args.run_once:
+            if args.schedule:
+                daemon_cmd.extend(["--schedule", "--daily-at", str(args.daily_at)])
+            elif args.run_once:
                 daemon_cmd.append("--run-once")
             else:
                 daemon_cmd.extend(["--loop", "--interval-hours", str(args.interval_hours)])
