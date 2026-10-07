@@ -337,6 +337,25 @@ Seuraavat kaksi kvantitatiivista kohtaa on kirjattu seurattavaksi ajan mittaan, 
 
 ---
 
+## 🔬 Tutkimustestit & Empiiriset Bäkkärit (`scripts/run_research_backtests.py`)
+
+Järjestelmä sisältää neliosaisen tutkimuspatterin (`python scripts/run_research_backtests.py`), joka validoi strategiat, parametrit ja markkinakitkat:
+
+1. **Testi 1: P12-säännön Breakout Backtest ($Volume \ge 3 \times ADV_{20}$)**:
+   - Testaa momentum-läpimurtosääntöä 288 mikroyhtiön avaruudessa 30 päivän ikkunassa (26.8.–5.10.).
+   - **Tulos**: Tunnistaa megatrendit (NANEXA.ST +153 %, ELON.ST +48 %) heti ensimmäisenä päivänä. Paljastaa kuitenkin yhden päivän piikkien riskin (FLUX -23 %, kokonais-win rate 5d: 44.7 %), mikä korostaa tiukan ranking-karsinnan ja trailing stopin merkitystä.
+2. **Testi 2: Trailing Stop -herkkyysanalyysi (Parameter Sweep)**:
+   - Testaa trailing stopin kireyttä (4 %, 6 %, 8 %, 10 %) Oraakkelin 23 voittajaosakkeella.
+   - **Tulos**: 4 %:n ja 6 %:n tiukat stopit saavuttivat korkeimman voittoprosentin (83–91 %) ja tuottivat eniten voittoa (6 934 – 7 500 €), sillä ne kotiuttavat mikroyhtiöiden nopeat piikit ennen syviä rekyylejä. NANEXA pysyi kyydissä 13 päivää ja tuotti +29.4 %.
+3. **Testi 3: Salkkujen todellinen päällekkäisyys (Portfolio Overlap Matrix)**:
+   - Laskee salkkuparien välisen positio-päällekkäisyyden ($|A \cap B| / \min(|A|, |B|)$).
+   - **Tulos**: P1 (Base), P2 (Fast Cycle) ja P3 (Diamond Hands) omistavat tällä hetkellä 100 % samoja osakkeita (dead money -erot aktivoituvat vasta 90–365 vrk kohdalla). Todellista hajautusta tuovat P5 (Nordic Only), P6 (US Only) ja P8 (Quality Growth, vain 20 % päällekkäisyys).
+4. **Testi 4: Realistinen kaupankäyntikitka (Spread & Slippage Stress Test)**:
+   - Simuloi Nordnetin minimipalkkiot (3–9 €/kauppa) sekä 0,4 %:n osto- ja myyntispreadin (0,8 % round-trip).
+   - **Tulos**: P10_Micro_Sniper (20 pientä 500 € slottia) kärsii jopa 5.75 %:n kitkarasituksen pääomastaan pelkkien kulujen vuoksi, kääntäen tuoton -1.84 %:sta -7.59 %:iin. P9_High_Conviction (5 isoa 2 000 € slottia) kestää kulut selvästi tehokkaammin (komissio vain 0.54 % pääomasta).
+
+---
+
 ## 🔒 Tietosuoja & Disclaimer
 
 - **Tietosuoja & API-avaimet**: Salkkutiedot ja API-avaimet säilytetään omalla paikallisella laitteellasi.
@@ -345,4 +364,5 @@ Seuraavat kaksi kvantitatiivista kohtaa on kirjattu seurattavaksi ajan mittaan, 
 - **Ympäristöt & Turvallisuus**:
   - `C:\`: Testi- ja kehitysympäristö.
   - `Z:\`: Tuotantoympäristö. **Z:-asemaa ei saa koskaan suoraan ylikirjoittaa automaatiolla.**
+
 
