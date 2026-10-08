@@ -569,11 +569,13 @@ def test_master_daemon_run_scheduler(tmp_path):
         # Simulate run_pending raising KeyboardInterrupt to exit loop cleanly
         mock_schedule.run_pending.side_effect = KeyboardInterrupt
 
-        daemon.run_scheduler(daily_at="23:05", run_immediately=True)
+        daemon.run_scheduler(daily_at="23:05", run_immediately=True, intraday_p12_minutes=30)
 
         assert daemon.run_cycle.call_count == 1
         mock_schedule.every.return_value.day.at.assert_called_with("23:05")
         mock_schedule.every.return_value.day.at.return_value.do.assert_called_with(daemon.run_cycle)
+        mock_schedule.every.assert_any_call(30)
+        mock_schedule.every.return_value.minutes.do.assert_called_with(daemon.run_intraday_p12_tick)
 
 
 

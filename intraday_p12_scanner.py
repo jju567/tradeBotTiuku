@@ -819,11 +819,32 @@ class IntradayP12Scanner:
         logger.info("=" * 70)
         return sells, buys
 
+    def run_loop(self, interval_minutes: int = 30) -> None:
+        """Runs the intraday scanner continuously in an autonomous in-code schedule loop."""
+        import schedule
+        logger.info(f"⏰ [P12 In-Code Scheduler] Käynnistetään jatkuva tarkistus {interval_minutes} minuutin välein...")
+        # Run first tick immediately
+        self.run()
+        schedule.every(interval_minutes).minutes.do(self.run)
+        logger.info("⏳ [P12 In-Code Scheduler] Ajastin aktiivinen. Odotetaan seuraavaa tarkistusta...")
+        while True:
+            try:
+                schedule.run_pending()
+                time.sleep(30)
+            except KeyboardInterrupt:
+                logger.info("🛑 [P12 Scheduler] Ajastin pysäytetty käyttäjän toimesta.")
+                break
+            except Exception as e:
+                logger.error(f"❌ [P12 Scheduler] Virhe silmukassa: {e}. Yritetään uudelleen 60s kuluttua...")
+                time.sleep(60)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="tradeBotTiuku Standalone Intraday P12 Momentum Breakout Scanner")
     parser.add_argument("--check-only", action="store_true", help="Run in read-only simulation mode (no actual state changes)")
     parser.add_argument("--force-market-open", action="store_true", help="Bypass market hours check for off-hours testing")
+    parser.add_argument("--loop", action="store_true", help="Run continuously in an autonomous in-code schedule loop")
+    parser.add_argument("--interval-minutes", type=int, default=30, help="Interval in minutes for in-code schedule loop (default: 30)")
     parser.add_argument("--portfolios-dir", type=str, default=str(DEFAULT_PORTFOLIOS_DIR), help="Path to portfolios directory")
     parser.add_argument("--universe-path", type=str, default=str(DEFAULT_CLEAN_UNIVERSE_CSV), help="Path to clean microcap universe CSV")
     parser.add_argument("--config-path", type=str, default=str(DEFAULT_PORTFOLIOS_YAML), help="Path to portfolios_config.yaml")
@@ -837,7 +858,11 @@ def main() -> None:
         force_open=args.force_market_open,
         check_only=args.check_only,
     )
-    scanner.run()
+
+    if args.loop:
+        scanner.run_loop(interval_minutes=args.interval_minutes)
+    else:
+        scanner.run()
 
 
 if __name__ == "__main__":

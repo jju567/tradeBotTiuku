@@ -1683,16 +1683,31 @@ class MasterLiveTradingDaemon:
                 logger.error(f"Unexpected error in daemon loop: {e}. Retrying in 60s...")
                 time.sleep(60)
 
+    def run_intraday_p12_tick(self) -> None:
+        """Executes a single intraday check for P12 Momentum Breakout if markets are open."""
+        try:
+            from intraday_p12_scanner import IntradayP12Scanner
+            scanner = IntradayP12Scanner(
+                portfolios_dir=PORTFOLIOS_DIR,
+                config_path=self.config_yaml_path,
+                universe_path=self.market_engine.clean_universe_path,
+            )
+            scanner.run()
+        except Exception as e:
+            logger.error(f"Virhe intraday P12 -skannauksessa: {e}")
+
     def run_scheduler(
         self,
         daily_at: str = "23:05",
         interval_hours: Optional[float] = None,
         run_immediately: bool = True,
+        intraday_p12_minutes: int = 30,
     ) -> None:
         """Runs the multi-portfolio engine on an autonomous schedule using Python's schedule library.
 
         Designed for 24/7 background deployment on Linux servers (e.g. systemd).
-        Executes daily post-market close sync at daily_at (Nordic + US markets close by 23:00).
+        - Executes daily post-market close sync at daily_at (Nordic + US markets close by 23:00).
+        - Executes intraday P12 Momentum Breakout check every intraday_p12_minutes (default: 30m) during market hours.
         """
         if run_immediately:
             logger.info("🚀 [Scheduler] Suoritetaan välitön alkukierros käynnistyksen yhteydessä...")
@@ -1701,8 +1716,12 @@ class MasterLiveTradingDaemon:
             except Exception as e:
                 logger.error(f"Virhe alkukierroksessa: {e}")
 
-        logger.info(f"⏰ [Scheduler] Ajastin aktivoitu: Päivittäinen ajo asetettu klo {daily_at} (järjestelmäaika)")
+        logger.info(f"⏰ [Scheduler] Ajastin aktivoitu: Päivittäinen iltasykli asetettu klo {daily_at} (järjestelmäaika)")
         schedule.every().day.at(daily_at).do(self.run_cycle)
+
+        if intraday_p12_minutes and intraday_p12_minutes > 0:
+            logger.info(f"⏰ [Scheduler] Ajastettu P12 Intraday Momentum Breakout -tarkistus {intraday_p12_minutes} minuutin välein (markkina-aikoina)")
+            schedule.every(intraday_p12_minutes).minutes.do(self.run_intraday_p12_tick)
 
         if interval_hours and interval_hours > 0:
             logger.info(f"⏰ [Scheduler] Lisätty jaksottainen ajo {interval_hours} tunnin välein")
@@ -2146,6 +2165,7 @@ def main() -> None:
     parser.add_argument("--schedule", action="store_true", help="Run with in-code scheduler at configured daily time (e.g. 23:05)")
     parser.add_argument("--daily-at", type=str, default="23:05", help="Daily execution time in HH:MM format (default: 23:05)")
     parser.add_argument("--no-initial-run", action="store_true", help="Skip the initial execution upon startup in schedule mode")
+    parser.add_argument("--intraday-p12-minutes", type=int, default=30, help="Interval in minutes for intraday P12 scans during market hours (default: 30)")
     parser.add_argument("--loop", action="store_true", help="Run continuously in a sleep loop")
     parser.add_argument("--interval-hours", type=float, default=24.0, help="Interval in hours for loop mode (default: 24)")
     parser.add_argument("--reset-portfolios", action="store_true", help="Reset all portfolios to 10,000 EUR starting capital")
@@ -2178,6 +2198,7 @@ def main() -> None:
             daily_at=args.daily_at,
             interval_hours=args.interval_hours if args.loop else None,
             run_immediately=not args.no_initial_run,
+            intraday_p12_minutes=args.intraday_p12_minutes,
         )
     elif args.loop:
         daemon.run_loop(interval_hours=args.interval_hours)

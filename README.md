@@ -273,14 +273,14 @@ python main_controller.py --reset-portfolios
 # Single-Stock Time Machine: Testaa Layer 2 -uutistutka historiallisilla tiedotteilla:
 python single_stock_news_backtest.py --ticker SEZI.ST --buy-date 2026-02-16
 
-# Erillinen P12 Intraday Momentum Breakout -skanneri (markkina-aikatietoinen):
-python intraday_p12_scanner.py
+# Autonominen koodiajastin (suositeltu tuotantoon: ajaa P12-intradayt 30 min välein markkina-aikoina ja iltasyklin klo 23:05 - EI CRONJOBEJA TARVITA):
+python main_controller.py --schedule --daily-at 23:05 --intraday-p12-minutes 30
 
-# Aja P12-skanneri simulaatiotilassa ilman tilamuutoksia:
+# Erillinen P12 Intraday -skanneri omassa koodiajastimessaan:
+python intraday_p12_scanner.py --loop --interval-minutes 30
+
+# Aja P12-skanneri kerran simulaatiotilassa:
 python intraday_p12_scanner.py --check-only
-
-# Cron-esimerkki Linux-palvelimelle (ajo 30 min välein ma-pe markkina-aikoina klo 10:00-23:00):
-# */30 10-23 * * 1-5 /opt/tradeBotTiuku/venv/bin/python /opt/tradeBotTiuku/intraday_p12_scanner.py >> /var/log/p12_scanner.log 2>&1
 ```
 
 ### 7. Yksikkötestit
