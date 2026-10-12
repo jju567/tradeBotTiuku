@@ -25,10 +25,15 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Run Paper Trader Daemon in legacy interval loop instead of daily scheduler",
+    )
+    parser.add_argument(
         "--interval-hours",
         type=float,
         default=4.0,
-        help="Papertrader evaluation interval in hours (default: 4.0)",
+        help="Papertrader evaluation interval in hours when --loop is used (default: 4.0)",
     )
     parser.add_argument(
         "--ui-only",
@@ -55,13 +60,20 @@ def main() -> None:
     parser.add_argument(
         "--schedule",
         action="store_true",
-        help="Run Paper Trader Daemon with in-code scheduler at daily specified time (e.g. 23:05)",
+        default=True,
+        help="Run Paper Trader Daemon with in-code scheduler at daily specified time (default: enabled)",
     )
     parser.add_argument(
         "--daily-at",
         type=str,
         default="23:05",
         help="Daily execution time for scheduler in HH:MM format (default: 23:05)",
+    )
+    parser.add_argument(
+        "--intraday-p12-minutes",
+        type=int,
+        default=30,
+        help="Interval in minutes for intraday P12 scans during market hours (default: 30)",
     )
     parser.add_argument(
         "--sync-universe",
@@ -91,22 +103,26 @@ def main() -> None:
 
         # 2. Start Paper Trader Daemon
         if not args.ui_only:
-            if args.schedule:
-                mode_desc = f"ajastimella (päivittäin klo {args.daily_at})"
-            elif args.run_once:
+            if args.run_once:
                 mode_desc = "kerran (--run-once)"
-            else:
+            elif args.loop:
                 mode_desc = f"silmukassa ({args.interval_hours}h välein)"
+            else:
+                mode_desc = f"koodiajastimella (iltasykli klo {args.daily_at} + P12 intraday {args.intraday_p12_minutes}m välein)"
             print(f"🤖 [2/2] Käynnistetään Paper Trader Daemon ({mode_desc})...")
             daemon_cmd = [sys.executable, str(BASE_DIR / "main_controller.py")]
             if args.sync_universe:
                 daemon_cmd.append("--sync-universe")
-            if args.schedule:
-                daemon_cmd.extend(["--schedule", "--daily-at", str(args.daily_at)])
-            elif args.run_once:
+            if args.run_once:
                 daemon_cmd.append("--run-once")
-            else:
+            elif args.loop:
                 daemon_cmd.extend(["--loop", "--interval-hours", str(args.interval_hours)])
+            else:
+                daemon_cmd.extend([
+                    "--schedule",
+                    "--daily-at", str(args.daily_at),
+                    "--intraday-p12-minutes", str(args.intraday_p12_minutes),
+                ])
 
             p_daemon = subprocess.Popen(daemon_cmd, cwd=str(BASE_DIR))
             processes.append(("Paper Trader Daemon", p_daemon))

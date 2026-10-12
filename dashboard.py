@@ -376,6 +376,67 @@ def fetch_ticker_history(ticker: str, period: str = "3mo") -> tuple:
         return pd.DataFrame(), t_clean
 
 
+def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
+    """Writes JSON atomically via a PID-scoped temporary file and os.replace."""
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
+
+
+def _safe_load_json_list(target_path: Path, retries: int = 3) -> Optional[List[Dict[str, Any]]]:
+    """Safely loads a JSON list with retry and regex recovery for truncated tails."""
+    import re
+    target_path = Path(target_path)
+    if not target_path.exists():
+        return []
+    try:
+        if target_path.stat().st_size == 0:
+            return []
+    except Exception:
+        pass
+
+    raw_text = ""
+    for attempt in range(retries):
+        try:
+            raw_text = target_path.read_text(encoding="utf-8")
+            data = json.loads(raw_text)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(0.1)
+
+    if raw_text:
+        recovered: List[Dict[str, Any]] = []
+        for match in re.findall(r"\{[^{}]+\}", raw_text):
+            try:
+                obj = json.loads(match)
+                if isinstance(obj, dict):
+                    recovered.append(obj)
+            except Exception:
+                continue
+        if recovered:
+            return recovered
+
+    return None
+
+
 def record_portfolio_snapshot(
     total_equity: float,
     cash_balance: float,
@@ -406,13 +467,11 @@ def record_portfolio_snapshot(
     except Exception:
         pass
 
-    history = []
-    if history_file.exists():
-        try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                history = json.load(f)
-        except Exception:
-            history = []
+    loaded_history = _safe_load_json_list(history_file)
+    if loaded_history is None:
+        # Never overwrite an existing non-empty history file if a transient read failed
+        return
+    history = loaded_history
 
     now_dt = datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
@@ -448,8 +507,7 @@ def record_portfolio_snapshot(
         if len(history) > 10000:
             history = history[-10000:]
         try:
-            with open(history_file, "w", encoding="utf-8") as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
+            _atomic_write_json(history_file, history, ensure_ascii=False)
         except Exception:
             pass
 
@@ -629,11 +687,7 @@ def render_portfolio_equity_chart(
             st.info("📊 Salkun historiaa kerätään... Ensimmäinen mittauspiste tallennettu.")
             return
 
-        try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = []
+        data = _safe_load_json_list(history_file) or []
 
         if not data:
             st.info("📊 Salkun historiatietoja ei vielä saatavilla.")
@@ -1690,8 +1744,7 @@ def render_dashboard_views(active_menu: str):
                             with open(port_state_file, "r", encoding="utf-8") as f_acc:
                                 acc_save = json.load(f_acc)
                             acc_save["positions"] = healed_rows_to_save
-                            with open(port_state_file, "w", encoding="utf-8") as f_acc:
-                                json.dump(acc_save, f_acc, indent=2, ensure_ascii=False)
+                            _atomic_write_json(port_state_file, acc_save, ensure_ascii=False)
                         except Exception:
                             pass
                     try:

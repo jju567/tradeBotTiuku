@@ -32,6 +32,8 @@ import csv
 import json
 import logging
 import math
+import os
+import re
 import sys
 import time
 from datetime import date, datetime, time as dtime, timezone
@@ -188,6 +190,67 @@ def calculate_transaction_fee(gross_amount: float, rate: float = VARIABLE_BROKER
     return max(min_fee, gross_amount * rate)
 
 
+def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
+    """Writes JSON atomically via a PID-scoped temporary file and os.replace."""
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
+
+
+def _safe_load_json_list(target_path: Path, retries: int = 3) -> Optional[List[Dict[str, Any]]]:
+    """Safely loads a JSON list with retry and regex recovery for truncated tails."""
+    target_path = Path(target_path)
+    if not target_path.exists():
+        return []
+    try:
+        if target_path.stat().st_size == 0:
+            return []
+    except Exception:
+        pass
+
+    raw_text = ""
+    for attempt in range(retries):
+        try:
+            raw_text = target_path.read_text(encoding="utf-8")
+            data = json.loads(raw_text)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(0.1)
+
+    if raw_text:
+        recovered: List[Dict[str, Any]] = []
+        for match in re.findall(r"\{[^{}]+\}", raw_text):
+            try:
+                obj = json.loads(match)
+                if isinstance(obj, dict):
+                    recovered.append(obj)
+            except Exception:
+                continue
+        if recovered:
+            logger.warning(f"Recovered {len(recovered)} JSON entries from partially truncated {target_path.name}")
+            return recovered
+
+    return None
+
+
 class IntradayP12Scanner:
     """Standalone quantitative engine for P12_Momentum_Breakout intraday operations."""
 
@@ -245,11 +308,16 @@ class IntradayP12Scanner:
         """Loads P12 state or initializes if missing."""
         self.portfolios_dir.mkdir(parents=True, exist_ok=True)
         if self.state_file.exists():
-            try:
-                with open(self.state_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Error reading {self.state_file}: {e}")
+            last_err = None
+            for attempt in range(3):
+                try:
+                    with open(self.state_file, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        time.sleep(0.1)
+            logger.error(f"Error reading {self.state_file}: {last_err}")
 
         initial_state = {
             "portfolio_id": self.portfolio_id,
@@ -264,14 +332,13 @@ class IntradayP12Scanner:
         return initial_state
 
     def _save_portfolio_state(self, state: Dict[str, Any]) -> None:
-        """Saves updated state JSON."""
+        """Saves updated state JSON atomically."""
         if self.check_only:
             logger.info("🔍 [Check-Only Mode] Skipping write to state file.")
             return
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         try:
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
+            _atomic_write_json(self.state_file, state, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save state to {self.state_file}: {e}")
 
@@ -780,13 +847,15 @@ class IntradayP12Scanner:
         }
 
         try:
-            history: List[Dict[str, Any]] = []
-            if self.equity_file.exists():
-                with open(self.equity_file, "r", encoding="utf-8") as f:
-                    history = json.load(f)
+            loaded_history = _safe_load_json_list(self.equity_file)
+            if loaded_history is None:
+                logger.warning(f"Skipping snapshot write: could not safely read existing {self.equity_file.name}")
+                return
+            history = loaded_history
             history.append(snapshot)
-            with open(self.equity_file, "w", encoding="utf-8") as f:
-                json.dump(history, f, indent=2)
+            if len(history) > 10000:
+                history = history[-10000:]
+            _atomic_write_json(self.equity_file, history, ensure_ascii=False)
         except Exception as e:
             logger.debug(f"Could not record equity snapshot: {e}")
 

@@ -12,9 +12,11 @@
 - **Yhdistetty Pikakäynnistys (UI + Paper Trader)**:
   - `start_all.bat` tai `.\start_all.ps1` tai `python start_all.py`
   - Käynnistää sekä Streamlit-hallintapaneelin että reaaliaikaisen Paper Trader -daemonin yhdellä komennolla ja hallitsee molempien prosessien siistiä sammutusta (`Ctrl+C`).
-  - *Parametrit*: `--schedule` (koodiajastin), `--daily-at <HH:MM>` (oletus: 23:05), `--interval-hours <h>` (silmukkaväli), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8502).
+  - *Oletustila (`--schedule`)*: Sisäänrakennettu koodiajastin ajaa päivittäisen iltasyklin klo `23:05` sekä `P12_Momentum_Breakout`-intraday-tarkistuksen 30 minuutin välein pörssien aukioloaikoina (Nordic 10:00–18:30, US 16:30–23:00 Suomen aikaa) ilman erillisiä cron-ajastuksia.
+  - *Parametrit*: `--schedule` (oletus), `--daily-at <HH:MM>` (oletus: 23:05), `--intraday-p12-minutes <m>` (oletus: 30), `--loop --interval-hours <h>` (perinteinen silmukkatila), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8502).
+  - *Atomiset JSON-tallennukset (`_atomic_write_json` & `_safe_load_json_list`)*: Kaikki salkkujen tila- ja historiatiedostot (`*_state.json`, `*_history.json`) kirjoitetaan atomisesti PID-kohtaisen väliaikaistiedoston ja `os.replace`-kutsun kautta sekä suojataan automaattisella regex-elvytyksellä, mikä estää rinnakkaisten luku-/kirjoitusoperaatioiden aiheuttamat JSON-katkeamiset ja historian nollautumiset.
 - **Pelkkä Käyttöliittymä**: `streamlit run dashboard.py --server.port 8502`
-- **Pelkkä Paper Trader Daemon (Koodiajastin / Linux)**: `python main_controller.py --schedule --daily-at 23:05`
+- **Pelkkä Paper Trader Daemon (Koodiajastin / Linux)**: `python main_controller.py --schedule --daily-at 23:05 --intraday-p12-minutes 30`
 - 🐧 **Linux-palvelinasennus & systemd-daemon**: Täydellinen asennusopas ja valmiit palvelupohjat löytyvät dokumentista: [docs/LINUX_DAEMON_OHJEET.md](docs/LINUX_DAEMON_OHJEET.md).
 - **Saumaton Taustapäivitys Ilman Harmaantumista (`st.fragment` & Anti-Dimming CSS)**: Hyödyntää moduulitason staattisia `@st.fragment`-kääreitä ja räätälöityä CSS-koodia, joka estää Streamlitin himmenemisen / latauspeitteen automaattisen päivityksen aikana.
 - **Selkeät Välilehdet**:

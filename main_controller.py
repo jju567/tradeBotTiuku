@@ -30,6 +30,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -98,6 +99,73 @@ DEFAULT_TRADE_HISTORY_CSV = BASE_DIR / "data" / "trade_history.csv"
 DEFAULT_PORTFOLIO_HISTORY_JSON = BASE_DIR / "data" / "portfolio_history.json"
 
 
+def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
+    """Writes JSON atomically via a PID-scoped temporary file and os.replace to prevent partial reads."""
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
+
+
+def _safe_load_json_list(target_path: Path, retries: int = 3) -> Optional[List[Dict[str, Any]]]:
+    """
+    Safely loads a JSON list (such as portfolio_*_history.json).
+    - Retries on transient read/decode errors (e.g. concurrent network/SMB access).
+    - Falls back to regex object recovery if the file tail was truncated.
+    - Returns None if a non-empty file cannot be read at all, preventing callers from wiping history.
+    """
+    target_path = Path(target_path)
+    if not target_path.exists():
+        return []
+    try:
+        if target_path.stat().st_size == 0:
+            return []
+    except Exception:
+        pass
+
+    raw_text = ""
+    for attempt in range(retries):
+        try:
+            raw_text = target_path.read_text(encoding="utf-8")
+            data = json.loads(raw_text)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(0.1)
+
+    # Regex recovery for truncated JSON list of flat objects
+    if raw_text:
+        recovered: List[Dict[str, Any]] = []
+        for match in re.findall(r"\{[^{}]+\}", raw_text):
+            try:
+                obj = json.loads(match)
+                if isinstance(obj, dict):
+                    recovered.append(obj)
+            except Exception:
+                continue
+        if recovered:
+            logger.warning(f"Recovered {len(recovered)} JSON entries from partially truncated {target_path.name}")
+            return recovered
+
+    return None
+
+
 def load_operational_metrics(metrics_path: Path = DEFAULT_OPERATIONAL_METRICS_JSON) -> Dict[str, Any]:
     """Loads lightweight operational health counters (LLM fallback rate, data freshness blocks)."""
     default_metrics = {
@@ -143,8 +211,7 @@ def save_operational_metrics(metrics: Dict[str, Any], metrics_path: Path = DEFAU
         else:
             metrics["status"] = "HEALTHY"
 
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, indent=2)
+        _atomic_write_json(metrics_path, metrics, ensure_ascii=True)
     except Exception as e:
         logger.warning(f"Failed to save operational metrics to {metrics_path}: {e}")
 
@@ -353,18 +420,23 @@ class PortfolioInstance:
     def load_state(self) -> None:
         """Loads state from JSON or initializes default."""
         if self.state_file.exists():
-            try:
-                with open(self.state_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.cash_balance = float(data.get("cash_balance", self.config.start_cash))
-                    self.starting_balance = float(data.get("starting_balance", self.config.start_cash))
-                    self.currency = data.get("currency", "EUR")
-                    self.positions = [self._normalize_position(p) for p in data.get("positions", [])]
-                    self.created_at = data.get("created_at", self.created_at)
-                    self.updated_at = data.get("updated_at", self.updated_at)
-                    return
-            except Exception as e:
-                logger.warning(f"[{self.config.portfolio_id}] Could not load {self.state_file.name}: {e}. Initializing.")
+            last_err = None
+            for attempt in range(3):
+                try:
+                    with open(self.state_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        self.cash_balance = float(data.get("cash_balance", self.config.start_cash))
+                        self.starting_balance = float(data.get("starting_balance", self.config.start_cash))
+                        self.currency = data.get("currency", "EUR")
+                        self.positions = [self._normalize_position(p) for p in data.get("positions", [])]
+                        self.created_at = data.get("created_at", self.created_at)
+                        self.updated_at = data.get("updated_at", self.updated_at)
+                        return
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        time.sleep(0.1)
+            logger.warning(f"[{self.config.portfolio_id}] Could not load {self.state_file.name}: {last_err}. Initializing.")
 
         self.save_state()
 
@@ -399,7 +471,7 @@ class PortfolioInstance:
 
 
     def save_state(self) -> None:
-        """Saves current state to JSON file."""
+        """Saves current state to JSON file atomically."""
         self.updated_at = datetime.now(timezone.utc).isoformat()
         payload = {
             "portfolio_id": self.config.portfolio_id,
@@ -410,8 +482,10 @@ class PortfolioInstance:
             "updated_at": self.updated_at,
             "positions": self.positions,
         }
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+        try:
+            _atomic_write_json(self.state_file, payload, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[{self.config.portfolio_id}] Failed to save state to {self.state_file}: {e}")
 
     def reset(self) -> None:
         """Resets portfolio state to starting cash and empty positions."""
@@ -471,13 +545,13 @@ class PortfolioInstance:
     def record_snapshot(self, stock_value_eur: float) -> None:
         """Records an equity snapshot to history JSON for chart visualization."""
         total_equity = self.cash_balance + stock_value_eur
-        history = []
-        if self.equity_file.exists():
-            try:
-                with open(self.equity_file, "r", encoding="utf-8") as f:
-                    history = json.load(f)
-            except Exception:
-                history = []
+        loaded_history = _safe_load_json_list(self.equity_file)
+        if loaded_history is None:
+            logger.warning(
+                f"[{self.config.portfolio_id}] Skipping snapshot write: could not safely read existing {self.equity_file.name}"
+            )
+            return
+        history = loaded_history
 
         now_dt = datetime.now(timezone.utc)
         should_append = True
@@ -513,15 +587,10 @@ class PortfolioInstance:
             history.append(snapshot)
             if len(history) > 10000:
                 history = history[-10000:]
-            tmp_file = self.equity_file.with_suffix(".tmp")
             try:
-                with open(tmp_file, "w", encoding="utf-8") as f:
-                    json.dump(history, f, indent=2, ensure_ascii=False)
-                tmp_file.replace(self.equity_file)
+                _atomic_write_json(self.equity_file, history, ensure_ascii=False)
             except Exception as e:
                 logger.debug(f"[{self.config.portfolio_id}] Failed to save snapshot: {e}")
-                if tmp_file.exists():
-                    tmp_file.unlink(missing_ok=True)
 
 
 class MarketDataEngine:

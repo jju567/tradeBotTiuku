@@ -201,3 +201,28 @@ def test_breakout_scanner_executes_buy(tmp_path):
     assert pos["Buy Price"] == 10.0
     assert pos["Peak Price"] == 10.0
     assert scanner.state["cash_balance"] < 10000.0
+
+
+def test_atomic_write_and_safe_load_recovery(tmp_path):
+    from main_controller import _atomic_write_json, _safe_load_json_list
+
+    hist_file = tmp_path / "portfolio_P10_Micro_Sniper_history.json"
+    entries = [
+        {"timestamp": "2026-10-10T10:00:00+00:00", "total_equity": 9500.0},
+        {"timestamp": "2026-10-11T10:00:00+00:00", "total_equity": 9600.0},
+    ]
+    _atomic_write_json(hist_file, entries)
+    loaded = _safe_load_json_list(hist_file)
+    assert loaded is not None
+    assert len(loaded) == 2
+
+    # Simulate a truncated tail (missing closing bracket / trailing comma)
+    raw = hist_file.read_text(encoding="utf-8")
+    truncated = raw.rstrip().rstrip("]") + ",\n"
+    hist_file.write_text(truncated, encoding="utf-8")
+
+    recovered = _safe_load_json_list(hist_file, retries=1)
+    assert recovered is not None
+    assert len(recovered) == 2
+    assert recovered[1]["total_equity"] == 9600.0
+
