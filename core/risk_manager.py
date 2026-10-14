@@ -205,7 +205,11 @@ class RiskManager:
             change_pct = m_item.get("change_pct", 0.0) / 100.0 if "change_pct" in m_item else 0.0
             if abs(change_pct) >= self.volatility_threshold:
                 trigger_key = f"{symbol}:VOLATILITY_SWING"
-                last_alert_time = cooldown_tracker.get(trigger_key, 0.0)
+                entry = cooldown_tracker.get(trigger_key, 0.0)
+                if isinstance(entry, dict):
+                    last_alert_time = float(entry.get("timestamp", 0.0))
+                else:
+                    last_alert_time = float(entry) if entry else 0.0
                 if (now_ts - last_alert_time) >= cooldown_sec:
                     name = holdings.get(symbol, {}).get("name") or m_item.get("name") or symbol
                     display_name = f"{name} ({symbol})" if name and name != symbol else symbol

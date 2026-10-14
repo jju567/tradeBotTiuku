@@ -30,11 +30,13 @@ class StockAdvisorAI:
         mode_str = f"OpenAI {self.model}" if self.client else "Rule-based Engine"
         logger.info(f"Starting equity evaluation for {len(market_data)} symbols using {mode_str}...")
 
+        global_strat = current_portfolio.get("global_strategy") or config.INVESTMENT_STRATEGY
+
         for stock in market_data:
             if self.client:
                 score_data = self._call_openai_eval(stock, current_portfolio)
             else:
-                score_data = self._rule_based_tiuku_eval(stock)
+                score_data = self._rule_based_tiuku_eval(stock, global_strategy=global_strat)
 
             results.append({
                 "symbol": stock["symbol"],

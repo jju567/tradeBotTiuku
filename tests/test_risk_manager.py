@@ -212,3 +212,20 @@ class TestCheckSltpTriggers:
         assert len(triggers) == 1
         assert triggers[0]["type"] == "TAKE_PROFIT_TARGET"
 
+    def test_volatility_swing_cooldown_dict_format_no_type_error(self):
+        """Verify that market volatility check handles dict-format cooldown entry without TypeError."""
+        portfolio = {"holdings": {}}
+        market_data = [{"symbol": "VOLA.HE", "change_pct": 8.0, "name": "Vola Stock"}]
+        # MarketMonitor saves cooldown entries as dict {"timestamp": ts, "pnl_pct": pnl}
+        cooldowns = {"VOLA.HE:VOLATILITY_SWING": {"timestamp": 1000.0, "pnl_pct": 0.0}}
+        
+        # When cooldown has not elapsed (e.g. 1 hour later, cooldown is 24h)
+        triggers = self.rm.check_sltp_triggers(portfolio, market_data, cooldowns, cooldown_hours=24.0, now_ts=1000.0 + 3600)
+        assert triggers == []
+
+        # When cooldown has elapsed (25 hours later)
+        triggers_expired = self.rm.check_sltp_triggers(portfolio, market_data, cooldowns, cooldown_hours=24.0, now_ts=1000.0 + 25 * 3600)
+        assert len(triggers_expired) == 1
+        assert triggers_expired[0]["type"] == "VOLATILITY_SWING"
+
+

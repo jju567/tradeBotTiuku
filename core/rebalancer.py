@@ -56,28 +56,52 @@ class PortfolioRebalancer:
             global_strat = portfolio_summary.get("global_strategy") or config.INVESTMENT_STRATEGY
             strat = config.get_holding_strategy(holding, global_strat)
 
-            # Generate SELL if AI recommends SELL/STRONG_SELL or position exceeds MAX_POSITION_WEIGHT or overweight trim
-            if (rec in ["SELL", "STRONG_SELL"] or curr_weight > config.MAX_POSITION_WEIGHT or (diff_val < 0 and rec != "HOLD")) and abs(diff_val) >= min_symbol_trade_eur:
-                sell_val = abs(diff_val)
-                sell_qty = int(sell_val / curr_price)
-                if sell_qty > 0:
-                    trade_val = round(sell_qty * curr_price, 2)
-                    commission = config.calculate_commission(symbol, trade_val)
-                    total_estimated_commission += commission
-                    proposed_trades.append({
-                        "symbol": symbol,
-                        "name": holding.get("name", ai_eval.get("name", symbol)),
-                        "action": "SELL",
-                        "quantity": sell_qty,
-                        "price": curr_price,
-                        "trade_value": trade_val,
-                        "estimated_commission": commission,
-                        "current_weight": curr_weight,
-                        "target_weight": target_weight,
-                        "ai_score": score,
-                        "strategy": strat,
-                        "reason": ai_eval.get("reasoning", "Rebalancing trim"),
-                    })
+            # If AI recommends STRONG_SELL, target is 0 to liquidate entire holding
+            if rec == "STRONG_SELL":
+                target_weight = 0.0
+                target_val = 0.0
+                diff_val = -curr_val
+
+            should_sell = False
+            sell_val = 0.0
+            sell_qty = 0
+
+            if rec == "STRONG_SELL":
+                sell_val = curr_val
+                sell_qty = curr_qty
+                should_sell = (sell_val >= min_symbol_trade_eur and sell_qty > 0)
+            elif diff_val < 0:
+                trim_val = abs(diff_val)
+                if trim_val >= min_symbol_trade_eur and (rec in ["SELL", "STRONG_SELL"] or curr_weight > config.MAX_POSITION_WEIGHT or rec != "HOLD"):
+                    sell_val = min(curr_val, trim_val)
+                    sell_qty = int(sell_val / curr_price)
+                    should_sell = (sell_qty > 0)
+            elif curr_weight > config.MAX_POSITION_WEIGHT:
+                max_allowed_val = investable_equity * config.MAX_POSITION_WEIGHT
+                trim_val = curr_val - max_allowed_val
+                if trim_val >= min_symbol_trade_eur:
+                    sell_val = min(curr_val, trim_val)
+                    sell_qty = int(sell_val / curr_price)
+                    should_sell = (sell_qty > 0)
+
+            if should_sell:
+                trade_val = round(sell_qty * curr_price, 2)
+                commission = config.calculate_commission(symbol, trade_val)
+                total_estimated_commission += commission
+                proposed_trades.append({
+                    "symbol": symbol,
+                    "name": holding.get("name", ai_eval.get("name", symbol)),
+                    "action": "SELL",
+                    "quantity": sell_qty,
+                    "price": curr_price,
+                    "trade_value": trade_val,
+                    "estimated_commission": commission,
+                    "current_weight": curr_weight,
+                    "target_weight": target_weight,
+                    "ai_score": score,
+                    "strategy": strat,
+                    "reason": ai_eval.get("reasoning", "Rebalancing trim" if rec != "STRONG_SELL" else "Strong Sell exit"),
+                })
 
         # Calculate net cash available for BUY trades (cash_balance + cash from SELLs - target cash reserve)
         cash_gained_from_sells = sum(t["trade_value"] - t["estimated_commission"] for t in proposed_trades if t["action"] == "SELL")

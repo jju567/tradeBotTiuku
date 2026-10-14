@@ -153,6 +153,22 @@ class TestEvaluateEquities:
         results = rule_based_advisor.evaluate_equities([], current_portfolio={})
         assert results == []
 
+    def test_evaluate_equities_respects_portfolio_global_strategy(self, rule_based_advisor):
+        """When portfolio specifies global_strategy='LONG_TERM', rule-based scoring uses it instead of default HYBRID."""
+        # For rsi=70.0: HYBRID penalizes -2 (score 5-2=3 -> STRONG_SELL), whereas LONG_TERM penalizes -1 (score 5-1=4 -> SELL)
+        stock = make_stock("TEST.HE", rsi_14=70.0, percent_b=0.5, trend="NEUTRAL")
+        
+        # With default/HYBRID portfolio
+        res_hybrid = rule_based_advisor.evaluate_equities([stock], current_portfolio={"global_strategy": "HYBRID"})
+        assert res_hybrid[0]["score"] == 3
+        assert res_hybrid[0]["recommendation"] == "STRONG_SELL"
+
+        # With LONG_TERM portfolio
+        res_long_term = rule_based_advisor.evaluate_equities([stock], current_portfolio={"global_strategy": "LONG_TERM"})
+        assert res_long_term[0]["score"] == 4
+        assert res_long_term[0]["recommendation"] == "SELL"
+
+
 
 # ---------------------------------------------------------------------------
 # generate_overall_portfolio_analysis — rule-based path

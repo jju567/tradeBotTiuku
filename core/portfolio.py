@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import config
 
 logger = logging.getLogger(__name__)
@@ -75,8 +75,8 @@ class PortfolioManager:
         logger.info(f"Set total_equity_override to {total_equity:,.2f} EUR")
 
 
-    def set_holding(self, symbol: str, quantity: int, avg_price: float, target_weight: float = 0.10):
-        """Adds or updates a stock holding in the portfolio."""
+    def set_holding(self, symbol: str, quantity: int, avg_price: float, target_weight: Optional[float] = None):
+        """Adds or updates a stock holding in the portfolio while preserving existing metadata (such as hodl, name)."""
         symbol = symbol.upper()
         if "holdings" not in self.portfolio_state:
             self.portfolio_state["holdings"] = {}
@@ -86,12 +86,16 @@ class PortfolioManager:
                 del self.portfolio_state["holdings"][symbol]
                 logger.info(f"Removed holding {symbol} from portfolio.")
         else:
-            self.portfolio_state["holdings"][symbol] = {
+            existing = self.portfolio_state["holdings"].get(symbol, {})
+            updated = dict(existing)
+            effective_target_weight = target_weight if target_weight is not None else existing.get("target_weight", 0.10)
+            updated.update({
                 "quantity": int(quantity),
                 "avg_price": round(avg_price, 2),
-                "target_weight": round(target_weight, 4),
-            }
-            logger.info(f"Updated holding {symbol}: {quantity} pcs @ {avg_price:.2f} EUR (target weight: {target_weight*100:.1f}%)")
+                "target_weight": round(float(effective_target_weight), 4),
+            })
+            self.portfolio_state["holdings"][symbol] = updated
+            logger.info(f"Updated holding {symbol}: {quantity} pcs @ {avg_price:.2f} EUR (target weight: {updated['target_weight']*100:.1f}%)")
 
         self.save_state()
 

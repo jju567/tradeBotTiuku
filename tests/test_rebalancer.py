@@ -145,6 +145,58 @@ class TestCalculateRebalancePlan:
         sell_trades = [t for t in result["proposed_trades"] if t["action"] == "SELL"]
         assert len(sell_trades) >= 1
 
+    def test_sell_recommendation_does_not_sell_when_below_target_weight(self, tmp_path, monkeypatch):
+        """When holding is below target weight (diff_val > 0), a SELL recommendation must not propose a sell trade."""
+        monkeypatch.setattr("config.REBALANCE_PROPOSALS_FILE", tmp_path / "proposals.json")
+        monkeypatch.setattr("config.TARGET_CASH_PERCENT", 0.05)
+        monkeypatch.setattr("config.MAX_POSITION_WEIGHT", 0.20)
+        monkeypatch.setattr("config.MIN_TRADE_EUR", 200.0)
+
+        # 1,000 EUR holding in a 10,000 EUR equity portfolio
+        holdings = {
+            "TEST.HE": make_holding_entry(
+                "TEST.HE",
+                market_value=1000.0,
+                current_price=10.0,
+                quantity=100,
+                weight=0.10,
+            )
+        }
+        portfolio = make_portfolio(total_equity=10000.0, cash_balance=500.0, holdings=holdings)
+        # Target weight 20% = 1,900 EUR target_val, diff_val = +900 EUR
+        ai_evals = [make_ai_eval("TEST.HE", score=4, recommendation="SELL", target_weight=0.20, current_price=10.0)]
+
+        result = self.rebalancer.calculate_rebalance_plan(portfolio, ai_evals)
+        sell_trades = [t for t in result["proposed_trades"] if t["action"] == "SELL" and t["symbol"] == "TEST.HE"]
+        assert sell_trades == []
+
+    def test_sell_recommendation_trims_excess_when_above_target_weight(self, tmp_path, monkeypatch):
+        """When holding is above target weight (diff_val < 0), a SELL recommendation trims the excess down to target."""
+        monkeypatch.setattr("config.REBALANCE_PROPOSALS_FILE", tmp_path / "proposals.json")
+        monkeypatch.setattr("config.TARGET_CASH_PERCENT", 0.05)
+        monkeypatch.setattr("config.MAX_POSITION_WEIGHT", 0.20)
+        monkeypatch.setattr("config.MIN_TRADE_EUR", 200.0)
+
+        # 3,000 EUR holding
+        holdings = {
+            "TEST.HE": make_holding_entry(
+                "TEST.HE",
+                market_value=3000.0,
+                current_price=10.0,
+                quantity=300,
+                weight=0.30,
+            )
+        }
+        portfolio = make_portfolio(total_equity=10000.0, cash_balance=500.0, holdings=holdings)
+        # Target weight 10% = 950 EUR target_val, diff_val = -2,050 EUR
+        ai_evals = [make_ai_eval("TEST.HE", score=4, recommendation="SELL", target_weight=0.10, current_price=10.0)]
+
+        result = self.rebalancer.calculate_rebalance_plan(portfolio, ai_evals)
+        sell_trades = [t for t in result["proposed_trades"] if t["action"] == "SELL" and t["symbol"] == "TEST.HE"]
+        assert len(sell_trades) == 1
+        assert sell_trades[0]["quantity"] == 205
+        assert sell_trades[0]["trade_value"] == 2050.0
+
     def test_hodl_position_skipped_from_sell_proposals(self, tmp_path, monkeypatch):
         monkeypatch.setattr("config.REBALANCE_PROPOSALS_FILE", tmp_path / "proposals.json")
         monkeypatch.setattr("config.TARGET_CASH_PERCENT", 0.05)

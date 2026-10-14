@@ -122,6 +122,25 @@ class TestSetHolding:
         h = default_manager.portfolio_state["holdings"]["TEST.HE"]
         assert h["target_weight"] == pytest.approx(0.15)
 
+    def test_set_holding_preserves_hodl_and_metadata(self, default_manager):
+        """Updating quantity/price must preserve existing metadata like hodl and custom target_weight."""
+        # Initialize holding with HODL protection, custom name, and 25% target weight
+        default_manager.portfolio_state["holdings"]["QDVE.DE"] = {
+            "quantity": 100,
+            "avg_price": 20.0,
+            "target_weight": 0.25,
+            "hodl": True,
+            "name": "iShares S&P 500 Info Tech",
+        }
+        # CLI call: only passes symbol, quantity, price
+        default_manager.set_holding("QDVE.DE", 150, 22.0)
+        h = default_manager.portfolio_state["holdings"]["QDVE.DE"]
+        assert h["quantity"] == 150
+        assert h["avg_price"] == pytest.approx(22.0)
+        assert h["target_weight"] == pytest.approx(0.25)
+        assert h["hodl"] is True
+        assert h["name"] == "iShares S&P 500 Info Tech"
+
     def test_persists_holding_to_disk(self, tmp_portfolio):
         pf, hf = tmp_portfolio
         mgr = PortfolioManager(portfolio_file=pf, history_file=hf)
