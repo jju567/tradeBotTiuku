@@ -1129,9 +1129,14 @@ class MasterLiveTradingDaemon:
                 f"🏛️ [TAX OPTIMIZATION: AOT ACTIVE] High-turnover P12 capital reduced to 5,000 € (slot 1,000 €) "
                 f"to minimize capital gains tax drag. Long-holding portfolios P5/P9/P10/P11 boosted to 11,250 €."
             )
+        elif tax_profile == "OST":
+            logger.info(
+                f"🏛️ [TAX PROFILE: OST ACTIVE] Finnish Equity Savings Account mode active (0% capital gains tax within envelope). "
+                f"0.50% FX conversion cost on US stocks, no dividend-paying US stocks permitted."
+            )
         else:
             logger.info(
-                f"🏢 [TAX OPTIMIZATION: OY ACTIVE] Full compounding mode active. P12 operates at 10,000 € capital."
+                f"🏢 [TAX OPTIMIZATION: OY ACTIVE] Full compounding mode active. All portfolios operate at 10,000 € capital."
             )
 
         # Task 3 Architectural Note (P1_Base, P2_Fast_Cycle, P3_Diamond_Hands):
@@ -2593,7 +2598,7 @@ def main() -> None:
     parser.add_argument("--reset-portfolios", action="store_true", help="Reset all portfolios to 10,000 EUR starting capital")
     parser.add_argument("--portfolio", type=str, default=None, help="Optionally run or test a single portfolio by ID")
     parser.add_argument("--sync-universe", action="store_true", help="Force an immediate dynamic universe scan for new listings from Nordnet")
-    parser.add_argument("--tax-profile", type=str, choices=["AOT", "OY"], default=None, help="Tax structure ('AOT' for personal account with P12 cap, 'OY' for corporate full compounding)")
+    parser.add_argument("--tax-profile", type=str, choices=["AOT", "OY", "OST"], default=None, help="Tax structure ('AOT' for taxable account, 'OY' for corporate account, 'OST' for Finnish Equity Savings Account)")
 
     args = parser.parse_args()
 

@@ -80,18 +80,19 @@ def test_portfolios_yaml_structure():
     # Specific checks for P13_Live_Candidate
     assert "P13_Live_Candidate" in portfolios
     p13 = portfolios["P13_Live_Candidate"]
-    assert p13["description"] == "Live 10k € Fundamental & Quality Portfolio (Manual EOD Execution)"
+    assert p13["description"] == "Live 10k € Fundamental OST Portfolio (Manual EOD Execution)"
     assert p13["start_cash"] == 10000
     assert "sub_strategies" in p13
-    assert "core_p5_nordic_quality" in p13["sub_strategies"]
-    assert "core_p8_quality_growth" in p13["sub_strategies"]
+    assert "core_nordic_quality" in p13["sub_strategies"]
+    assert "satellite_us_growth" in p13["sub_strategies"]
     assert "satellite_p12_momentum" not in p13["sub_strategies"]
-    assert p13["sub_strategies"]["core_p5_nordic_quality"]["allocated_capital"] == 5000
-    assert p13["sub_strategies"]["core_p5_nordic_quality"]["slots"] == 2
-    assert p13["sub_strategies"]["core_p5_nordic_quality"]["slot_size"] == 2500
-    assert p13["sub_strategies"]["core_p8_quality_growth"]["allocated_capital"] == 5000
-    assert p13["sub_strategies"]["core_p8_quality_growth"]["slots"] == 2
-    assert p13["sub_strategies"]["core_p8_quality_growth"]["slot_size"] == 2500
+    assert p13["sub_strategies"]["core_nordic_quality"]["allocated_capital"] == 7000
+    assert p13["sub_strategies"]["core_nordic_quality"]["slots"] == 3
+    assert p13["sub_strategies"]["core_nordic_quality"]["slot_size"] == 2300
+    assert p13["sub_strategies"]["satellite_us_growth"]["allocated_capital"] == 3000
+    assert p13["sub_strategies"]["satellite_us_growth"]["slots"] == 2
+    assert p13["sub_strategies"]["satellite_us_growth"]["slot_size"] == 1500
+    assert any("Dividend_Yield: 0.0" in r for r in p13["sub_strategies"]["satellite_us_growth"]["rules"])
     assert p13["execution_constraints"]["allowed_order_types"] == ["LIMIT"]
     assert p13["execution_constraints"]["market_regime_cash_buffer_pct"] == 40.0
 
@@ -99,12 +100,12 @@ def test_portfolios_yaml_structure():
     cfg13 = PortfolioConfig.from_dict("P13_Live_Candidate", p13)
     assert cfg13.portfolio_id == "P13_Live_Candidate"
     assert cfg13.start_cash == 10000.0
-    assert cfg13.slots == 4  # 2 quality + 2 growth
+    assert cfg13.slots == 5  # 3 core + 2 satellite
     assert cfg13.order_type == "LIMIT"
     assert cfg13.limit_buffer_pct == pytest.approx(0.002)
     assert cfg13.market_regime_cash_buffer_pct == pytest.approx(0.40)
-    assert "core_p5_nordic_quality" in cfg13.sub_strategies
-    assert "core_p8_quality_growth" in cfg13.sub_strategies
+    assert "core_nordic_quality" in cfg13.sub_strategies
+    assert "satellite_us_growth" in cfg13.sub_strategies
 
 
 

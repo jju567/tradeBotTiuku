@@ -1,5 +1,5 @@
 # System Global Configuration
-account_tax_profile: "AOT"          # "AOT" (Henkilökohtainen AOT: P12 allokaatio 5k, verokiilan minimointi) tai "OY" (Yritys/Vakuutuskuori: P12 10k, vapaa kasvu)
+account_tax_profile: "OST"          # "OST" (Osakesäästötili: 0% myyntivoittovero, 0.50% US FX-kulu, US-osinkokielto lähdeverojen vuoksi) tai "AOT" tai "OY"
 order_routing:
   enforce_limit_only: true         # Ehdoton Market-toimeksiantojen kielto (Market Impact / Slippage -suoja)
   limit_buffer_pct: 0.002          # Max +0.2% edellisen kynttilän päätöskurssiin / VWAP-hintaan
@@ -137,27 +137,28 @@ portfolios:
     max_rsi_14: 80.0               # Estä osto jos RSI14 > 80 (Overbought filter)
 
   P13_Live_Candidate:
-    description: "Live 10k € Fundamental & Quality Portfolio (Manual EOD Execution)"
+    description: "Live 10k € Fundamental OST Portfolio (Manual EOD Execution)"
     start_cash: 10000
     sub_strategies:
-      core_p5_nordic_quality:
-        allocated_capital: 5000
-        slots: 2
-        slot_size: 2500
+      core_nordic_quality:
+        allocated_capital: 7000
+        slots: 3
+        slot_size: 2300
         rules:
           - "Nordic_Quality_Criteria"
           - "Stop_Loss: -12.0%"
           - "Partial_TP: 50% at +25.0%"
-      core_p8_quality_growth:
-        allocated_capital: 5000
+      satellite_us_growth:
+        allocated_capital: 3000
         slots: 2
-        slot_size: 2500
+        slot_size: 1500
         rules:
-          - "Quality_Growth_Criteria"
-          - "Stop_Loss: -12.0%"
+          - "US_Microcap_Growth"
+          - "Dividend_Yield: 0.0" # STRICT: No dividends allowed on OST for US stocks
+          - "Stop_Loss: -8.0%"  # Tighter stop for higher beta US stocks
           - "Partial_TP: 50% at +25.0%"
     execution_constraints:
       allowed_order_types: ["LIMIT"]
-      market_regime_cash_buffer_pct: 40.0 # Activates in CHOPPY/BEAR regimes
+      market_regime_cash_buffer_pct: 40.0 # Activates in CHOPPY/BEAR
 
 
