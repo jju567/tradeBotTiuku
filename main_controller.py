@@ -411,17 +411,55 @@ class PortfolioConfig:
     limit_buffer_pct: float = 0.002
     time_in_force: str = "FOK_15MIN"
     account_tax_profile: str = "AOT"
+    description: Optional[str] = None
+    sub_strategies: Dict[str, Any] = field(default_factory=dict)
+    execution_constraints: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, pid: str, data: Dict[str, Any]) -> "PortfolioConfig":
         adv_val = float(data.get("min_adv_20d", data.get("min_adv", 50000.0)))
+        sub_strats = data.get("sub_strategies", {})
+        exec_constraints = data.get("execution_constraints", {})
+
+        # Compute default slots from sub_strategies if not explicitly present
+        if "slots" in data:
+            slots_val = int(data["slots"])
+        elif sub_strats:
+            slots_val = sum(int(s.get("slots", 0)) for s in sub_strats.values())
+        else:
+            slots_val = 10
+
+        strat_val = data.get("strategy")
+        if not strat_val:
+            strat_val = "Hybrid Core-Satellite" if sub_strats else "Profile B"
+
+        # Check market_regime_cash_buffer_pct in execution_constraints or top-level
+        cash_buf = exec_constraints.get("market_regime_cash_buffer_pct")
+        if cash_buf is None:
+            cash_buf = float(data.get("market_regime_cash_buffer_pct", 0.40))
+        else:
+            cash_buf = float(cash_buf)
+            if cash_buf > 1.0:
+                cash_buf = cash_buf / 100.0
+
+        order_types = exec_constraints.get("allowed_order_types")
+        order_type_val = order_types[0] if (order_types and isinstance(order_types, list)) else str(data.get("order_type", "LIMIT"))
+
+        limit_buf = exec_constraints.get("max_slippage_allowance_pct")
+        if limit_buf is not None:
+            limit_buf = float(limit_buf)
+            if limit_buf > 0.05:
+                limit_buf = limit_buf / 100.0
+        else:
+            limit_buf = float(data.get("limit_buffer_pct", 0.002))
+
         return cls(
             portfolio_id=pid,
-            strategy=data.get("strategy", "Profile B"),
+            strategy=strat_val,
             dead_money_days=int(data.get("dead_money_days", 180)),
             min_adv=adv_val,
             min_adv_20d=adv_val,
-            slots=int(data.get("slots", 10)),
+            slots=slots_val,
             start_cash=float(data.get("start_cash", 10000.0)),
             regions=data.get("regions", ["FI", "SE", "US"]),
             extra_filter=data.get("extra_filter"),
@@ -443,12 +481,16 @@ class PortfolioConfig:
             stop_loss_pct=float(data["stop_loss_pct"]) if data.get("stop_loss_pct") is not None else None,
             us_stop_loss_pct=float(data.get("us_stop_loss_pct", 0.08)),
             nordic_stop_loss_pct=float(data.get("nordic_stop_loss_pct", 0.12)),
-            market_regime_cash_buffer_pct=float(data.get("market_regime_cash_buffer_pct", 0.40)),
-            order_type=str(data.get("order_type", "LIMIT")),
-            limit_buffer_pct=float(data.get("limit_buffer_pct", 0.002)),
+            market_regime_cash_buffer_pct=cash_buf,
+            order_type=order_type_val,
+            limit_buffer_pct=limit_buf,
             time_in_force=str(data.get("time_in_force", "FOK_15MIN")),
             account_tax_profile=str(data.get("account_tax_profile", "AOT")),
+            description=data.get("description"),
+            sub_strategies=sub_strats,
+            execution_constraints=exec_constraints,
         )
+
 
 
 

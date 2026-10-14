@@ -135,3 +135,31 @@ portfolios:
     require_nlp_clean: true        # Must bypass if NLP verdict is REJECT
     max_3d_runup_pct: 0.40         # Estä osto jos 3 päivän kumulatiivinen nousu > +40% (Exhaustion filter)
     max_rsi_14: 80.0               # Estä osto jos RSI14 > 80 (Overbought filter)
+
+  P13_Live_Candidate:
+    description: "Pre-live 10k € Hybrid Core-Satellite Incubation"
+    start_cash: 10000
+    sub_strategies:
+      core_p5_nordic:
+        allocated_capital: 7000
+        slots: 3
+        slot_size: 2300
+        rules:
+          - "Nordic_Quality_Criteria"
+          - "Stop_Loss: -12.0%"
+          - "Partial_TP: 50% at +25.0%"
+      satellite_p12_momentum:
+        allocated_capital: 3000
+        slots: 2
+        slot_size: 1500
+        rules:
+          - "Momentum_Breakout_Criteria"
+          - "Min_ADV_20d: 500000"
+          - "Max_3d_Runup: 0.40"
+          - "Max_RSI_14: 80"
+          - "Trailing_Stop: 6.0%"
+    execution_constraints:
+      allowed_order_types: ["LIMIT"]
+      max_slippage_allowance_pct: 0.2
+      market_regime_cash_buffer_pct: 40.0 # Activates in CHOPPY regime
+

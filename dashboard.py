@@ -952,6 +952,7 @@ with st.sidebar:
         "P10_Micro_Sniper",
         "P11_Meta_Consensus",
         "P12_Momentum_Breakout",
+        "P13_Live_Candidate",
     ]
     portfolio_meta_map = {}
     if PORTFOLIOS_CONFIG_YAML.exists():
