@@ -2119,30 +2119,21 @@ class MasterLiveTradingDaemon:
                 time.sleep(60)
 
     def run_intraday_p12_tick(self) -> None:
-        """Executes a single intraday check for P12 Momentum Breakout if markets are open."""
-        try:
-            from intraday_p12_scanner import IntradayP12Scanner
-            scanner = IntradayP12Scanner(
-                portfolios_dir=PORTFOLIOS_DIR,
-                config_path=self.config_yaml_path,
-                universe_path=self.market_engine.clean_universe_path,
-            )
-            scanner.run()
-        except Exception as e:
-            logger.error(f"Virhe intraday P12 -skannauksessa: {e}")
+        """DECOMMISSIONED: Intraday scanning is disabled. Retained for backward compatibility."""
+        logger.info("ℹ️ Intraday P12 scanning is decommissioned. All analysis operates purely End-Of-Day (EOD).")
 
     def run_scheduler(
         self,
         daily_at: str = "23:05",
         interval_hours: Optional[float] = None,
         run_immediately: bool = True,
-        intraday_p12_minutes: int = 30,
+        intraday_p12_minutes: Optional[int] = None,
     ) -> None:
         """Runs the multi-portfolio engine on an autonomous schedule using Python's schedule library.
 
         Designed for 24/7 background deployment on Linux servers (e.g. systemd).
         - Executes daily post-market close sync at daily_at (Nordic + US markets close by 23:00).
-        - Executes intraday P12 Momentum Breakout check every intraday_p12_minutes (default: 30m) during market hours.
+        - Purely End-Of-Day (EOD) analysis. Intraday market-hours scanning is decommissioned.
         """
         if run_immediately:
             logger.info("🚀 [Scheduler] Suoritetaan välitön alkukierros käynnistyksen yhteydessä...")
@@ -2154,15 +2145,11 @@ class MasterLiveTradingDaemon:
         logger.info(f"⏰ [Scheduler] Ajastin aktivoitu: Päivittäinen iltasykli asetettu klo {daily_at} (järjestelmäaika)")
         schedule.every().day.at(daily_at).do(self.run_cycle)
 
-        if intraday_p12_minutes and intraday_p12_minutes > 0:
-            logger.info(f"⏰ [Scheduler] Ajastettu P12 Intraday Momentum Breakout -tarkistus {intraday_p12_minutes} minuutin välein (markkina-aikoina)")
-            schedule.every(intraday_p12_minutes).minutes.do(self.run_intraday_p12_tick)
-
         if interval_hours and interval_hours > 0:
             logger.info(f"⏰ [Scheduler] Lisätty jaksottainen ajo {interval_hours} tunnin välein")
             schedule.every(interval_hours).hours.do(self.run_cycle)
 
-        logger.info("⏳ [Scheduler] Valmiustilassa. Odotetaan ajastettua ajoa (tarkistus 30s välein)...")
+        logger.info("⏳ [Scheduler] Valmiustilassa. Odotetaan ajastettua ilta-ajoa (tarkistus 30s välein)...")
         while True:
             try:
                 schedule.run_pending()

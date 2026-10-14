@@ -12,11 +12,11 @@
 - **Yhdistetty Pikakäynnistys (UI + Paper Trader)**:
   - `start_all.bat` tai `.\start_all.ps1` tai `python start_all.py`
   - Käynnistää sekä Streamlit-hallintapaneelin että reaaliaikaisen Paper Trader -daemonin yhdellä komennolla ja hallitsee molempien prosessien siistiä sammutusta (`Ctrl+C`).
-  - *Oletustila (`--schedule`)*: Sisäänrakennettu koodiajastin ajaa päivittäisen iltasyklin klo `23:05` sekä `P12_Momentum_Breakout`-intraday-tarkistuksen 30 minuutin välein pörssien aukioloaikoina (Nordic 10:00–18:30, US 16:30–23:00 Suomen aikaa) ilman erillisiä cron-ajastuksia.
-  - *Parametrit*: `--schedule` (oletus), `--daily-at <HH:MM>` (oletus: 23:05), `--intraday-p12-minutes <m>` (oletus: 30), `--loop --interval-hours <h>` (perinteinen silmukkatila), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8502).
+  - *Oletustila (`--schedule`)*: Sisäänrakennettu koodiajastin ajaa päivittäisen iltasyklin klo `23:05` markkinoiden sulkeuduttua (Nordic & US EOD) ilman erillisiä cron-ajastuksia. Kaikki analyysi tapahtuu puhtaasti End-Of-Day (EOD) -pohjaisesti ilman intraday-markkinaskannausta.
+  - *Parametrit*: `--schedule` (oletus), `--daily-at <HH:MM>` (oletus: 23:05), `--loop --interval-hours <h>` (perinteinen silmukkatila), `--run-once` (yksi ajo), `--ui-only` (vain UI), `--daemon-only` (vain daemon), `--port <port>` (oletus: 8502).
   - *Atomiset JSON-tallennukset (`_atomic_write_json` & `_safe_load_json_list`)*: Kaikki salkkujen tila- ja historiatiedostot (`*_state.json`, `*_history.json`) kirjoitetaan atomisesti PID-kohtaisen väliaikaistiedoston ja `os.replace`-kutsun kautta sekä suojataan automaattisella regex-elvytyksellä, mikä estää rinnakkaisten luku-/kirjoitusoperaatioiden aiheuttamat JSON-katkeamiset ja historian nollautumiset.
 - **Pelkkä Käyttöliittymä**: `streamlit run dashboard.py --server.port 8502`
-- **Pelkkä Paper Trader Daemon (Koodiajastin / Linux)**: `python main_controller.py --schedule --daily-at 23:05 --intraday-p12-minutes 30`
+- **Pelkkä Paper Trader Daemon (Koodiajastin / Linux)**: `python main_controller.py --schedule --daily-at 23:05`
 - 🐧 **Linux-palvelinasennus & systemd-daemon**: Täydellinen asennusopas ja valmiit palvelupohjat löytyvät dokumentista: [docs/LINUX_DAEMON_OHJEET.md](docs/LINUX_DAEMON_OHJEET.md).
 - **Saumaton Taustapäivitys Ilman Harmaantumista (`st.fragment` & Anti-Dimming CSS)**: Hyödyntää moduulitason staattisia `@st.fragment`-kääreitä ja räätälöityä CSS-koodia, joka estää Streamlitin himmenemisen / latauspeitteen automaattisen päivityksen aikana.
 - **Selkeät Välilehdet**:
@@ -225,10 +225,10 @@ Juuritason päämoottori reaaliaikaiseen 13 rinnakkaisen paperisalkun walk-forwa
     10. `P10_Micro_Sniper`: Profile B, skaalattu kitkatestien perusteella 5 slottiin (2,000 €/osto, min ADV 150k) Nordnetin minimipalkkioiden syönnin eliminoimiseksi. Sisältää **hallitun siirtymärajoituksen (graceful transition limit)**: olemassa olevat 20 positiota säilyttävät täyden myyntisuojan (stop-lossit ja exitit), mutta uusia ostoja ei sallita ennen kuin positioiden määrä putoaa luonnollisesti alle 5:n.
     11. `P11_Meta_Consensus`: Meta_Consensus, 5 slottia (2,000 €/osto). Ei skannaa raakamarkkinaa, vaan treidaa P1–P10 -perussalkkujen reaaliaikaista konsensusta: vaatii sisääntuloon Conviction Scoren $\ge 8$ (⭐⭐⭐⭐+) sekä tagit `Institutional` (+1) JA (`Deep Value` (+2) TAI `Quality Growth` (+1)). **Globaali NLP-turvasulku**: vaikka vakaumuspisteet täyttyisivät, osto estetään tiukasti (`BUY BLOCKED`), mikäli osakkeella on aktiivinen globaali NLP `REJECT` -status (esim. diluutio- tai petosriski `nlp_decisions_archive.csv` / uutistutkassa). Myy automaattisesti, jos vakaumuspistemäärä putoaa alle 6 pisteen (`CONVICTION_DROP`) tai suojastopit laukeavat.
     12. `P12_Momentum_Breakout`: Momentum_Breakout, 5 slottia (2,000 €/osto tai AOT-tilillä 1,000 €/osto). Ketterä satelliittisalkku äärimmäisten volyymi- ja kurssibreakout-anomalioiden nappaamiseen (esim. NANEXA.ST, ELON.ST) ilman tase- tai kassariittävyysrajoitteita. Sisääntuloehdot: Päivävaihto $\ge 3.0 \times$ 20d ADV ja päivän päätöskurssin muutos $\ge +2.0\%$, eikä aktiivista NLP REJECT -leimaa. Sisältää **kymmenkertaistetun ADV-likviditeettisuojan (min ADV 500 000 USD/EUR)**, mikä pudottaa toimeksiannon markkinavaikutuksen alle 0,5 %:iin päivävaihdosta. Sisältää myös **Exhaustion-suodattimen** (`max_3d_runup_pct: 0.40`, estää ostot jos 3 päivän kumulatiivinen nousu $> +40\%$) ja **Overbought-suodattimen** (`max_rsi_14: 80.0`, estää ostot huippuylikuumenemiseen), sekä sisäänrakennetun **käänteissplittisuojan** (`Ticker.splits` -kurssikorjaus, uutiskielto ja parabolinen $> +300\%$ sanity guard). Tiukka 6.0 % liukuva trailing stop huippukurssista (`Peak Price`), 21 päivän maksimipitoaika (momentum stall exit) ja osakkeiden järjestys anomalialuvun (`Volume Surge * Day Change %`) mukaan.
-    13. `P13_Live_Candidate`: Pre-live 10k € Hybrid Core-Satellite Incubation. Konsolidoitu paperisalkku tulevan live-tilin tarkkaan replikointiin. Yhdistää kaksi osastrategiaa:
-        - **Core (`core_p5_nordic`)**: 7,000 € allokoitu pääoma, 3 slottia (2,300 €/slotti), pohjoismaiset laatukriteerit, -12.0 % Stop-Loss ja osittainen TP (+25.0 % kohdalla 50 % myynti).
-        - **Satellite (`satellite_p12_momentum`)**: 3,000 € allokoitu pääoma, 2 slottia (1,500 €/slotti), Momentum Breakout -kriteerit, min ADV 500k, max 3d runup 40 %, max RSI-14 80, ja tiukka 6.0 % trailing stop.
-        - **Execution Constraints**: Sallitut toimeksiantotyypit `["LIMIT"]`, max slippage allowance 0.2 %, ja 40.0 % käteispuskuri CHOPPY-markkinaregiimissä.
+    13. `P13_Live_Candidate`: Live 10k € Fundamental & Quality Portfolio (Manual EOD Execution). Konsolidoitu salkku manuaaliseen EOD-toteutukseen viikkojen/kuukausien pitoajoilla. Allokoi täyden 10 000 € pääoman puoliksi kahden hitaan pohjoismaisen laatu- ja kasvustrategian kesken:
+        - **Core Quality (`core_p5_nordic_quality`)**: 5 000 € allokoitu pääoma, 2 slottia (2 500 €/slotti), pohjoismaiset laatukriteerit, -12.0 % Stop-Loss ja osittainen TP (+25.0 % kohdalla 50 % myynti).
+        - **Core Quality Growth (`core_p8_quality_growth`)**: 5 000 € allokoitu pääoma, 2 slottia (2 500 €/slotti), Quality Growth -kriteerit, -12.0 % Stop-Loss ja osittainen TP (+25.0 % kohdalla 50 % myynti).
+        - **Execution Constraints**: Sallitut toimeksiantotyypit `["LIMIT"]`, ja 40.0 % käteispuskuri CHOPPY/BEAR-markkinaregiimissä.
 - **🛡️ Smart Routing & Ehdoton Limit-Pakotus (`order_routing`)**:
   - Tiuku-botilta on kielletty Market-tyyppiset toimeksiannot kokonaan (`enforce_limit_only: true`).
   - Kaikkiin ostoihin asetetaan LIMIT-toimeksianto: enintään edellisen kynttilän päätöskurssi $+0,2\ \%$ tai suoraan VWAP-hinta (`limit_buffer_pct: 0.002`).
@@ -293,14 +293,10 @@ python main_controller.py --reset-portfolios
 # Single-Stock Time Machine: Testaa Layer 2 -uutistutka historiallisilla tiedotteilla:
 python single_stock_news_backtest.py --ticker SEZI.ST --buy-date 2026-02-16
 
-# Autonominen koodiajastin (suositeltu tuotantoon: ajaa P12-intradayt 30 min välein markkina-aikoina ja iltasyklin klo 23:05 - EI CRONJOBEJA TARVITA):
-python main_controller.py --schedule --daily-at 23:05 --intraday-p12-minutes 30
+# Autonominen koodiajastin (suositeltu tuotantoon: ajaa iltasyklin klo 23:05 markkinoiden sulkeuduttua - EI CRONJOBEJA TARVITA):
+python main_controller.py --schedule --daily-at 23:05
 
-# Erillinen P12 Intraday -skanneri omassa koodiajastimessaan:
-python intraday_p12_scanner.py --loop --interval-minutes 30
-
-# Aja P12-skanneri kerran simulaatiotilassa:
-python intraday_p12_scanner.py --check-only
+# Huom: P12 Intraday -skanneri on poistettu käytöstä (decommissioned), kaikki analyysi tapahtuu EOD-pohjaisesti.
 ```
 
 ### 7. Yksikkötestit

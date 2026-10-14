@@ -1,5 +1,9 @@
 """
-intraday_p12_scanner.py - Standalone Intraday Scanner for P12_Momentum_Breakout.
+DECOMMISSIONED: Intraday P12 Scanner is disabled as tradeBotTiuku has pivoted
+to 100% low-frequency fundamental & quality investing (Manual EOD execution).
+Intraday scanning is no longer executed.
+
+intraday_p12_scanner.py - Standalone Intraday Scanner for P12_Momentum_Breakout (DECOMMISSIONED).
 
 Separates the execution of the momentum breakout strategy from the nightly batch process.
 Runs strictly during live market hours to eliminate overnight gap slippage.
@@ -294,6 +298,7 @@ class IntradayP12Scanner:
         self.force_open = force_open
         self.check_only = check_only
         self.tax_profile = tax_profile.upper() if tax_profile else None
+        self.is_decommissioned = True
 
         self.portfolio_id = "P12_Momentum_Breakout"
         self.state_file = self.portfolios_dir / f"portfolio_{self.portfolio_id}_state.json"
@@ -976,6 +981,10 @@ class IntradayP12Scanner:
 
     def run(self) -> Tuple[int, int]:
         """Main execution flow for an intraday scanning tick."""
+        if getattr(self, "is_decommissioned", True) and not getattr(self, "force_open", False):
+            logger.warning("⚠️ [DECOMMISSIONED] Intraday P12 scanner is disabled. All analysis operates purely End-Of-Day (EOD).")
+            return 0, 0
+
         now_h = get_helsinki_time()
         time_str = now_h.strftime("%Y-%m-%d %H:%M:%S %Z")
         nordic_open = is_nordic_market_open(now_h) or self.force_open
@@ -1004,52 +1013,13 @@ class IntradayP12Scanner:
         return sells, buys
 
     def run_loop(self, interval_minutes: int = 30) -> None:
-        """Runs the intraday scanner continuously in an autonomous in-code schedule loop."""
-        import schedule
-        logger.info(f"⏰ [P12 In-Code Scheduler] Käynnistetään jatkuva tarkistus {interval_minutes} minuutin välein...")
-        # Run first tick immediately
-        self.run()
-        schedule.every(interval_minutes).minutes.do(self.run)
-        logger.info("⏳ [P12 In-Code Scheduler] Ajastin aktiivinen. Odotetaan seuraavaa tarkistusta...")
-        while True:
-            try:
-                schedule.run_pending()
-                time.sleep(30)
-            except KeyboardInterrupt:
-                logger.info("🛑 [P12 Scheduler] Ajastin pysäytetty käyttäjän toimesta.")
-                break
-            except Exception as e:
-                logger.error(f"❌ [P12 Scheduler] Virhe silmukassa: {e}. Yritetään uudelleen 60s kuluttua...")
-                time.sleep(60)
+        """Runs the intraday scanner continuously in an autonomous in-code schedule loop (DECOMMISSIONED)."""
+        logger.warning("⚠️ [DECOMMISSIONED] Intraday P12 scanner is decommissioned. No schedule loop will be started.")
+        print("⚠️ [DECOMMISSIONED] Intraday P12 scanner is decommissioned. All analysis operates purely End-Of-Day (EOD).")
+        return
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="tradeBotTiuku Standalone Intraday P12 Momentum Breakout Scanner")
-    parser.add_argument("--check-only", action="store_true", help="Run in read-only simulation mode (no actual state changes)")
-    parser.add_argument("--force-market-open", action="store_true", help="Bypass market hours check for off-hours testing")
-    parser.add_argument("--loop", action="store_true", help="Run continuously in an autonomous in-code schedule loop")
-    parser.add_argument("--interval-minutes", type=int, default=30, help="Interval in minutes for in-code schedule loop (default: 30)")
-    parser.add_argument("--portfolios-dir", type=str, default=str(DEFAULT_PORTFOLIOS_DIR), help="Path to portfolios directory")
-    parser.add_argument("--universe-path", type=str, default=str(DEFAULT_CLEAN_UNIVERSE_CSV), help="Path to clean microcap universe CSV")
-    parser.add_argument("--config-path", type=str, default=str(DEFAULT_PORTFOLIOS_YAML), help="Path to portfolios_config.yaml")
-    parser.add_argument("--tax-profile", type=str, choices=["AOT", "OY"], default=None, help="Tax structure ('AOT' for personal account with P12 cap, 'OY' for corporate full compounding)")
-
-    args = parser.parse_args()
-
-    scanner = IntradayP12Scanner(
-        portfolios_dir=Path(args.portfolios_dir),
-        config_path=Path(args.config_path),
-        universe_path=Path(args.universe_path),
-        force_open=args.force_market_open,
-        check_only=args.check_only,
-        tax_profile=args.tax_profile,
-    )
-
-    if args.loop:
-        scanner.run_loop(interval_minutes=args.interval_minutes)
-    else:
-        scanner.run()
-
-
-if __name__ == "__main__":
-    main()
+    logger.warning("⚠️ [DECOMMISSIONED] Intraday P12 Scanner is decommissioned. tradeBotTiuku has pivoted to low-frequency fundamental & quality investing (Manual EOD execution).")
+    print("⚠️ [DECOMMISSIONED] Intraday P12 Scanner is decommissioned. tradeBotTiuku has pivoted to low-frequency fundamental & quality investing (Manual EOD execution).")
+    return

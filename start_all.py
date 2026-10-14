@@ -73,7 +73,7 @@ def main() -> None:
         "--intraday-p12-minutes",
         type=int,
         default=30,
-        help="Interval in minutes for intraday P12 scans during market hours (default: 30)",
+        help="DEPRECATED: Intraday scanning decommissioned. Analysis operates purely End-Of-Day (EOD)",
     )
     parser.add_argument(
         "--sync-universe",
@@ -108,7 +108,7 @@ def main() -> None:
             elif args.loop:
                 mode_desc = f"silmukassa ({args.interval_hours}h välein)"
             else:
-                mode_desc = f"koodiajastimella (iltasykli klo {args.daily_at} + P12 intraday {args.intraday_p12_minutes}m välein)"
+                mode_desc = f"koodiajastimella (iltasykli klo {args.daily_at})"
             print(f"🤖 [2/2] Käynnistetään Paper Trader Daemon ({mode_desc})...")
             daemon_cmd = [sys.executable, str(BASE_DIR / "main_controller.py")]
             if args.sync_universe:
@@ -121,7 +121,6 @@ def main() -> None:
                 daemon_cmd.extend([
                     "--schedule",
                     "--daily-at", str(args.daily_at),
-                    "--intraday-p12-minutes", str(args.intraday_p12_minutes),
                 ])
 
             p_daemon = subprocess.Popen(daemon_cmd, cwd=str(BASE_DIR))

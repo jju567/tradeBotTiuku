@@ -8,7 +8,7 @@ User=ubuntu
 WorkingDirectory=/home/ubuntu/tradeBotTiuku
 Environment="PATH=/home/ubuntu/tradeBotTiuku/venv/bin:/usr/local/bin:/usr/bin"
 EnvironmentFile=-/home/ubuntu/tradeBotTiuku/.env
-ExecStart=/home/ubuntu/tradeBotTiuku/venv/bin/python main_controller.py --schedule --daily-at 23:05 --intraday-p12-minutes 30
+ExecStart=/home/ubuntu/tradeBotTiuku/venv/bin/python main_controller.py --schedule --daily-at 23:05
 Restart=always
 RestartSec=30
 StandardOutput=journal

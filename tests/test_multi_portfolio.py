@@ -80,31 +80,31 @@ def test_portfolios_yaml_structure():
     # Specific checks for P13_Live_Candidate
     assert "P13_Live_Candidate" in portfolios
     p13 = portfolios["P13_Live_Candidate"]
-    assert p13["description"] == "Pre-live 10k € Hybrid Core-Satellite Incubation"
+    assert p13["description"] == "Live 10k € Fundamental & Quality Portfolio (Manual EOD Execution)"
     assert p13["start_cash"] == 10000
     assert "sub_strategies" in p13
-    assert "core_p5_nordic" in p13["sub_strategies"]
-    assert "satellite_p12_momentum" in p13["sub_strategies"]
-    assert p13["sub_strategies"]["core_p5_nordic"]["allocated_capital"] == 7000
-    assert p13["sub_strategies"]["core_p5_nordic"]["slots"] == 3
-    assert p13["sub_strategies"]["core_p5_nordic"]["slot_size"] == 2300
-    assert p13["sub_strategies"]["satellite_p12_momentum"]["allocated_capital"] == 3000
-    assert p13["sub_strategies"]["satellite_p12_momentum"]["slots"] == 2
-    assert p13["sub_strategies"]["satellite_p12_momentum"]["slot_size"] == 1500
+    assert "core_p5_nordic_quality" in p13["sub_strategies"]
+    assert "core_p8_quality_growth" in p13["sub_strategies"]
+    assert "satellite_p12_momentum" not in p13["sub_strategies"]
+    assert p13["sub_strategies"]["core_p5_nordic_quality"]["allocated_capital"] == 5000
+    assert p13["sub_strategies"]["core_p5_nordic_quality"]["slots"] == 2
+    assert p13["sub_strategies"]["core_p5_nordic_quality"]["slot_size"] == 2500
+    assert p13["sub_strategies"]["core_p8_quality_growth"]["allocated_capital"] == 5000
+    assert p13["sub_strategies"]["core_p8_quality_growth"]["slots"] == 2
+    assert p13["sub_strategies"]["core_p8_quality_growth"]["slot_size"] == 2500
     assert p13["execution_constraints"]["allowed_order_types"] == ["LIMIT"]
-    assert p13["execution_constraints"]["max_slippage_allowance_pct"] == 0.2
     assert p13["execution_constraints"]["market_regime_cash_buffer_pct"] == 40.0
 
     # Also check PortfolioConfig.from_dict mapping
     cfg13 = PortfolioConfig.from_dict("P13_Live_Candidate", p13)
     assert cfg13.portfolio_id == "P13_Live_Candidate"
     assert cfg13.start_cash == 10000.0
-    assert cfg13.slots == 5  # 3 core + 2 satellite
-    assert cfg13.strategy == "Hybrid Core-Satellite"
+    assert cfg13.slots == 4  # 2 quality + 2 growth
     assert cfg13.order_type == "LIMIT"
     assert cfg13.limit_buffer_pct == pytest.approx(0.002)
     assert cfg13.market_regime_cash_buffer_pct == pytest.approx(0.40)
-    assert "core_p5_nordic" in cfg13.sub_strategies
+    assert "core_p5_nordic_quality" in cfg13.sub_strategies
+    assert "core_p8_quality_growth" in cfg13.sub_strategies
 
 
 
@@ -599,13 +599,13 @@ def test_master_daemon_run_scheduler(tmp_path):
         # Simulate run_pending raising KeyboardInterrupt to exit loop cleanly
         mock_schedule.run_pending.side_effect = KeyboardInterrupt
 
-        daemon.run_scheduler(daily_at="23:05", run_immediately=True, intraday_p12_minutes=30)
+        daemon.run_scheduler(daily_at="23:05", run_immediately=True)
 
         assert daemon.run_cycle.call_count == 1
         mock_schedule.every.return_value.day.at.assert_called_with("23:05")
         mock_schedule.every.return_value.day.at.return_value.do.assert_called_with(daemon.run_cycle)
-        mock_schedule.every.assert_any_call(30)
-        mock_schedule.every.return_value.minutes.do.assert_called_with(daemon.run_intraday_p12_tick)
+        # Verify that intraday scanning is not scheduled
+        assert daemon.run_intraday_p12_tick not in [call.args[0] for call in mock_schedule.every.return_value.minutes.do.call_args_list]
 
 
 
