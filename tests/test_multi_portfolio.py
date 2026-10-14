@@ -72,7 +72,7 @@ def test_portfolios_yaml_structure():
     assert p12["slot_size"] == 2000
     assert p12["volume_surge_multiplier"] == 3.0
     assert p12["min_price_change_pct"] == 2.0
-    assert p12["min_adv_20d"] == 50000
+    assert p12["min_adv_20d"] == 500000
     assert p12["trailing_stop_pct"] == 0.06
     assert p12["max_holding_days"] == 21
     assert p12["require_nlp_clean"] is True
