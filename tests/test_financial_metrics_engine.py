@@ -125,3 +125,41 @@ def test_get_hard_financials_graceful_error_handling(mock_ticker):
     assert metrics["status"] == "ERROR"
     assert metrics["cash_and_equivalents"] is None
     assert metrics["net_cash"] is None
+
+
+def test_profile_b_anti_shrinking_rejects_missing_or_negative_ocf():
+    from screener.financial_metrics_engine import evaluate_profiles
+
+    # 1. Shrinking revenue (-10%) with positive net cash but OCF is None -> must be rejected from Profile B
+    res1 = evaluate_profiles({
+        "revenue_growth_yoy_pct": -10.0,
+        "gross_margin_pct": 30.0,
+        "cash_runway_months": "Infinite",
+        "operating_cash_flow_ttm": None,
+        "net_cash": 5_000_000.0,
+    })
+    assert not res1["is_profile_b"]
+    assert "BUY_PROFILE_B" not in res1["signal"]
+    assert any("Anti-Shrinking rule triggered" in r for r in res1["reasons"])
+
+    # 2. Shrinking revenue (-10%) with positive net cash and negative OCF -> must be rejected
+    res2 = evaluate_profiles({
+        "revenue_growth_yoy_pct": -10.0,
+        "gross_margin_pct": 30.0,
+        "cash_runway_months": "10.0",
+        "operating_cash_flow_ttm": -1_000_000.0,
+        "net_cash": 5_000_000.0,
+    })
+    assert not res2["is_profile_b"]
+    assert "BUY_PROFILE_B" not in res2["signal"]
+
+    # 3. Shrinking revenue (-10%) with positive net cash and positive OCF -> turnaround allowed in Profile B
+    res3 = evaluate_profiles({
+        "revenue_growth_yoy_pct": -10.0,
+        "gross_margin_pct": 30.0,
+        "cash_runway_months": "Infinite",
+        "operating_cash_flow_ttm": 2_000_000.0,
+        "net_cash": 5_000_000.0,
+    })
+    assert res3["is_profile_b"]
+    assert "BUY_PROFILE_B" in res3["signal"]

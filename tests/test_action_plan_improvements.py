@@ -361,3 +361,46 @@ def test_p12_candidate_limit_uses_own_momentum_data(temp_workspace):
     pos_map = {pos["Ticker"]: pos for pos in p.positions}
     assert pos_map["CAND_A"]["Limit Price"] == round(10.0 * 1.002, 4)
     assert pos_map["CAND_B"]["Limit Price"] == round(20.0 * 1.002, 4)
+
+
+def test_general_screening_respects_regime_buffer_across_multiple_buys(temp_workspace):
+    cfg = PortfolioConfig(
+        portfolio_id="P1_Base",
+        strategy="Profile B",
+        start_cash=10000.0,
+        slots=5,
+        slot_size=2000.0,
+        market_regime_cash_buffer_pct=0.50,
+    )
+    p = PortfolioInstance(cfg, base_dir=temp_workspace)
+    # Cash balance 6000. Under CHOPPY/BEAR 50% buffer, min_required_cash is 5000.0.
+    # available_cash is 6000 - 5000 = 1000.0.
+    p.cash_balance = 6000.0
+    p.positions = []
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    # Market regime: CHOPPY -> 50% cash reserve required (5000 EUR)
+    daemon.market_engine.market_regime = {"regime": "CHOPPY", "last_price": 100.0, "sma_50": 110.0}
+    daemon.market_engine.operational_metrics = {}
+    daemon.market_engine.fx_rates = {"EURUSD": 1.0, "EURSEK": 1.0}
+    daemon.market_engine.eval_profiles_cache = {
+        "CAND_1": {"is_profile_b": True},
+        "CAND_2": {"is_profile_b": True},
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "CAND_1": {"revenue_growth_yoy_pct": 10.0, "cash_runway_months": "Infinite", "operating_cash_flow_ttm": 1000.0},
+        "CAND_2": {"revenue_growth_yoy_pct": 10.0, "cash_runway_months": "Infinite", "operating_cash_flow_ttm": 1000.0},
+    }
+    daemon.market_engine.prices_cache = {"CAND_1": 10.0, "CAND_2": 10.0}
+    daemon.market_engine.universe_metadata = {
+        "CAND_1": {"market": "US", "adv_20d_usd": 100000.0, "currency": "EUR", "current_price": 10.0},
+        "CAND_2": {"market": "US", "adv_20d_usd": 100000.0, "currency": "EUR", "current_price": 10.0},
+    }
+
+    buys = daemon.execute_phase2_screening(p)
+    # First candidate takes the available ~1000 EUR (available_cash).
+    # Second candidate must NOT be bought because available_cash is depleted and cash_balance must remain >= 5000.0.
+    assert buys == 1
+    assert len(p.positions) == 1
+    assert p.cash_balance >= 5000.0

@@ -350,3 +350,57 @@ def test_evaluate_position_dead_money_timer():
     assert reason == "HOLD"
 
 
+def test_execute_trade_signal_rejects_nan_price(tmp_path, monkeypatch):
+    import math
+    from screener.portfolio_manager import PortfolioManager
+
+    mgr = PortfolioManager(
+        open_positions_path=tmp_path / "open.csv",
+        trade_history_path=tmp_path / "trades.csv",
+    )
+
+    # 1. Passed current_price = NaN
+    res = mgr.execute_trade_signal(
+        ticker="NAN_TICKER",
+        market="US",
+        verdict="STRONG BUY",
+        current_price=float("nan"),
+    )
+    # Price fetcher mocked to return NaN as well
+    monkeypatch.setattr(
+        "screener.portfolio_manager.get_realtime_data",
+        lambda t, m: {"status": "SUCCESS", "current_price": float("nan"), "currency": "USD"},
+    )
+    res2 = mgr.execute_trade_signal(
+        ticker="NAN_TICKER2",
+        market="US",
+        verdict="STRONG BUY",
+    )
+    assert res is None or res2 is None
+    # No NaN position saved
+    open_pos = mgr.load_open_positions()
+    assert len(open_pos) == 0
+
+
+def test_open_position_passes_explicit_price_and_currency(tmp_path):
+    from screener.portfolio_manager import PortfolioManager
+
+    mgr = PortfolioManager(
+        open_positions_path=tmp_path / "open.csv",
+        trade_history_path=tmp_path / "trades.csv",
+    )
+
+    pos = mgr.open_position(
+        ticker="EXPLICIT.ST",
+        market="SE",
+        current_price=45.50,
+        currency="SEK",
+        allocated_capital=4550.0,
+    )
+    assert pos is not None
+    assert pos["ticker"] == "EXPLICIT.ST"
+    assert pos["buy_price"] == 45.50
+    assert pos["currency"] == "SEK"
+    assert pos["shares"] == 100.0
+
+

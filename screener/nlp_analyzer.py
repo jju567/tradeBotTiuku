@@ -895,6 +895,7 @@ def generate_core_fallback_rationale(
     dilution_risk: bool = False,
     unsustainable_cash_burn: bool = False,
     erratic_pivots: bool = False,
+    **kwargs: Any,
 ) -> str:
     """Generates structured Finnish pedagogical explanation for Dual-Lens Core analysis."""
     if going_concern_risk:

@@ -634,6 +634,102 @@ def test_fetch_live_price_invalidates_stale_momentum_cache():
     assert "TEST.HE" not in engine.momentum_cache
 
 
+def test_fetch_live_price_invalidates_cache_on_exception():
+    engine = MarketDataEngine()
+    engine.momentum_cache["FAIL.HE"] = {
+        "price": 15.0,
+        "day_volume": 2000,
+        "day_change_pct": 5.0,
+        "runup_3d_pct": 5.0,
+        "rsi_14": 60.0,
+    }
+
+    mock_ticker = MagicMock()
+    mock_ticker.history.side_effect = Exception("Network timeout")
+
+    with patch("main_controller.yf.Ticker", return_value=mock_ticker):
+        price = engine._fetch_live_price("FAIL.HE")
+
+    assert price is None
+    assert "FAIL.HE" not in engine.momentum_cache
+
+
+def test_nordic_currency_and_fx_conversion():
+    from main_controller import get_ticker_currency, get_ticker_region, get_fx_to_account
+
+    # Currencies
+    assert get_ticker_currency("MAERSK.CO") == "DKK"
+    assert get_ticker_currency("EQUINOR.OL") == "NOK"
+    assert get_ticker_currency("NOKIA.HE") == "EUR"
+    assert get_ticker_currency("VOLV.ST") == "SEK"
+    assert get_ticker_currency("AAPL") == "USD"
+
+    # Regions
+    assert get_ticker_region("MAERSK.CO") == "DK"
+    assert get_ticker_region("EQUINOR.OL") == "NO"
+    assert get_ticker_region("NOKIA.HE") == "FI"
+    assert get_ticker_region("VOLV.ST") == "SE"
+    assert get_ticker_region("AAPL") == "US"
+
+    # FX conversions
+    mock_rates = {"EURUSD": 1.08, "EURSEK": 11.30, "EURDKK": 7.46, "EURNOK": 11.60}
+    # 74.60 DKK -> 10.0 EUR
+    dkk_to_eur = get_fx_to_account("DKK", "EUR", mock_rates)
+    assert round(74.60 * dkk_to_eur, 2) == 10.0
+
+    # 116.0 NOK -> 10.0 EUR
+    nok_to_eur = get_fx_to_account("NOK", "EUR", mock_rates)
+    assert round(116.0 * nok_to_eur, 2) == 10.0
+
+
+def test_execute_phase1_exits_forwards_peak_and_catastrophic_stop(tmp_path):
+    from main_controller import MasterLiveTradingDaemon, PortfolioConfig, PortfolioInstance
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    cfg = PortfolioConfig(
+        portfolio_id="P_TEST",
+        strategy="Meta_Consensus",
+        slots=1,
+        start_cash=10000.0,
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    # Buy price 100, peak was 120, current price drops to 110 (below peak * 0.95 = 114)
+    p.positions = [
+        {
+            "Ticker": "WARN_CO",
+            "Buy Price": 100.0,
+            "Shares": 10,
+            "Capital Invested": 1000.0,
+            "highest_price_seen": 120.0,
+            "catastrophic_stop": 90.0,
+            "Buy Date": "2026-01-01",
+        }
+    ]
+
+    daemon.market_engine.live_prices = {"WARN_CO": 110.0}
+    daemon.market_engine.prices_cache = {"WARN_CO": 110.0}
+    daemon.market_engine.news_radar_cache = {"WARN_CO": ("WARN", "Structural warning")}
+    daemon.market_engine.hard_facts_cache = {"WARN_CO": {}}
+    daemon.market_engine.universe_metadata = {"WARN_CO": {"currency": "USD"}}
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("WARN", "Structural warning")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: {}
+
+    captured_pos = {}
+
+    def mock_eval(position, current_price, **kwargs):
+        captured_pos.update(position)
+        return "HOLD", "HOLD"
+
+    with patch("main_controller.evaluate_position", side_effect=mock_eval):
+        daemon.execute_phase1_exits(p)
+
+    # Verify evaluate_position received highest_price_seen and catastrophic_stop
+    assert captured_pos.get("highest_price_seen") == 120.0
+    assert captured_pos.get("catastrophic_stop") == 90.0
+
+
 
 
 

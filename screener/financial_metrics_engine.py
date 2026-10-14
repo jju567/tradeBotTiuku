@@ -384,10 +384,12 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
 
     if net_cash is not None and net_cash > 0:
         is_shrinking = (rev_yoy is not None and rev_yoy < 0.0)
-        ocf_negative = (ocf is not None and ocf <= 0.0)
-
-        if is_shrinking and ocf_negative:
-            reasons_b.append("Anti-Shrinking rule triggered: Revenue shrinking & OCF negative")
+        # Anti-shrinking rule: if revenue is shrinking, company must demonstrate positive operating cash flow
+        if is_shrinking:
+            if ocf is not None and ocf > 0.0:
+                is_profile_b = True
+            else:
+                reasons_b.append("Anti-Shrinking rule triggered: Revenue shrinking without positive OCF")
         else:
             is_profile_b = True
     else:
@@ -412,7 +414,7 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
         "is_profile_b": is_profile_b,
         "signal": signal,
         "profile": profile,
-        "reasons": reasons_a if not is_profile_a and not is_profile_b else (reasons_b if not is_profile_b else []),
+        "reasons": (reasons_a + reasons_b) if not is_profile_a and not is_profile_b else (reasons_b if not is_profile_b else (reasons_a if not is_profile_a else [])),
     }
 
 

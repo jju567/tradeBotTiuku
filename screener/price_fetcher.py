@@ -153,10 +153,15 @@ def get_realtime_data(ticker: str, market: Optional[str] = None) -> Dict[str, An
                 logger.debug(f"history lookup fallback failed for {norm_ticker}: {hist_err}")
 
         # Validate that we retrieved a valid spot price
-        if price is None or price <= 0:
+        if price is None or (isinstance(price, float) and math.isnan(price)) or price <= 0:
             result["error"] = f"No valid pricing data returned for ticker '{norm_ticker}' (possibly delisted or suspended)."
             logger.warning(f"[{norm_ticker}] {result['error']}")
             return result
+
+        if prev_close is not None and (math.isnan(prev_close) or prev_close <= 0):
+            prev_close = None
+        if market_cap is not None and (math.isnan(market_cap) or market_cap <= 0):
+            market_cap = None
 
         # Compute intraday percent change if possible
         day_change_pct = None
@@ -166,7 +171,18 @@ def get_realtime_data(ticker: str, market: Optional[str] = None) -> Dict[str, An
         # Populate success result
         result["current_price"] = float(price)
         result["market_cap"] = float(market_cap) if market_cap else None
-        result["currency"] = str(currency).upper() if currency else ("EUR" if norm_ticker.endswith(".HE") else ("SEK" if norm_ticker.endswith(".ST") else "USD"))
+        if currency:
+            result["currency"] = str(currency).upper()
+        elif norm_ticker.endswith(".HE"):
+            result["currency"] = "EUR"
+        elif norm_ticker.endswith(".ST"):
+            result["currency"] = "SEK"
+        elif norm_ticker.endswith(".CO"):
+            result["currency"] = "DKK"
+        elif norm_ticker.endswith(".OL"):
+            result["currency"] = "NOK"
+        else:
+            result["currency"] = "USD"
         result["previous_close"] = float(prev_close) if prev_close else None
         result["day_change_pct"] = day_change_pct
         result["status"] = "SUCCESS"

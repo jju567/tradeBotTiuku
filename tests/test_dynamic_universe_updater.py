@@ -145,3 +145,26 @@ def test_scan_and_update_universe(tmp_path):
     assert status["total_tickers"] == 2
     assert status["last_added_tickers"] == ["NEWCO.HE"]
     assert status["last_sync_success"] is True
+
+
+@patch("yfinance.Ticker")
+def test_validate_candidate_ticker_rejects_missing_market_cap(mock_ticker_cls):
+    mock_t = MagicMock()
+    dates = pd.date_range("2026-08-01", periods=25, freq="B")
+    mock_hist = pd.DataFrame({
+        "Close": [5.0] * 25,
+        "Volume": [200_000] * 25,
+    }, index=dates)
+    mock_t.history.return_value = mock_hist
+    # Missing market cap (fast_info None and info {})
+    mock_t.fast_info = None
+    mock_t.info = {}
+    mock_ticker_cls.return_value = mock_t
+
+    res = validate_candidate_ticker(
+        ticker="NOCAP.ST",
+        market="SE",
+        min_adv_usd=50_000.0,
+        fx_rates={"USD": 1.0, "EUR": 1.08, "SEK": 0.096},
+    )
+    assert res is None

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import os
 import sys
 from datetime import datetime, timezone, date
@@ -424,10 +425,12 @@ class PortfolioManager:
         market: Optional[str] = None,
         verdict: str = "STRONG BUY",
         allocated_capital: Optional[float] = None,
+        current_price: Optional[float] = None,
+        currency: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Consumes a trade signal. If verdict is STRONG BUY, calculates position sizing,
-        fetches real-time price, and records to open_positions.csv.
+        fetches real-time price (or uses provided current_price), and records to open_positions.csv.
         """
         # Validate verdict
         clean_verdict = str(verdict).strip().upper()
@@ -447,15 +450,26 @@ class PortfolioManager:
             logger.warning(f"Ticker '{clean_ticker}' is already open in portfolio. Aborting duplicate buy.")
             return None
 
-        # Fetch real-time price data
-        price_data = get_realtime_data(clean_ticker, market)
-        if price_data.get("status") != "SUCCESS" or not price_data.get("current_price"):
-            logger.error(f"Cannot execute trade for {clean_ticker}: Price retrieval failed ({price_data.get('error')})")
-            return None
+        # Fetch real-time price data or use passed price
+        if current_price is not None and not (isinstance(current_price, float) and math.isnan(current_price)) and float(current_price) > 0:
+            buy_price = float(current_price)
+            detected_market = market or ("US" if "." not in clean_ticker else clean_ticker.split(".")[-1])
+            currency = currency or ("EUR" if clean_ticker.endswith(".HE") else ("SEK" if clean_ticker.endswith(".ST") else ("DKK" if clean_ticker.endswith(".CO") else ("NOK" if clean_ticker.endswith(".OL") else "USD"))))
+        else:
+            price_data = get_realtime_data(clean_ticker, market)
+            raw_price = price_data.get("current_price")
+            if (
+                price_data.get("status") != "SUCCESS"
+                or raw_price is None
+                or (isinstance(raw_price, float) and math.isnan(raw_price))
+                or float(raw_price) <= 0
+            ):
+                logger.error(f"Cannot execute trade for {clean_ticker}: Price retrieval failed ({price_data.get('error')})")
+                return None
 
-        buy_price = float(price_data["current_price"])
-        currency = price_data.get("currency", "USD" if "." not in clean_ticker else "EUR")
-        detected_market = price_data.get("market") or market or ("US" if "." not in clean_ticker else clean_ticker.split(".")[-1])
+            buy_price = float(raw_price)
+            currency = currency or price_data.get("currency", "USD" if "." not in clean_ticker else "EUR")
+            detected_market = price_data.get("market") or market or ("US" if "." not in clean_ticker else clean_ticker.split(".")[-1])
 
         # Position Sizing: 5,000 allocation per position (5% of equity)
         alloc = allocated_capital or self.position_allocation
@@ -534,7 +548,13 @@ class PortfolioManager:
 
             # 1. Fetch fresh real-time spot price
             price_data = get_realtime_data(ticker, market)
-            if price_data.get("status") != "SUCCESS" or not price_data.get("current_price"):
+            raw_price = price_data.get("current_price")
+            if (
+                price_data.get("status") != "SUCCESS"
+                or raw_price is None
+                or (isinstance(raw_price, float) and math.isnan(raw_price))
+                or float(raw_price) <= 0
+            ):
                 logger.warning(f"Failed to fetch price for {ticker}: {price_data.get('error')}. Retaining current state.")
                 retained_positions.append(pos)
                 continue
@@ -604,7 +624,12 @@ class PortfolioManager:
         allocated_capital: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         return self.execute_trade_signal(
-            ticker=ticker, market=market, verdict="STRONG BUY", allocated_capital=allocated_capital
+            ticker=ticker,
+            market=market,
+            verdict="STRONG BUY",
+            allocated_capital=allocated_capital,
+            current_price=current_price,
+            currency=currency,
         )
 
     def update_trailing_stops(self) -> Dict[str, Any]:
@@ -620,9 +645,16 @@ def execute_trade_signal(
     market: Optional[str] = None,
     verdict: str = "STRONG BUY",
     allocated_capital: Optional[float] = None,
+    current_price: Optional[float] = None,
+    currency: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     return _default_manager.execute_trade_signal(
-        ticker=ticker, market=market, verdict=verdict, allocated_capital=allocated_capital
+        ticker=ticker,
+        market=market,
+        verdict=verdict,
+        allocated_capital=allocated_capital,
+        current_price=current_price,
+        currency=currency,
     )
 
 

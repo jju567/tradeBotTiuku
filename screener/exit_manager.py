@@ -37,6 +37,14 @@ from typing import List, Dict, Optional, Tuple, Any
 import pandas as pd
 import yfinance as yf
 
+# Ensure project root is in sys.path
+_current_dir = Path(__file__).resolve().parent
+BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_dir
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from screener.currency_utils import get_ticker_currency, get_fx_to_account
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -351,8 +359,15 @@ class ExitManager:
             gross_return_pct = ((exit_price_raw - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
             net_return_pct = ((exit_price_exec - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
 
-            gross_pnl_eur = (exit_price_raw - entry_price) * shares
-            net_pnl_eur = (exit_price_exec - entry_price) * shares
+            ticker_curr = position.get("Currency") or get_ticker_currency(ticker)
+            fx_to_eur = get_fx_to_account(ticker_curr, "EUR")
+
+            if fx_to_eur == 1.0:
+                gross_pnl_eur = (exit_price_raw - entry_price) * shares
+                net_pnl_eur = (exit_price_exec - entry_price) * shares
+            else:
+                gross_pnl_eur = round((exit_price_raw - entry_price) * shares * fx_to_eur, 2)
+                net_pnl_eur = round((exit_price_exec - entry_price) * shares * fx_to_eur, 2)
 
             closed_trade = {
                 "Ticker": ticker,

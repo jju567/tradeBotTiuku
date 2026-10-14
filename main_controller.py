@@ -261,87 +261,13 @@ REENTRY_COOLDOWN_DAYS = 30      # 30-day anti-whipsaw cooldown after selling a p
 STARTING_BALANCE = 10_000.0     # Default starting balance per portfolio
 
 
-def get_live_fx_rates() -> Dict[str, float]:
-    """Fetches live FX rates EURUSD and EURSEK from Yahoo Finance with fallback."""
-    fx_dict = {"EURUSD": 1.08, "EURSEK": 11.30}
-    try:
-        t_usd = yf.Ticker("EURUSD=X").history(period="5d")
-        if not t_usd.empty:
-            fx_dict["EURUSD"] = float(t_usd["Close"].dropna().iloc[-1])
-    except Exception:
-        pass
-    try:
-        t_sek = yf.Ticker("EURSEK=X").history(period="5d")
-        if not t_sek.empty:
-            fx_dict["EURSEK"] = float(t_sek["Close"].dropna().iloc[-1])
-    except Exception:
-        pass
-    return fx_dict
+from screener.currency_utils import (
+    get_live_fx_rates,
+    get_ticker_currency,
+    get_fx_to_account,
+    get_ticker_region,
+)
 
-
-def get_ticker_currency(ticker: str, known_currency: Optional[str] = None) -> str:
-    """Resolves local currency for ticker: EUR (.HE), SEK (.ST), or USD."""
-    if known_currency and isinstance(known_currency, str) and known_currency.strip():
-        return known_currency.strip().upper()
-    t_clean = str(ticker).strip().upper()
-    if t_clean.endswith(".HE"):
-        return "EUR"
-    if t_clean.endswith(".ST"):
-        return "SEK"
-    return "USD"
-
-
-def get_fx_to_account(
-    ticker_currency: str,
-    account_currency: str = "EUR",
-    fx_rates: Optional[Dict[str, float]] = None,
-) -> float:
-    """
-    Returns multiplier to convert an amount in ticker_currency to account_currency.
-    amount_in_account_currency = amount_in_ticker_currency * fx_to_account
-    """
-    ticker_curr = ticker_currency.strip().upper()
-    acc_curr = account_currency.strip().upper()
-    if ticker_curr == acc_curr:
-        return 1.0
-
-    rates = fx_rates or get_live_fx_rates()
-    eur_usd = rates.get("EURUSD", 1.08)
-    eur_sek = rates.get("EURSEK", 11.30)
-
-    if ticker_curr == "EUR":
-        to_eur = 1.0
-    elif ticker_curr == "USD":
-        to_eur = 1.0 / eur_usd
-    elif ticker_curr == "SEK":
-        to_eur = 1.0 / eur_sek
-    else:
-        to_eur = 1.0
-
-    if acc_curr == "EUR":
-        return to_eur
-    elif acc_curr == "USD":
-        return to_eur * eur_usd
-    elif acc_curr == "SEK":
-        return to_eur * eur_sek
-
-    return to_eur
-
-
-def get_ticker_region(ticker: str, known_market: Optional[str] = None) -> str:
-    """Resolves market region for ticker: FI (.HE), SE (.ST), DK (.CO), or US."""
-    if known_market and isinstance(known_market, str) and known_market.strip():
-        m = known_market.strip().upper()
-        if m in ("FI", "SE", "DK", "US"):
-            return m
-    t_clean = str(ticker).strip().upper()
-    if t_clean.endswith(".HE"):
-        return "FI"
-    if t_clean.endswith(".ST"):
-        return "SE"
-    if t_clean.endswith(".CO"):
-        return "DK"
-    return "US"
 
 
 def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
@@ -901,6 +827,7 @@ class MarketDataEngine:
                 return cur_price
         except Exception as e:
             logger.debug(f"Could not fetch price for {ticker}: {e}")
+            self.momentum_cache.pop(ticker, None)
         return None
 
     def _evaluate_news_radar(self, ticker: str) -> Tuple[str, str]:
@@ -1303,7 +1230,13 @@ class MasterLiveTradingDaemon:
                     conviction_reason = f"CONVICTION_DROP (Score {current_score} < {thresh})"
 
             action, reason = evaluate_position(
-                position={"buy_price": buy_price, "ticker": ticker, "buy_date": buy_date},
+                position={
+                    "buy_price": buy_price,
+                    "ticker": ticker,
+                    "buy_date": buy_date,
+                    "highest_price_seen": cur_peak,
+                    "catastrophic_stop": pos.get("catastrophic_stop") or pos.get("trailing_stop"),
+                },
                 current_price=current_price,
                 latest_news_judgment=news_verdict,
                 latest_financials=financials_payload,
@@ -1364,7 +1297,7 @@ class MasterLiveTradingDaemon:
 
             if action == "SELL":
                 gross_sale_value = shares * current_price
-                ticker_curr = get_ticker_currency(ticker)
+                ticker_curr = pos.get("Currency") or get_ticker_currency(ticker)
                 fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
                 fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
 
@@ -1927,7 +1860,7 @@ class MasterLiveTradingDaemon:
                 continue
 
             # Position sizing
-            eff_allocation_acc = min(target_allocation_acc, portfolio.cash_balance)
+            eff_allocation_acc = min(target_allocation_acc, available_cash)
             ticker_curr = meta.get("currency", get_ticker_currency(ticker))
             fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
             fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
@@ -1956,10 +1889,11 @@ class MasterLiveTradingDaemon:
             total_cost_local = actual_gross_buy + actual_fee
             total_cost_acc = total_cost_local * fx_to_acc
 
-            if total_cost_acc > portfolio.cash_balance:
+            if total_cost_acc > available_cash:
                 continue
 
             portfolio.cash_balance -= total_cost_acc
+            available_cash -= total_cost_acc
             limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
             target_limit = round(cand_price * (1.0 + limit_buf), 4)
             new_pos = {

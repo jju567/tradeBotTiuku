@@ -230,3 +230,28 @@ def test_build_analysis_prompt_and_analyze_company():
     assert res["confidence"] == 0.95
     mock_client.generate.assert_called_once()
 
+
+def test_generate_core_fallback_rationale_extra_kwargs_no_type_error():
+    from screener.nlp_analyzer import generate_core_fallback_rationale
+
+    # Calling with extra keyword arguments as in line 790 of nlp_analyzer.py must not raise TypeError
+    rationale = generate_core_fallback_rationale(
+        going_concern_risk=False,
+        dilution_risk=False,
+        unsustainable_cash_burn=False,
+        erratic_pivots=False,
+        gross_margin_over_40=True,
+        rule_of_40_passed=True,
+        recurring_revenue_mentioned=True,
+        organic_growth_confirmed=True,
+        strong_net_cash_position=True,
+        positive_operating_cash_flow=True,
+        turnaround_indicators=False,
+        revenue_shrinking=False,
+        matched_profile="GROWTH",
+        verdict="STRONG BUY",
+        prof_a={"gross_margin_over_40": True},
+        prof_b={"strong_net_cash_position": True},
+    )
+    assert "Kasvu-profiilin" in rationale
+

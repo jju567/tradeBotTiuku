@@ -284,3 +284,39 @@ def test_core_position_exits_only_on_fundamental_deterioration(temp_csv_paths):
     assert surviving_pos is None
     assert closed_trade["Strategy_Type"] == "CORE"
     assert "Core Fundamental Deterioration" in closed_trade["ExitReason"]
+
+
+def test_nordic_exit_pnl_converts_to_eur(temp_csv_paths, monkeypatch):
+    open_pos_path, trade_hist_path = temp_csv_paths
+    manager = ExitManager(open_positions_path=open_pos_path, trade_history_path=trade_hist_path)
+
+    # 100 shares bought at 100 SEK, sold at 130 SEK (+30 SEK per share = +3,000 SEK gain)
+    pos_sek = {
+        "Ticker": "NORDIC.ST",
+        "Currency": "SEK",
+        "EntryDate": "2026-05-01",
+        "EntryPrice": 100.0,
+        "HighestPrice": 100.0,
+        "Shares": 100,
+        "PositionValue": 1000.0,
+        "Strategy_Type": "SATELLITE",
+    }
+    dates = pd.date_range(start="2026-05-01", periods=5, freq="D")
+    price_df = pd.DataFrame({
+        "Open": [100.0] * 4 + [130.0],
+        "High": [105.0] * 4 + [130.0],
+        "Low": [98.0] * 4 + [128.0],
+        "Close": [100.0] * 4 + [130.0],
+        "Volume": [10000] * 5
+    }, index=dates)
+
+    # Mock FX rates: 1 EUR = 10.0 SEK -> fx_to_eur = 0.10
+    monkeypatch.setattr("screener.currency_utils.get_live_fx_rates", lambda: {"EURUSD": 1.08, "EURSEK": 10.0, "EURDKK": 7.46, "EURNOK": 11.60})
+
+    should_exit, closed_trade, surviving_pos = manager.evaluate_position_exit(pos_sek, price_df)
+    assert should_exit is True
+    assert closed_trade is not None
+    # 3,000 SEK gross gain * 0.10 = 300.0 EUR
+    assert closed_trade["GrossPnLEur"] == 300.0
+    # Net exit: 130 * (1 - 0.025) = 126.75 -> net gain = 26.75 * 100 = 2675 SEK * 0.10 = 267.50 EUR
+    assert closed_trade["NetPnLEur"] == 267.50

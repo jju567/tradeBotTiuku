@@ -170,7 +170,11 @@ def validate_candidate_ticker(
             info = getattr(t, "info", {}) or {}
             mc_local = info.get("marketCap")
 
-        mc_local_float = float(mc_local) if mc_local else (adv_local * 100)
+        if not mc_local or float(mc_local) <= 0:
+            logger.debug(f"Candidate {clean_t} lacks verifiable market cap. Skipping candidate.")
+            return None
+
+        mc_local_float = float(mc_local)
         mc_usd = mc_local_float * fx_to_usd
 
         if mc_usd > max_cap_usd:

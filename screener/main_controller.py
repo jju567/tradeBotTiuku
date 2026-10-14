@@ -64,6 +64,8 @@ BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from screener.currency_utils import get_ticker_currency, get_fx_to_account
+
 from screener.config import ScreenerConfig, get_dynamic_interval
 from screener.models import FeedItem, StrategyType, DocumentPayload
 from screener.scraper_module import NasdaqHelsinkiScraper, fetch_latest_releases
@@ -315,6 +317,7 @@ class ScreenerPipelineController:
         entry_price: float,
         shares: int,
         position_value: float,
+        currency: Optional[str] = None,
     ) -> bool:
         """
         Records a newly executed trade to `data/open_positions.csv`.
@@ -332,6 +335,7 @@ class ScreenerPipelineController:
             return False
 
         today_str = date.today().strftime("%Y-%m-%d")
+        pos_currency = currency or candidate.get("currency") or get_ticker_currency(ticker)
         new_pos = {
             "Ticker": ticker,
             "EntryDate": today_str,
@@ -340,11 +344,12 @@ class ScreenerPipelineController:
             "Shares": shares,
             "PositionValue": round(position_value, 2),
             "Strategy_Type": candidate.get("strategy_type", "SATELLITE"),
+            "Currency": pos_currency,
         }
 
         open_positions.append(new_pos)
         self.exit_manager.save_open_positions(open_positions)
-        logger.info(f"💎 [POSITION OPENED] Recorded {ticker} ({candidate.get('strategy_type')}) in {self.open_positions_path}: {shares} shs @ {entry_price:.2f}€ = {position_value:.2f}€")
+        logger.info(f"💎 [POSITION OPENED] Recorded {ticker} ({candidate.get('strategy_type')}) in {self.open_positions_path}: {shares} shs @ {entry_price:.2f} {pos_currency} = {position_value:.2f}€")
         return True
 
     def run_screening_cycle(self, dry_run: bool = False) -> List[Dict[str, Any]]:
@@ -606,7 +611,26 @@ class ScreenerPipelineController:
                 # Calculate Sizing
                 sizing = self.calculate_sizing(strategy_route, ticker or "", min_trade)
                 alloc_eur = sizing["recommended_allocation_eur"]
-                shares_to_buy = max(1, int(alloc_eur / entry_price)) if entry_price > 0 else 100
+
+                ticker_curr = get_ticker_currency(ticker or "")
+                fx_to_eur = get_fx_to_account(ticker_curr, "EUR")
+                fx_eur_to_local = 1.0 / fx_to_eur if fx_to_eur > 0 else 1.0
+                alloc_local = alloc_eur * fx_eur_to_local
+
+                if entry_price > 0:
+                    shares_to_buy = int(alloc_local / entry_price)
+                else:
+                    shares_to_buy = 100
+
+                # Sizing guard: if single share price exceeds allocated capital, do not purchase
+                if entry_price > 0 and shares_to_buy < 1:
+                    logger.warning(
+                        f"Skipping candidate {ticker}: 1 share price ({entry_price:.2f} {ticker_curr}) "
+                        f"exceeds allocated capital ({alloc_local:.2f} {ticker_curr} / {alloc_eur:.2f} EUR)."
+                    )
+                    continue
+
+                actual_position_value_eur = round((shares_to_buy * entry_price * fx_to_eur), 2) if entry_price > 0 else alloc_eur
 
                 candidate = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -618,6 +642,7 @@ class ScreenerPipelineController:
                     "signals": signal_label,
                     "reasoning": educational_rationale,
                     "recommended_allocation_eur": alloc_eur,
+                    "position_value_eur": actual_position_value_eur,
                     "kelly_fraction": sizing.get("kelly_fraction"),
                     "sizing_model": sizing["sizing_model"],
                     "spread_pct": spread_pct,
@@ -630,6 +655,7 @@ class ScreenerPipelineController:
                     "pdf_attached": len(doc.pdf_urls) > 0,
                     "entry_price": entry_price,
                     "shares": shares_to_buy,
+                    "currency": ticker_curr,
                     "management_buying": signals.get("insider_buying_personal", signals.get("management_buying", False)),
                     "positive_guidance": signals.get("positive_guidance", False),
                     "insider_buying_personal": signals.get("insider_buying_personal", False),
@@ -648,7 +674,8 @@ class ScreenerPipelineController:
                             candidate=candidate,
                             entry_price=entry_price,
                             shares=shares_to_buy,
-                            position_value=alloc_eur,
+                            position_value=actual_position_value_eur,
+                            currency=ticker_curr,
                         )
                     # Step E: Execute & Alert (Enforce 24h cooldown to prevent repeated emails for same ticker)
                     alert_ticker = candidate.get("ticker") or candidate.get("company_name", "")

@@ -185,6 +185,7 @@ def test_pipeline_controller_satellite_cycle(tmp_path, monkeypatch):
     monkeypatch.setattr("screener.main_controller.send_alert", lambda **kwargs: True)
     monkeypatch.setattr("screener.main_controller.send_turnaround_alert", lambda **kwargs: True)
     monkeypatch.setattr("screener.main_controller.send_sell_alert", lambda **kwargs: True)
+    monkeypatch.setattr(controller.web_verifier, "verify", lambda **kwargs: {"passed": True, "passed_web_check": True, "reason": "Passed mock web check"})
 
     candidates = controller.run_pipeline_cycle()
 
@@ -251,6 +252,7 @@ def test_pipeline_controller_core_tenbagger_cycle(tmp_path, monkeypatch):
     monkeypatch.setattr("screener.main_controller.send_alert", lambda **kwargs: True)
     monkeypatch.setattr("screener.main_controller.send_turnaround_alert", lambda **kwargs: True)
     monkeypatch.setattr("screener.main_controller.send_sell_alert", lambda **kwargs: True)
+    monkeypatch.setattr(controller.web_verifier, "verify", lambda **kwargs: {"passed": True, "passed_web_check": True, "reason": "Passed mock web check"})
 
     candidates = controller.run_pipeline_cycle()
 
@@ -443,5 +445,94 @@ def test_run_scheduled_pipeline_loop(tmp_path):
         dry_run=True,
         run_single_loop_for_test=True,
     )
+
+
+def test_screener_sizing_fx_conversion_and_expensive_stock_guard(tmp_path, monkeypatch):
+    from screener.main_controller import ScreenerPipelineController
+    from screener.models import FeedItem, DocumentPayload
+    from screener.config import ScreenerConfig
+
+    db_file = tmp_path / "test_screener_fx.db"
+    csv_file = tmp_path / "alerts_fx.csv"
+    open_pos = tmp_path / "open_pos_fx.csv"
+
+    cfg = ScreenerConfig(db_path=db_file)
+    controller = ScreenerPipelineController(
+        config=cfg,
+        alerts_csv_path=csv_file,
+        open_positions_path=open_pos,
+        trade_history_path=tmp_path / "trades_fx.csv",
+        watchlist_turnarounds_path=tmp_path / "watchlist_fx.csv",
+        openrouter_api_key="",
+        enforce_universe=False,
+    )
+
+    # Mock FX: 1 EUR = 10 SEK
+    monkeypatch.setattr("screener.currency_utils.get_live_fx_rates", lambda: {"EURUSD": 1.08, "EURSEK": 10.0, "EURDKK": 7.46, "EURNOK": 11.60})
+    monkeypatch.setattr("screener.main_controller.send_alert", lambda **kwargs: True)
+    monkeypatch.setattr(controller.web_verifier, "verify", lambda **kwargs: {"passed": True, "passed_web_check": True, "reason": "Passed mock web check"})
+
+    # 1. Swedish stock with 100 SEK price: 500 EUR allocation = 5000 SEK -> 50 shares
+    mock_release = FeedItem(
+        guid="mock-se-1",
+        title="Evolution AB: Positiivinen tulosvaroitus",
+        link="https://mock.com/se1",
+        company_name="Evolution AB",
+        ticker="EVO.ST",
+    )
+    mock_doc = DocumentPayload(
+        url="https://mock.com/se1",
+        html_text="Evolution nostaa ohjeistustaan. Kassa kunnossa.",
+    )
+    monkeypatch.setattr("screener.main_controller.fetch_latest_releases", lambda config: [mock_release])
+    monkeypatch.setattr(controller.scraper, "fetch_and_parse_document", lambda url: mock_doc)
+    monkeypatch.setattr(
+        "screener.main_controller.check_liquidity_and_spread",
+        lambda ticker, **kwargs: {
+            "passed_spread_check": True,
+            "spread_pct": 1.0,
+            "bid": 99.0,
+            "ask": 100.0,
+            "volume": 20000,
+            "total_friction_pct": 2.0,
+            "commission_round_trip_eur": 14.0,
+            "min_recommended_trade_eur": 500.0,
+            "reason": "OK",
+        }
+    )
+
+    candidates = controller.run_pipeline_cycle(dry_run=False)
+    assert len(candidates) == 1
+    cand = candidates[0]
+    assert cand["shares"] == 50
+    assert cand["currency"] == "SEK"
+    assert cand["recommended_allocation_eur"] == 500.0
+
+    # 2. Stock more expensive than total allocation (e.g. 6000 SEK / 600 EUR price > 500 EUR alloc)
+    mock_release_exp = FeedItem(
+        guid="mock-se-exp",
+        title="Expensive AB: Positiivinen tulosvaroitus",
+        link="https://mock.com/se_exp",
+        company_name="Expensive AB",
+        ticker="EXP.ST",
+    )
+    monkeypatch.setattr("screener.main_controller.fetch_latest_releases", lambda config: [mock_release_exp])
+    monkeypatch.setattr(
+        "screener.main_controller.check_liquidity_and_spread",
+        lambda ticker, **kwargs: {
+            "passed_spread_check": True,
+            "spread_pct": 1.0,
+            "bid": 5990.0,
+            "ask": 6000.0,
+            "volume": 20000,
+            "total_friction_pct": 2.0,
+            "commission_round_trip_eur": 14.0,
+            "min_recommended_trade_eur": 500.0,
+            "reason": "OK",
+        }
+    )
+    candidates_exp = controller.run_pipeline_cycle(dry_run=False)
+    # Expensive stock cannot afford 1 share, skipped safely
+    assert len(candidates_exp) == 0
 
 

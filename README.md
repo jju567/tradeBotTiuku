@@ -83,9 +83,9 @@
   - **Profiili A (Hyper-Growth Tech / Micro-Cap)**: Skaalautuvat 10x-kandidaatit (korkea bruttokate, orgaaninen liikevaihdon kasvu, laajeneva TAM).
   - **Profiili B (Deep Value / Turnaround)**: Matala arvostus (P/B, EV/S), vahva tase, kassan riittävyys ja orgaaninen kannattavuuskäänne.
   - **Kovat Turvaportit**: Hylkää automaattisesti yhtiöt, joilla on jatkuva laimennusriski (*ATM-annit, toksiset vaihtovelkakirjat*), Ruotsin lain miinat (*kontrollbalansräkning, rekonstruktion*), epämääräiset liiketoimintakäännökset tai kassan loppuminen alle 6–12 kuukaudessa.
-- **Vaihe 2: Markkinakohtainen Reaaliaikainen Uutis- ja Tiedotetarkistus (`screener/web_verifier.py`)**:
-  - **Automaattinen Markkinareititys (`detect_market`)**: Tunnistaa Suomen (`.HE`), Ruotsin (`.ST`) ja Yhdysvaltain (`US`) osakkeet.
-  - **Lokalisoitu Google News RSS & Tiedotekanavat**: Hakee tuoreet uutiset markkina-alueen omilla parametreilla (`fi-FI`, `sv-SE`, `en-US`) ja kohdentaa hakulausekkeet pörssitiedotteisiin (Cision, MFN, GlobeNewswire).
+- **Vaihe 2: Markkinakohtainen Reaaliaikainen Uutis- ja Tiedotetarkistus (`screener/web_verifier.py`) & Pohjoismainen Valuuttatuki**:
+  - **Automaattinen Markkinareititys & Valuuttamuunnokset**: Tunnistaa Suomen (`.HE`, EUR), Ruotsin (`.ST`, SEK), Tanskan (`.CO`, DKK), Norjan (`.OL`, NOK) sekä Yhdysvaltain (`US`, USD) osakkeet ja konvertoi kaikki reaaliaikaiset osto- ja myyntikurssit sekä PnL-laskennat automaattisesti salkun perusvaluuttaan (EUR).
+  - **Lokalisoitu Google News RSS & Tiedotekanavat**: Hakee tuoreet uutiset markkina-alueen omilla parametreilla (`fi-FI`, `sv-SE`, `da-DK`, `no-NO`, `en-US`) ja kohdentaa hakulausekkeet pörssitiedotteisiin (Cision, MFN, GlobeNewswire).
   - **Monikielinen Sanasto & Taivutusmuodot**: Tunnistaa pohjoismaiset riskit (*osakeanti, suunnattu anti, yrityssaneeraus, kontrollbalansräkning, företrädesemission, sammanläggning av aktier*) ja käännekatalyytit (*suurtilaus, merkittävä sopimus, yrityskauppa, kannattavuuskäänne, stororder, förvärv, positiv vinstvarning*).
   - **Monikielinen LLM-tuomari**: Tulkitsee monikieliset uutisotsikot suoraan kontekstissa ilman käännösvirheitä.
 
