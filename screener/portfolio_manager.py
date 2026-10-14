@@ -101,11 +101,12 @@ def evaluate_position(
         return "HOLD", "HOLD"
 
     # Layer 1: Catastrophic Failsafe (Daily Check)
-    catastrophic_threshold = buy_price * CATASTROPHIC_STOP_PCT
+    pos_stop = position.get("catastrophic_stop") or position.get("trailing_stop")
+    catastrophic_threshold = float(pos_stop) if pos_stop is not None and float(pos_stop) > 0 else (buy_price * CATASTROPHIC_STOP_PCT)
     if current_price <= catastrophic_threshold:
         logger.warning(
             f"🚨 [LAYER 1 EXIT] {position.get('ticker')}: current_price {current_price:.4f} <= "
-            f"catastrophic threshold {catastrophic_threshold:.4f} (-50% failsafe)."
+            f"catastrophic threshold {catastrophic_threshold:.4f} (failsafe stop)."
         )
         return "SELL", "CATASTROPHIC_STOP"
 

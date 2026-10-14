@@ -141,10 +141,19 @@ class NordnetCSVImporter:
         if not lines:
             raise ValueError("CSV file is empty.")
 
-        header = lines[0]
+        # Locate the header line (handles exports where metadata is on line 1 and headers on line 2)
+        header_idx = 0
+        for i, line in enumerate(lines[:5]):
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in _HEADER_KEYWORDS):
+                header_idx = i
+                break
+
+        content_lines = lines[header_idx:]
+        header = content_lines[0]
         delimiter = "\t" if "\t" in header else (";" if ";" in header else ",")
 
-        reader = csv.DictReader(lines, delimiter=delimiter)
+        reader = csv.DictReader(content_lines, delimiter=delimiter)
 
         # Start from HODL-locked positions only — everything else must come from the CSV.
         # This ensures positions that have been sold in Nordnet are removed on re-import.

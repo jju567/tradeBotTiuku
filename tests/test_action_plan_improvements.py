@@ -297,3 +297,67 @@ def test_p12_exhaustion_and_overbought_filters(temp_workspace):
     assert buys == 1
     assert len(p.positions) == 1
     assert p.positions[0]["Ticker"] == "CLEAN_CAND"
+
+
+def test_p12_candidate_limit_uses_own_momentum_data(temp_workspace):
+    cfg = PortfolioConfig(
+        portfolio_id="P12_Momentum_Breakout",
+        strategy="Momentum_Breakout",
+        start_cash=10000.0,
+        slots=5,
+        slot_size=2000.0,
+        volume_surge_multiplier=3.0,
+        min_price_change_pct=2.0,
+        limit_buffer_pct=0.002,
+    )
+    p = PortfolioInstance(cfg, base_dir=temp_workspace)
+    p.cash_balance = 10000.0
+    p.positions = []
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.market_regime = {"regime": "BULL", "last_price": 200, "sma_50": 190}
+    daemon.market_engine.universe_metadata = {
+        "CAND_A": {
+            "market": "US",
+            "adv_20d_usd": 100000.0,
+            "currency": "USD",
+            "current_price": 10.0,
+        },
+        "CAND_B": {
+            "market": "US",
+            "adv_20d_usd": 100000.0,
+            "currency": "USD",
+            "current_price": 20.0,
+        },
+    }
+    daemon.market_engine.prices_cache = {
+        "CAND_A": 10.0,
+        "CAND_B": 20.0,
+    }
+    daemon.market_engine.momentum_cache = {
+        "CAND_A": {
+            "price": 10.0,
+            "day_volume": 100000.0,
+            "day_change_pct": 10.0,
+            "runup_3d_pct": 10.0,
+            "rsi_14": 50.0,
+            "vwap": 10.0,
+        },
+        "CAND_B": {
+            "price": 20.0,
+            "day_volume": 100000.0,
+            "day_change_pct": 10.0,
+            "runup_3d_pct": 10.0,
+            "rsi_14": 50.0,
+            "vwap": 20.0,
+        },
+    }
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clear")
+
+    buys = daemon.execute_phase2_screening(p)
+    assert buys == 2
+    pos_map = {pos["Ticker"]: pos for pos in p.positions}
+    assert pos_map["CAND_A"]["Limit Price"] == round(10.0 * 1.002, 4)
+    assert pos_map["CAND_B"]["Limit Price"] == round(20.0 * 1.002, 4)

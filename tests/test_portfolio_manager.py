@@ -66,6 +66,20 @@ def test_evaluate_position_layer_1_catastrophic_stop():
     assert reason == "HOLD"
 
 
+def test_evaluate_position_respects_custom_catastrophic_stop():
+    # Buy price 100, custom catastrophic stop set at 80.0 (-20%)
+    pos = {"ticker": "XYZ", "buy_price": 100.0, "catastrophic_stop": 80.0}
+
+    # At 75.0, breaches the 80.0 stop -> SELL CATASTROPHIC_STOP
+    action, reason = evaluate_position(pos, current_price=75.0)
+    assert action == "SELL"
+    assert reason == "CATASTROPHIC_STOP"
+
+    # At 85.0, above 80.0 stop -> HOLD
+    action, reason = evaluate_position(pos, current_price=85.0)
+    assert action == "HOLD"
+
+
 def test_evaluate_position_layer_2_llm_news_radar():
     pos = {"ticker": "EVO.ST", "buy_price": 100.0}
 

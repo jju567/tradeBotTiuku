@@ -200,13 +200,6 @@ class MarketDataClient:
                     prev_close = closes[-2] if len(closes) > 1 else current_price
                     change_24h_pct = round(((current_price - prev_close) / prev_close) * 100, 2)
 
-                # Technical Indicators
-                rsi_14 = calculate_rsi(closes, period=14)
-                sma_50 = calculate_sma(closes, period=50)
-                sma_200 = calculate_sma(closes, period=200)
-                ema_20 = calculate_ema(closes, period=20)
-                bollinger = calculate_bollinger_bands(closes, period=20, num_std=2.0)
-
                 # Fundamental Information from yfinance info dictionary
                 info = {}
                 try:
@@ -224,6 +217,13 @@ class MarketDataClient:
                         usd_to_eur = 0.867
                     closes = [x * usd_to_eur for x in closes]
                     current_price = current_price * usd_to_eur
+
+                # Technical Indicators (calculated after currency conversion so SMA, EMA, Bollinger and current_price share the same EUR unit)
+                rsi_14 = calculate_rsi(closes, period=14)
+                sma_50 = calculate_sma(closes, period=50)
+                sma_200 = calculate_sma(closes, period=200)
+                ema_20 = calculate_ema(closes, period=20)
+                bollinger = calculate_bollinger_bands(closes, period=20, num_std=2.0)
 
                 stock_name = info.get("shortName") or info.get("longName") or symbol
                 sector = info.get("sector") or "General"

@@ -3,9 +3,11 @@
 ## Edistyminen
 
 - Osa 1 valmis: salkun riskitarkistukset, tasapainotusehdotukset, portfolio-tila, AI-arviointi ja viikkajonon/markkinamonitorin keskeiset kutsupolut.
+- Osa 2 valmis: markkinadatan valuuttayksiköt, indikaattorien rajatapaukset ja CSV-tuonnin otsakekäsittely.
+- Osa 3 valmis: screener-salkun exit-säännöt sekä monisalkkudaemonin P12 momentum-ostot ja välimuistinhallinta.
+- Kaikki löydökset 1–10 on korjattu ja varmennettu kattavilla yksikkötesteillä.
 - Katselmointi ei ole vielä koko sovelluksen kattava.
-- Seuraava osa: tarkista `clients/market_data_client.py`, `utils/indicators.py` ja `utils/csv_importer.py` yksikkötestien ja datamuotojen kanssa.
-- Katselmointiin ei tehty lähdekoodimuutoksia.
+- Seuraava osa: jatka monisalkkudaemonin muiden positionhallintapolkujen ja lisämoduulien (kuten `screener/`-liiketoimintalogiikan) katselmointia.
 
 ## Löydökset ja Korjaukset
 
@@ -25,12 +27,41 @@
    - **Korjaus**: `core/ai_advisor.py`:n `evaluate_equities()` välittää nyt salkun `global_strategy`-arvon `_rule_based_tiuku_eval(stock, global_strategy=global_strat)` -kutsulle.
    - **Testi**: `test_evaluate_equities_respects_portfolio_global_strategy` ([test_ai_advisor.py](../tests/test_ai_advisor.py#L156-L172)).
 
+5. **[KORJATTU] Keskitaso: USD-osakkeiden hinta ja tekniset hintaindikaattorit palautuvat eri valuutoissa.** Hintasarjan SMA-, EMA- ja Bollinger-arvot laskettiin dollareina ennen nykyhinnan muuntamista euroiksi, jolloin trendiluokittelu vertasi EUR-hintaa USD-keskiarvoihin.
+   - **Korjaus**: `clients/market_data_client.py`: valuuttamuunnos euroiksi tehdään nyt `closes`-hintasarjalle ja `current_price`-hinnalle ennen teknisten indikaattorien laskentaa, jolloin SMA, EMA, Bollinger ja hinta ovat samassa EUR-valuutassa.
+   - **Testi**: `test_market_data_client_converts_usd_indicators_consistently` ([test_etf_watchlist.py](../tests/test_etf_watchlist.py#L58-L94)).
+
+6. **[KORJATTU] Korkea: CSV-tuonnin toisen rivin otsake voi tyhjentää kaikki ei-HODL-omistukset.** `read_file_lines` hyväksyi otsakkeen kahdelta ensimmäiseltä riviltä, mutta `import_csv` käytti aina ensimmäistä riviä DictReader-otsakkeena. Jos tiedostossa oli metatietorivi ennen sarakkeita, tuonti jäi tyhjäksi ja pyyhki ei-HODL-omistukset.
+   - **Korjaus**: `utils/csv_importer.py`:n `import_csv()` etsii nyt otsikkorivin dynaamisesti ensimmäisten rivien joukosta tunnettujen avainsanojen perusteella ennen DictReaderin alustusta.
+   - **Testi**: `test_import_csv_header_on_second_line_preserves_holdings` ([test_csv_importer.py](../tests/test_csv_importer.py#L220-L230)).
+
+7. **[KORJATTU] Keskitaso: täysin tasainen kurssisarja saa RSI-arvon 0 ja ostosuosituksen.** Nollanousu ja nollalasku tuottivat epsilon-jakajan vuoksi RSI:n 0, jolloin sääntömoottori tulkitsi tilanteen ylimyydyksi ja nosti pisteet BUY-rajaan.
+   - **Korjaus**: `utils/indicators.py`:n `calculate_rsi()` palauttaa neutraalin 50.0, kun `avg_gain == 0.0` ja `avg_loss == 0.0`, yhdenmukaistaen sen monisalkkudaemonin RSI-toteutuksen kanssa.
+   - **Testi**: `test_flat_prices_return_neutral` ([test_indicators.py](../tests/test_indicators.py#L73-L77)).
+
+8. **[KORJATTU] Keskitaso: `PortfolioManager`-kohtainen catastrophic stop -asetus ei vaikuta exitiin.** `PortfolioManager` tallensi position stop-hinnan konstruktorin `catastrophic_stop_pct`-asetuksen mukaisesti, mutta `evaluate_position()` käytti kiinteää 50 % vakiota position tallennetun stop-hinnan sijaan.
+   - **Korjaus**: `screener/portfolio_manager.py`:n `evaluate_position()` tarkistaa ensin position oman `catastrophic_stop`- tai `trailing_stop`-arvon, ja käyttää moduulivakiota vain puuttuessa.
+   - **Testi**: `test_evaluate_position_respects_custom_catastrophic_stop` ([test_portfolio_manager.py](../tests/test_portfolio_manager.py#L69-L81)).
+
+9. **[KORJATTU] Keskitaso: vanhentunut P12 momentum-cache voi synnyttää oston uudella hinnalla eri signaalista.** Jos live-hinta saatiin mutta historiadata puuttui, vanha momentum-cache säilyi ja P12 saattoi käyttää vanhoja momentum-signaaleja uuden spot-hinnan yhteydessä.
+   - **Korjaus**: `main_controller.py`:n `_fetch_live_price()` mitätöi nyt vanhentuneen momentum-välimuistin (`self.momentum_cache.pop(ticker, None)`), jos kynttilähistoriaa ei saada.
+   - **Testi**: `test_fetch_live_price_invalidates_stale_momentum_cache` ([test_multi_portfolio.py](../tests/test_multi_portfolio.py#L612-L635)).
+
+10. **[KORJATTU] Korkea: P12:n limit-hinta voi tulla edellisen tickerin momentum-datasta.** Breakout-ehdokkaiden toteutussilmukka käytti keräyssilmukan jättämää `mom`-muuttujaa hakematta ehdokkaan omia momentum-tietoja.
+    - **Korjaus**: `main_controller.py`: ehdokastietueeseen tallennetaan sen oma `mom`-data (`cand["mom"]`), jota käytetään suoraan toteutussilmukassa `cand_mom`-muuttujan kautta.
+    - **Testi**: `test_p12_candidate_limit_uses_own_momentum_data` ([test_action_plan_improvements.py](../tests/test_action_plan_improvements.py#L302-L364)).
+
 ## Tarkistukset
 
-- `pytest -q tests/test_risk_manager.py tests/test_portfolio.py tests/test_rebalancer.py tests/test_ai_advisor.py tests/test_market_monitor.py`: **80 passed**.
-- Koko järjestelmän kattava testipatteristo `pytest`: **318 passed**.
-- Kaikki 4 raportoitua reunaehtobugia toistettu ja varmistettu korjatuiksi uusilla kohdennetuilla yksikkötesteillä.
+- `pytest -q tests/test_risk_manager.py tests/test_portfolio.py tests/test_rebalancer.py tests/test_ai_advisor.py`: **80 passed**.
+- `pytest -s tests/test_etf_watchlist.py`: **3 passed**.
+- `pytest -s tests/test_csv_importer.py`: **31 passed**.
+- `pytest -s tests/test_indicators.py`: **23 passed**.
+- `pytest -s tests/test_portfolio_manager.py`: **12 passed**.
+- `pytest -s tests/test_multi_portfolio.py -k test_fetch_live_price_invalidates_stale_momentum_cache`: **1 passed**.
+- `pytest -s tests/test_action_plan_improvements.py -k test_p12_candidate_limit_uses_own_momentum_data`: **1 passed**.
+- Kaikki 10 raportoitua logiikka- ja reunaehtobugia toistettu ja varmistettu korjatuiksi uusilla kohdennetuilla yksikkötesteillä.
 
 ## Jatkaminen
 
-Jatka tästä `clients/market_data_client.py`- ja `utils/indicators.py`-logiikasta sekä niiden testeistä. Pidä löydökset tässä tiedostossa, merkitse käsitellyt moduulit ja siirrä jatkoraja seuraavan valmiin osan jälkeen.
+Jatka tarkastelemalla `main_controller.py`-tiedoston positionhallinnan ja market-data-syklin muita ehtoja sekä niihin liittyviä testejä. Sen jälkeen jatka jäljellä oleviin `screener/`-liiketoimintalogiikan moduuleihin.

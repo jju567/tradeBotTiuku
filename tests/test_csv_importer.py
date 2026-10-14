@@ -216,3 +216,14 @@ class TestNordnetCSVImporter:
         assert count == 2
         assert "NOKIA.HE" in holdings
         assert "NESTE.HE" in holdings
+
+    def test_import_csv_header_on_second_line_preserves_holdings(self, tmp_path):
+        """When metadata is on row 1 and headers on row 2, holdings must be correctly imported."""
+        content = "Nordnet Salkkuraportti 2026-10-14\nNimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\n"
+        filepath = self._write_csv(tmp_path, content)
+        existing = {"NESTE.HE": {"quantity": 50, "avg_price": 25.0, "hodl": True}}
+        holdings, count = NordnetCSVImporter.import_csv(filepath, existing)
+        assert count == 1
+        assert "NOKIA.HE" in holdings
+        assert holdings["NOKIA.HE"]["quantity"] == 100
+        assert "NESTE.HE" in holdings  # HODL preserved

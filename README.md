@@ -347,11 +347,16 @@ tradeBotTiuku/
 │   ├── historical_reports/  # Tilinpäätös- ja osavuosikatsausraportit (PDF/TXT)
 │   ├── batch_results.csv    # Seulonnan konsolidoidut tulokset
 │   ├── watchlist_turnarounds.csv # Tunnistetut käänneyhtiöt
+├── docs/
+│   ├── LOGIIKKAKATSELMOINTI.md # Peruslogiikan koodikatselmoinnin havainnot ja korjaukset (10/10 korjattu)
+│   ├── LINUX_DAEMON_OHJEET.md # Linux-palvelinasennus ja systemd-ohjeet
+│   ├── OSAKEPOIMINTALOGIIKKA.md # Mikroyhtiöseulonnan säännöt ja fundamenttikriteerit
+│   └── BACKTEST_RAPORTTI.md # Bäkkäritulokset ja tutkimusraportit
 ├── scripts/
 │   ├── run_daily_sync.bat   # Windows-ajuri päivittäiselle walk-forward synkronoinnille klo 23:05
 │   ├── schedule_daily_sync.ps1 # Task Scheduler -asennin automaattiselle päiväajolle
 │   └── run_research_backtests.py # Tutkimusbäkkärit (P12, stop sweep, overlap, friction)
-└── tests/                   # Kattava pytest-testikokoelma (296 testiä)
+└── tests/                   # Kattava pytest-testikokoelma (320+ testiä)
 ```
 
 

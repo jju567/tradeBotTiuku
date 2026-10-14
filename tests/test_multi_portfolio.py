@@ -609,6 +609,31 @@ def test_master_daemon_run_scheduler(tmp_path):
         assert daemon.run_intraday_p12_tick not in [call.args[0] for call in mock_schedule.every.return_value.minutes.do.call_args_list]
 
 
+def test_fetch_live_price_invalidates_stale_momentum_cache():
+    engine = MarketDataEngine()
+    # Pre-populate momentum_cache with stale data
+    engine.momentum_cache["TEST.HE"] = {
+        "price": 10.0,
+        "day_volume": 1000,
+        "day_change_pct": 7.0,
+        "runup_3d_pct": 7.0,
+        "rsi_14": 65.0,
+    }
+
+    mock_ticker = MagicMock()
+    mock_fast_info = MagicMock()
+    mock_fast_info.last_price = 11.0
+    mock_ticker.fast_info = mock_fast_info
+    mock_ticker.history.return_value = pd.DataFrame()  # empty history
+
+    with patch("main_controller.yf.Ticker", return_value=mock_ticker):
+        price = engine._fetch_live_price("TEST.HE")
+
+    assert price == 11.0
+    # Stale momentum cache must have been invalidated/removed
+    assert "TEST.HE" not in engine.momentum_cache
+
+
 
 
 

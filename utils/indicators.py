@@ -17,11 +17,21 @@ def calculate_rsi(prices: List[float], period: int = 14) -> float:
     avg_gain = gain.rolling(window=period, min_periods=period).mean()
     avg_loss = loss.rolling(window=period, min_periods=period).mean()
 
-    rs = avg_gain / (avg_loss + 1e-10)
-    rsi = 100 - (100 / (1 + rs))
+    valid_g = avg_gain.dropna()
+    valid_l = avg_loss.dropna()
+    if valid_g.empty or valid_l.empty:
+        return 50.0
 
-    val = rsi.iloc[-1]
-    return float(val) if not np.isnan(val) else 50.0
+    last_gain = float(valid_g.iloc[-1])
+    last_loss = float(valid_l.iloc[-1])
+    if last_gain == 0.0 and last_loss == 0.0:
+        return 50.0
+    if last_loss == 0.0:
+        return 100.0
+
+    rs = last_gain / last_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return float(rsi) if not np.isnan(rsi) else 50.0
 
 
 def calculate_sma(prices: List[float], period: int = 50) -> float:

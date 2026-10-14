@@ -895,6 +895,9 @@ class MarketDataEngine:
                     }
                     return cur_price
             if cur_price:
+                # History was empty or missing valid closes.
+                # Invalidate stale momentum cache so stale price and signals won't be used!
+                self.momentum_cache.pop(ticker, None)
                 return cur_price
         except Exception as e:
             logger.debug(f"Could not fetch price for {ticker}: {e}")
@@ -1735,6 +1738,7 @@ class MasterLiveTradingDaemon:
                         "rsi_14": rsi_14,
                         "vol_surge": vol_surge,
                         "meta": meta,
+                        "mom": mom or {},
                         "score": vol_surge * day_change_pct,
                     })
 
@@ -1753,7 +1757,8 @@ class MasterLiveTradingDaemon:
                 day_change_pct = cand["day_change_pct"]
 
                 # Smart Routing & Limit Protection (Strict prohibition of Market orders)
-                ref_px = mom.get("vwap") if (mom.get("vwap") and mom.get("vwap") > 0) else (mom.get("last_candle_close") or cand_price)
+                cand_mom = cand.get("mom") or self.market_engine.momentum_cache.get(ticker) or {}
+                ref_px = cand_mom.get("vwap") if (cand_mom.get("vwap") and cand_mom.get("vwap") > 0) else (cand_mom.get("last_candle_close") or cand_price)
                 limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
                 target_limit = round(ref_px * (1.0 + limit_buf), 4)
 

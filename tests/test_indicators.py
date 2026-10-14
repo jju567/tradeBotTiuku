@@ -70,18 +70,11 @@ class TestCalculateRsi:
         result = calculate_rsi(prices, period=7)
         assert 0.0 <= result <= 100.0
 
-    def test_flat_prices_return_zero_or_neutral(self):
-        """Flat prices produce zero gains and zero losses.
-
-        With gain=0 and loss=0 the SMA-based RSI formula resolves to
-        RSI = 100 - 100/(1 + 0/(0+eps)) ≈ 0.0, NOT 50.
-        This is a known quirk of SMA-based RSI vs Wilder's EMA-based RSI.
-        The test documents and asserts the actual implementation behaviour.
-        """
+    def test_flat_prices_return_neutral(self):
+        """Flat prices produce zero gains and zero losses, returning neutral RSI 50.0."""
         prices = _flat(30)
         result = calculate_rsi(prices, period=14)
-        # SMA-RSI with flat prices → RS = 0 → RSI ≈ 0
-        assert result == pytest.approx(0.0, abs=5.0)
+        assert result == 50.0
 
 
 # ---------------------------------------------------------------------------

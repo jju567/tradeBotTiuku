@@ -54,3 +54,39 @@ def test_etf_dip_score_calculation():
     }
     score_normal = client.calculate_etf_dip_score(market_high, etf_meta)
     assert score_normal["score"] < 7.0
+
+
+def test_market_data_client_converts_usd_indicators_consistently():
+    from unittest.mock import MagicMock, patch
+    import pandas as pd
+
+    client = MarketDataClient()
+    usd_prices = [100.0 + i * 1.0 for i in range(250)]
+    df = pd.DataFrame({"Close": usd_prices})
+
+    mock_ticker = MagicMock()
+    mock_ticker.history.return_value = df
+    mock_ticker.info = {
+        "currency": "USD",
+        "shortName": "Apple Inc.",
+        "sector": "Technology",
+    }
+
+    fx_df = pd.DataFrame({"Close": [1.25]})
+    mock_fx_ticker = MagicMock()
+    mock_fx_ticker.history.return_value = fx_df
+
+    def ticker_side_effect(sym):
+        if sym == "EURUSD=X":
+            return mock_fx_ticker
+        return mock_ticker
+
+    with patch("clients.market_data_client.yf.Ticker", side_effect=ticker_side_effect):
+        data = client.get_market_data_for_symbols(["AAPL"])
+
+    assert len(data) == 1
+    res = data[0]
+    assert res["current_price"] == pytest.approx(279.20, abs=0.5)
+    assert res["sma_50"] < res["current_price"]
+    assert res["sma_200"] < res["sma_50"]
+    assert res["trend"] == "BULLISH"
