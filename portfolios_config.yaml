@@ -6,6 +6,10 @@ portfolios:
     slots: 10
     start_cash: 10000
     regions: ["FI", "SE", "US"]
+    partial_take_profit: true
+    take_profit_threshold_pct: 0.25   # +25% tuotto oston jälkeen laukaisee 50% osittaisen myynnin
+    partial_sell_fraction: 0.50       # Myydään 50% positiosta
+    partial_trailing_stop_pct: 0.15   # Jäljelle jäävä 50% roikkuu mukana -15% trailing stopilla
 
   P2_Fast_Cycle:
     strategy: "Profile B"
@@ -14,6 +18,10 @@ portfolios:
     slots: 10
     start_cash: 10000
     regions: ["FI", "SE", "US"]
+    partial_take_profit: true
+    take_profit_threshold_pct: 0.25
+    partial_sell_fraction: 0.50
+    partial_trailing_stop_pct: 0.15
 
   P3_Diamond_Hands:
     strategy: "Profile B"
@@ -22,6 +30,10 @@ portfolios:
     slots: 10
     start_cash: 10000
     regions: ["FI", "SE", "US"]
+    partial_take_profit: true
+    take_profit_threshold_pct: 0.25
+    partial_sell_fraction: 0.50
+    partial_trailing_stop_pct: 0.15
 
   P4_Institutional:
     strategy: "Profile B"
@@ -30,6 +42,10 @@ portfolios:
     slots: 10
     start_cash: 10000
     regions: ["FI", "SE", "US"]
+    partial_take_profit: true
+    take_profit_threshold_pct: 0.25
+    partial_sell_fraction: 0.50
+    partial_trailing_stop_pct: 0.15
 
   P5_Nordic_Only:
     strategy: "Profile B"
@@ -38,6 +54,7 @@ portfolios:
     slots: 10
     start_cash: 10000
     regions: ["FI", "SE"]
+    stop_loss_pct: 0.12             # Vakaampi -12% stop-loss pohjoismaisille laatuyhtiöille
 
   P6_US_Only:
     strategy: "Profile B"
@@ -46,6 +63,7 @@ portfolios:
     slots: 10
     start_cash: 10000
     regions: ["US"]
+    stop_loss_pct: 0.08             # Tiukempi -8% stop-loss korkean betan US-mikroyhtiöille
 
   P7_Deep_Value_Extreme:
     strategy: "Profile B"
@@ -101,8 +119,8 @@ portfolios:
     volume_surge_multiplier: 3.0   # Today_Volume >= 3.0 * ADV_20d
     min_price_change_pct: 2.0      # Today_Return >= +2.0%
     min_adv_20d: 50000             # Minimum 20-day ADV of 50,000 €
-    trailing_stop_pct: 0.06        # STRICT 6% trailing stop (based on parameter sweep)
+    trailing_stop_pct: 0.06        # STRICT 6% trailing stop
     max_holding_days: 21           # Time stop
     require_nlp_clean: true        # Must bypass if NLP verdict is REJECT
-
-
+    max_3d_runup_pct: 0.40         # Estä osto jos 3 päivän kumulatiivinen nousu > +40% (Exhaustion filter)
+    max_rsi_14: 80.0               # Estä osto jos RSI14 > 80 (Overbought filter)

@@ -213,18 +213,24 @@ python -m screener.main_controller --mass-scan
 Juuritason päämoottori reaaliaikaiseen 12 rinnakkaisen paperisalkun walk-forward -testaukseen ja tilastojen keräämiseen:
 - **Konfigurointi YAML-tiedostolla (`portfolios_config.yaml`)**:
   - Määrittelee 12 toisistaan erotettua salkkua, joilla jokaisella on 10,000 € virtuaalipääoma ja omat riskiparametrit:
-    1. `P1_Base`: Profile B, dead money 180d, min ADV 50k, 10 slottia (1,000 €/osto), alueet FI/SE/US.
-    2. `P2_Fast_Cycle`: Profile B, lyhyt dead money 90d (nopea pääoman kierrätys).
-    3. `P3_Diamond_Hands`: Profile B, pitkä dead money 365d (kestää väliaikaiset pohjamudat).
-    4. `P4_Institutional`: Profile B, korkea likviditeettivaatimus (min ADV 250,000 €).
-    5. `P5_Nordic_Only`: Profile B, sijoittaa ainoastaan Pohjoismaihin (FI, SE).
-    6. `P6_US_Only`: Profile B, sijoittaa ainoastaan Yhdysvaltoihin (US).
+    1. `P1_Base`: Profile B, dead money 180d, min ADV 50k, 10 slottia (1,000 €/osto), alueet FI/SE/US. Sisältää **Partial Take-Profit**: kun positio saavuttaa +25 % tuoton, 50 % osakkeista myydään voittojen lukitsemiseksi käteiseen ja jäljelle jäävää 50 % positiota suojataan -15 % trailing stopilla huipusta.
+    2. `P2_Fast_Cycle`: Profile B, lyhyt dead money 90d (nopea pääoman kierrätys). Sisältää myös Partial Take-Profit (+25 % TP, 50 % myynti, -15 % runner stop).
+    3. `P3_Diamond_Hands`: Profile B, pitkä dead money 365d (kestää väliaikaiset pohjamudat). Sisältää myös Partial Take-Profit (+25 % TP, 50 % myynti, -15 % runner stop).
+    4. `P4_Institutional`: Profile B, korkea likviditeettivaatimus (min ADV 250,000 €). Sisältää myös Partial Take-Profit (+25 % TP, 50 % myynti, -15 % runner stop).
+    5. `P5_Nordic_Only`: Profile B, sijoittaa ainoastaan Pohjoismaihin (FI, SE). Suojattu vakaammalla **-12 % stop-lossilla**, joka antaa laatuyhtiöille normaalin markkinaheilunnan liikkumavaran.
+    6. `P6_US_Only`: Profile B, sijoittaa ainoastaan Yhdysvaltoihin (US). Suojattu tiukalla **-8 % stop-lossilla**, joka leikkaa korkean betan US-mikroyhtiöiden nopeat romahdukset ennen suurtappioita.
     7. `P7_Deep_Value_Extreme`: Profile B, lisäsuodatin `price_to_cash < 0.5` (markkina-arvo alle puolet nettokassasta).
     8. `P8_Quality_Growth`: Profile A, sijoittaa kasvu- ja kannattavuussignaaleihin (kasvu > 20 %, kate > 40 %).
     9. `P9_High_Conviction`: Profile B, vain 5 slottia (2,000 €/osto) suurella vakaumuksella.
     10. `P10_Micro_Sniper`: Profile B, skaalattu kitkatestien perusteella 5 slottiin (2,000 €/osto, min ADV 150k) Nordnetin minimipalkkioiden syönnin eliminoimiseksi. Sisältää **hallitun siirtymärajoituksen (graceful transition limit)**: olemassa olevat 20 positiota säilyttävät täyden myyntisuojan (stop-lossit ja exitit), mutta uusia ostoja ei sallita ennen kuin positioiden määrä putoaa luonnollisesti alle 5:n.
     11. `P11_Meta_Consensus`: Meta_Consensus, 5 slottia (2,000 €/osto). Ei skannaa raakamarkkinaa, vaan treidaa P1–P10 -perussalkkujen reaaliaikaista konsensusta: vaatii sisääntuloon Conviction Scoren $\ge 8$ (⭐⭐⭐⭐+) sekä tagit `Institutional` (+1) JA (`Deep Value` (+2) TAI `Quality Growth` (+1)). **Globaali NLP-turvasulku**: vaikka vakaumuspisteet täyttyisivät, osto estetään tiukasti (`BUY BLOCKED`), mikäli osakkeella on aktiivinen globaali NLP `REJECT` -status (esim. diluutio- tai petosriski `nlp_decisions_archive.csv` / uutistutkassa). Myy automaattisesti, jos vakaumuspistemäärä putoaa alle 6 pisteen (`CONVICTION_DROP`) tai suojastopit laukeavat.
-    12. `P12_Momentum_Breakout`: Momentum_Breakout, 5 slottia (2,000 €/osto). Ketterä satelliittisalkku äärimmäisten volyymi- ja kurssibreakout-anomalioiden nappaamiseen (esim. NANEXA.ST, ELON.ST) ilman tase- tai kassariittävyysrajoitteita. Sisääntuloehdot: Päivävaihto $\ge 3.0 \times$ 20d ADV ja päivän päätöskurssin muutos $\ge +2.0\%$, eikä aktiivista NLP REJECT -leimaa. Sisältää sisäänrakennetun **käänteissplittisuojan** (`Ticker.splits` -kurssikorjaus yön yli -hypyille $> 2.0\times$, käänteissplittien uutiskielto sekä parabolinen $> +300\%$ sanity guard). Tiukka 6.0 % liukuva trailing stop huippukurssista (`Peak Price`), 21 päivän maksimipitoaika (momentum stall exit) ja osakkeiden järjestys anomalialuvun (`Volume Surge * Day Change %`) mukaan.
+    12. `P12_Momentum_Breakout`: Momentum_Breakout, 5 slottia (2,000 €/osto). Ketterä satelliittisalkku äärimmäisten volyymi- ja kurssibreakout-anomalioiden nappaamiseen (esim. NANEXA.ST, ELON.ST) ilman tase- tai kassariittävyysrajoitteita. Sisääntuloehdot: Päivävaihto $\ge 3.0 \times$ 20d ADV ja päivän päätöskurssin muutos $\ge +2.0\%$, eikä aktiivista NLP REJECT -leimaa. Sisältää **Exhaustion-suodattimen** (`max_3d_runup_pct: 0.40`, estää ostot jos 3 päivän kumulatiivinen nousu $> +40\%$) ja **Overbought-suodattimen** (`max_rsi_14: 80.0`, estää ostot huippuylikuumenemiseen), sekä sisäänrakennetun **käänteissplittisuojan** (`Ticker.splits` -kurssikorjaus, uutiskielto ja parabolinen $> +300\%$ sanity guard). Tiukka 6.0 % liukuva trailing stop huippukurssista (`Peak Price`), 21 päivän maksimipitoaika (momentum stall exit) ja osakkeiden järjestys anomalialuvun (`Volume Surge * Day Change %`) mukaan.
+- **🛡️ Markkinaregiimin Käteispuskuri (Market Regime Filter)**:
+  - Mikäli institutional-tason benchmark (`IWC`, Russell Micro-Cap ETF) putoaa alle 50 päivän liukuvan keskiarvonsa ($SMA_{50}$) tai markkinaregiimi on `CHOPPY` / `BEAR`, salkkujen maksimi-investointiaste rajoitetaan 60 prosenttiin.
+  - Salkut pakotetaan pitämään vähintään **4 000 € käteispuskuri** (40 % 10 000 € pääomasta), ja uudet ostot pysäytetään automaattisesti käteisen laskiessa tämän rajan alle.
+- **🌍 Aluekohtainen Riskien Eriytys (Regional Risk Differentiation)**:
+  - Yhdysvaltain mikroyhtiöiden korkean betan vuoksi US-osakkeet leikataan tiukalla **-8 % stop-lossilla**.
+  - Pohjoismaisille laatuyhtiöille (FI, SE, DK) sallitaan **-12 % liikkumavara**, mikä estää tervettä päiväheiluntaa ravistelemasta hyviä positioita ulos ennenaikaisesti.
 - **Yhteinen Markkinadatan Nouto (Single-Pass Market Engine)**:
   - Hakee reaaliaikaiset kurssit, 20d ADV:t, uutiset ja deterministiset fundamentit **tiukasti vain kerran syklissä** (säästää API-kutsuja ja estää yfinance-bannit).
 - **Itsenäinen Tilanhallinta (`data/portfolios/`)**:

@@ -328,6 +328,45 @@ def get_fx_to_account(
     return to_eur
 
 
+def get_ticker_region(ticker: str, known_market: Optional[str] = None) -> str:
+    """Resolves market region for ticker: FI (.HE), SE (.ST), DK (.CO), or US."""
+    if known_market and isinstance(known_market, str) and known_market.strip():
+        m = known_market.strip().upper()
+        if m in ("FI", "SE", "DK", "US"):
+            return m
+    t_clean = str(ticker).strip().upper()
+    if t_clean.endswith(".HE"):
+        return "FI"
+    if t_clean.endswith(".ST"):
+        return "SE"
+    if t_clean.endswith(".CO"):
+        return "DK"
+    return "US"
+
+
+def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
+    """Calculates Relative Strength Index (RSI)."""
+    if len(prices) < period + 1:
+        return 50.0
+    delta = prices.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+    valid_g = avg_gain.dropna()
+    valid_l = avg_loss.dropna()
+    if valid_g.empty or valid_l.empty:
+        return 50.0
+    last_gain = float(valid_g.iloc[-1])
+    last_loss = float(valid_l.iloc[-1])
+    if last_gain == 0.0 and last_loss == 0.0:
+        return 50.0
+    if last_loss == 0.0:
+        return 100.0
+    rs = last_gain / last_loss
+    return float(100.0 - (100.0 / (1.0 + rs)))
+
+
 def calculate_transaction_fee(gross_value: float, min_fee: float = MIN_BROKER_FEE) -> float:
     """Calculates realistic transaction fee: max(Gross Value * 0.20%, min_fee)."""
     return max(gross_value * VARIABLE_BROKER_FEE_PCT, min_fee)
@@ -353,6 +392,20 @@ class PortfolioConfig:
     max_holding_days: int = 21
     require_nlp_clean: bool = True
     min_adv_20d: Optional[float] = None
+    # Task 1: Exhaustion & Overbought filter for momentum breakouts
+    max_3d_runup_pct: Optional[float] = 0.40
+    max_rsi_14: Optional[float] = 80.0
+    # Task 2: Partial Take-Profit for fundamental portfolios
+    partial_take_profit: bool = False
+    take_profit_threshold_pct: float = 0.25
+    partial_sell_fraction: float = 0.50
+    partial_trailing_stop_pct: float = 0.15
+    # Task 4: Region-differentiated Stop-Loss (US -8%, Nordic -12%)
+    stop_loss_pct: Optional[float] = None
+    us_stop_loss_pct: float = 0.08
+    nordic_stop_loss_pct: float = 0.12
+    # Task 3: Market Regime cash buffer in CHOPPY/BEAR market
+    market_regime_cash_buffer_pct: float = 0.40
 
     @classmethod
     def from_dict(cls, pid: str, data: Dict[str, Any]) -> "PortfolioConfig":
@@ -376,6 +429,16 @@ class PortfolioConfig:
             trailing_stop_pct=float(data.get("trailing_stop_pct", 0.06)),
             max_holding_days=int(data.get("max_holding_days", 21)),
             require_nlp_clean=bool(data.get("require_nlp_clean", True)),
+            max_3d_runup_pct=float(data["max_3d_runup_pct"]) if data.get("max_3d_runup_pct") is not None else 0.40,
+            max_rsi_14=float(data["max_rsi_14"]) if data.get("max_rsi_14") is not None else 80.0,
+            partial_take_profit=bool(data.get("partial_take_profit", False)),
+            take_profit_threshold_pct=float(data.get("take_profit_threshold_pct", 0.25)),
+            partial_sell_fraction=float(data.get("partial_sell_fraction", 0.50)),
+            partial_trailing_stop_pct=float(data.get("partial_trailing_stop_pct", 0.15)),
+            stop_loss_pct=float(data["stop_loss_pct"]) if data.get("stop_loss_pct") is not None else None,
+            us_stop_loss_pct=float(data.get("us_stop_loss_pct", 0.08)),
+            nordic_stop_loss_pct=float(data.get("nordic_stop_loss_pct", 0.12)),
+            market_regime_cash_buffer_pct=float(data.get("market_regime_cash_buffer_pct", 0.40)),
         )
 
 
@@ -609,6 +672,7 @@ class MarketDataEngine:
         self.news_radar_cache: Dict[str, Tuple[str, str]] = {}
         self.momentum_cache: Dict[str, Dict[str, Any]] = {}
         self.universe_metadata: Dict[str, Dict[str, Any]] = {}
+        self.market_regime: Dict[str, Any] = {}
         # Operational health tracker (LLM fallback rate, data freshness blocks)
         self.operational_metrics: Dict[str, Any] = load_operational_metrics()
         # Global cache of evaluated news items (ticker, clean_headline) -> (decision, reason)
@@ -662,6 +726,26 @@ class MarketDataEngine:
         self.fx_rates = get_live_fx_rates()
         logger.info(f"📡 [MARKET ENGINE] Live FX Rates: EURUSD={self.fx_rates.get('EURUSD', 1.08):.4f}, EURSEK={self.fx_rates.get('EURSEK', 11.30):.4f}")
 
+        # Load or compute institutional market regime (IWC / Russell Microcap benchmark)
+        self.market_regime = {}
+        regime_file = BASE_DIR / "data" / "market_regime.json"
+        if regime_file.exists():
+            try:
+                self.market_regime = json.loads(regime_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if not self.market_regime:
+            try:
+                from quant_analytics import get_market_regime
+                self.market_regime = get_market_regime(benchmark_ticker="IWC")
+            except Exception as e:
+                logger.debug(f"Could not calculate market regime: {e}")
+        if self.market_regime:
+            reg_name = self.market_regime.get("regime", "UNKNOWN")
+            sma_50 = self.market_regime.get("sma_50", 0.0)
+            last_p = self.market_regime.get("last_price", 0.0)
+            logger.info(f"📊 [MARKET ENGINE] Market Regime: {reg_name} (IWC: {last_p:.2f}, SMA50: {sma_50:.2f})")
+
         if self.clean_universe_path.exists():
             try:
                 self.universe_df = pd.read_csv(self.clean_universe_path)
@@ -713,7 +797,7 @@ class MarketDataEngine:
             info = getattr(t, "fast_info", None)
             if info and hasattr(info, "last_price") and info.last_price:
                 cur_price = float(info.last_price)
-            hist = t.history(period="5d")
+            hist = t.history(period="1mo")
             if not hist.empty:
                 valid = hist["Close"].dropna()
                 if not valid.empty:
@@ -737,10 +821,26 @@ class MarketDataEngine:
                             pass
 
                     chg_pct = round(((cur_price - prev) / prev) * 100.0, 2) if prev > 0 else 0.0
+
+                    # 3-day cumulative runup calculation
+                    if len(valid) >= 4:
+                        p_3d = float(valid.iloc[-4])
+                        runup_3d_pct = round(((cur_price - p_3d) / p_3d) * 100.0, 2) if p_3d > 0 else 0.0
+                    elif len(valid) >= 2:
+                        p_old = float(valid.iloc[0])
+                        runup_3d_pct = round(((cur_price - p_old) / p_old) * 100.0, 2) if p_old > 0 else 0.0
+                    else:
+                        runup_3d_pct = chg_pct
+
+                    # 14-period technical RSI calculation
+                    rsi_14 = round(calculate_rsi(valid, period=14), 2)
+
                     self.momentum_cache[ticker] = {
                         "price": cur_price,
                         "day_volume": day_vol,
                         "day_change_pct": chg_pct,
+                        "runup_3d_pct": runup_3d_pct,
+                        "rsi_14": rsi_14,
                     }
                     return cur_price
             if cur_price:
@@ -969,17 +1069,108 @@ class MasterLiveTradingDaemon:
                 logger.debug(f"Failed to calculate conviction map for {portfolio.config.portfolio_id} exits: {e}")
 
         for pos in portfolio.positions:
-            ticker = pos["Ticker"]
-            buy_price = float(pos["Buy Price"])
-            shares = int(pos["Shares"])
-            capital_invested = float(pos.get("Capital Invested", shares * buy_price))
-            buy_date = pos["Buy Date"]
+            ticker = pos.get("Ticker") or pos.get("ticker")
+            buy_price = float(pos.get("Buy Price") or pos.get("buy_price", 0.0))
+            shares = int(float(pos.get("Shares") or pos.get("shares", 0)))
+            capital_invested = float(pos.get("Capital Invested") or pos.get("capital_invested", shares * buy_price))
+            buy_date = pos.get("Buy Date") or pos.get("buy_date")
+            ticker_curr = pos.get("Currency") or pos.get("currency") or get_ticker_currency(ticker)
+            fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
+            fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
 
             current_price = self.market_engine.prices_cache.get(ticker)
             if not current_price or current_price <= 0:
                 logger.warning(f"[{portfolio.config.portfolio_id}] ⚠️ {ticker}: Price unavailable. Retaining.")
                 retained_positions.append(pos)
                 continue
+
+            cur_peak = float(pos.get("Peak Price") or pos.get("peak_price") or pos.get("highest_price_seen") or buy_price)
+            if current_price > cur_peak:
+                cur_peak = current_price
+                pos["Peak Price"] = cur_peak
+                if "peak_price" in pos:
+                    pos["peak_price"] = cur_peak
+                if "highest_price_seen" in pos:
+                    pos["highest_price_seen"] = cur_peak
+
+            # --- Task 2: Partial Take-Profit (+25% gain triggers 50% partial sale into cash) ---
+            if portfolio.config.partial_take_profit:
+                has_taken_partial = bool(pos.get("partial_profit_taken", False))
+                gain_from_buy = (current_price - buy_price) / buy_price if buy_price > 0 else 0.0
+
+                if not has_taken_partial and gain_from_buy >= portfolio.config.take_profit_threshold_pct:
+                    shares_to_sell = math.floor(shares * portfolio.config.partial_sell_fraction)
+                    if shares_to_sell >= 1 and (shares - shares_to_sell) >= 1:
+                        gross_sale_value = shares_to_sell * current_price
+                        min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+                        transaction_fee = calculate_transaction_fee(gross_sale_value, min_fee=min_fee_local)
+                        net_return = gross_sale_value - transaction_fee
+                        cap_sold = capital_invested * (shares_to_sell / shares)
+                        net_pnl = net_return - cap_sold
+                        net_return_acc = net_return * fx_to_acc
+
+                        portfolio.cash_balance += net_return_acc
+
+                        tp_reason = (
+                            f"PARTIAL_TAKE_PROFIT (+{gain_from_buy*100:.1f}% >= +{portfolio.config.take_profit_threshold_pct*100:.0f}%, "
+                            f"sold {shares_to_sell}/{shares} shares)"
+                        )
+                        trade_record = {
+                            "Ticker": ticker,
+                            "Buy Date": buy_date,
+                            "Sell Date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                            "Buy Price": buy_price,
+                            "Sell Price": current_price,
+                            "Shares": shares_to_sell,
+                            "Capital Invested": round(cap_sold, 2),
+                            "Gross Sale Value": round(gross_sale_value, 2),
+                            "Transaction Fee": round(transaction_fee, 2),
+                            "Net Return": round(net_return, 2),
+                            "Net PnL": round(net_pnl, 2),
+                            "Exit Reason": tp_reason,
+                        }
+                        portfolio.append_trade(trade_record)
+
+                        logger.info(
+                            f"💰 [{portfolio.config.portfolio_id} PARTIAL TP] {ticker} | "
+                            f"Sold {shares_to_sell}/{shares} shares @ {current_price:.2f} {ticker_curr} (+{gain_from_buy*100:.1f}%) | "
+                            f"Locked profit: {net_pnl:+.2f} {ticker_curr} ({net_return_acc:,.2f} {portfolio.currency} to cash) | "
+                            f"Remaining: {shares - shares_to_sell} shares"
+                        )
+
+                        if run_trades is not None:
+                            run_trades.append({
+                                "portfolio_id": portfolio.config.portfolio_id,
+                                "action": "PARTIAL_TP",
+                                "ticker": ticker,
+                                "details": {
+                                    "exit_reason": tp_reason,
+                                    "sold_shares": shares_to_sell,
+                                    "remaining_shares": shares - shares_to_sell,
+                                    "sell_price": f"{current_price:.2f} {ticker_curr}",
+                                    "net_pnl": f"{net_pnl:+.2f} {ticker_curr}",
+                                    "cash_balance": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                                },
+                            })
+
+                        rem_shares = shares - shares_to_sell
+                        rem_capital = round(capital_invested - cap_sold, 2)
+                        for k_sh in ("Shares", "shares"):
+                            if k_sh in pos:
+                                pos[k_sh] = rem_shares
+                        for k_cap in ("Capital Invested", "capital_invested"):
+                            if k_cap in pos:
+                                pos[k_cap] = rem_capital
+                        pos["partial_profit_taken"] = True
+                        pos["partial_profit_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        pos["Peak Price"] = cur_peak
+                        if "peak_price" in pos:
+                            pos["peak_price"] = cur_peak
+                        if "highest_price_seen" in pos:
+                            pos["highest_price_seen"] = cur_peak
+
+                        retained_positions.append(pos)
+                        continue
 
             news_verdict, news_reason = self.market_engine.news_radar_cache.get(ticker, ("HOLD", "No news"))
             if news_verdict == "WARN" and run_trades is not None:
@@ -1027,12 +1218,30 @@ class MasterLiveTradingDaemon:
                 action = "SELL"
                 reason = f"NLP_{news_verdict} ({news_reason})"
 
-            # Dedicated Momentum Breakout Exits (Strict Trailing Stop 6%, Stalled Momentum 21d, NLP Clean Guard)
-            cur_peak = float(pos.get("Peak Price") or pos.get("peak_price") or buy_price)
-            if current_price > cur_peak:
-                cur_peak = current_price
-                pos["Peak Price"] = cur_peak
+            # --- Task 4: Region-differentiated Stop-Loss (US -8%, Nordic -12%) & Runner Trailing Stop ---
+            if action != "SELL" and portfolio.config.strategy != "Momentum_Breakout":
+                if pos.get("partial_profit_taken", False):
+                    # Runner position trailing stop (-15% from post-profit peak)
+                    drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
+                    if drawdown_from_peak >= portfolio.config.partial_trailing_stop_pct:
+                        action = "SELL"
+                        reason = f"PARTIAL_RUNNER_TRAILING_STOP (Peak {cur_peak:.2f} -> {current_price:.2f}, -{drawdown_from_peak*100:.1f}% >= -{portfolio.config.partial_trailing_stop_pct*100:.1f}%)"
+                else:
+                    pos_market = pos.get("market") or pos.get("Market")
+                    region = get_ticker_region(ticker, pos_market)
+                    if portfolio.config.stop_loss_pct is not None:
+                        effective_stop = portfolio.config.stop_loss_pct
+                    elif region == "US":
+                        effective_stop = portfolio.config.us_stop_loss_pct
+                    else:
+                        effective_stop = portfolio.config.nordic_stop_loss_pct
 
+                    loss_from_buy = (buy_price - current_price) / buy_price if buy_price > 0 else 0.0
+                    if loss_from_buy >= effective_stop:
+                        action = "SELL"
+                        reason = f"STOP_LOSS_{region} (Loss -{loss_from_buy*100:.1f}% >= -{effective_stop*100:.1f}%)"
+
+            # Dedicated Momentum Breakout Exits (Strict Trailing Stop 6%, Stalled Momentum 21d, NLP Clean Guard)
             if portfolio.config.strategy == "Momentum_Breakout":
                 drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
                 try:
@@ -1126,9 +1335,30 @@ class MasterLiveTradingDaemon:
                 logger.info(f"[{cfg.portfolio_id}] Max slots full ({open_count}/{cfg.slots}). Skipping new buys.")
             return 0
 
+        # Market Regime Cash Buffer (Task 3: Enforce max 60% investment / min 40% cash in CHOPPY/BEAR market)
+        regime_data = getattr(self.market_engine, "market_regime", {}) or {}
+        regime_str = str(regime_data.get("regime", "")).upper()
+        last_px = float(regime_data.get("last_price", 0.0) or 0.0)
+        sma_50 = float(regime_data.get("sma_50", 0.0) or 0.0)
+        is_below_sma50 = (last_px > 0 and sma_50 > 0 and last_px < sma_50)
+        is_choppy_or_bear = ("CHOPPY" in regime_str or "BEAR" in regime_str or is_below_sma50)
+
+        min_required_cash = 0.0
+        if is_choppy_or_bear:
+            buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
+            min_required_cash = cfg.start_cash * buffer_pct  # e.g. 4,000 EUR for 10,000 EUR start cash
+            if portfolio.cash_balance < min_required_cash:
+                logger.info(
+                    f"[{cfg.portfolio_id}] 🛡️ Market Regime Filter ACTIVE (Regime: {regime_str or 'CHOPPY'}, IWC < SMA50={is_below_sma50}). "
+                    f"Current cash ({portfolio.cash_balance:,.2f} EUR) < required cash reserve ({min_required_cash:,.2f} EUR / {buffer_pct*100:.0f}%). "
+                    f"Halting new BUY orders to enforce max {100-buffer_pct*100:.0f}% investment limit."
+                )
+                return 0
+
         target_allocation_acc = cfg.slot_size if (cfg.slot_size and cfg.slot_size > 0) else (cfg.start_cash / cfg.slots)
-        if portfolio.cash_balance < (MIN_BROKER_FEE + 10.0):
-            logger.info(f"[{cfg.portfolio_id}] Cash depleted ({portfolio.cash_balance:.2f}€). Skipping new buys.")
+        available_cash = portfolio.cash_balance - min_required_cash
+        if available_cash < (MIN_BROKER_FEE + 10.0):
+            logger.info(f"[{cfg.portfolio_id}] Available investable cash above regime buffer depleted ({available_cash:.2f}€). Skipping new buys.")
             return 0
 
         held_tickers = {p["Ticker"] for p in portfolio.positions}
@@ -1244,7 +1474,7 @@ class MasterLiveTradingDaemon:
                     continue
 
                 # Position sizing (slot_size or start_cash/slots)
-                eff_allocation_acc = min(target_allocation_acc, portfolio.cash_balance)
+                eff_allocation_acc = min(target_allocation_acc, available_cash)
                 ticker_curr = meta.get("currency", get_ticker_currency(ticker))
                 fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
                 fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
@@ -1272,10 +1502,11 @@ class MasterLiveTradingDaemon:
                 total_cost_local = actual_gross_buy + actual_fee
                 total_cost_acc = total_cost_local * fx_to_acc
 
-                if total_cost_acc > portfolio.cash_balance:
+                if total_cost_acc > available_cash:
                     continue
 
                 portfolio.cash_balance -= total_cost_acc
+                available_cash -= total_cost_acc
                 new_pos = {
                     "Ticker": ticker,
                     "Buy Date": today.strftime("%Y-%m-%d"),
@@ -1366,10 +1597,23 @@ class MasterLiveTradingDaemon:
 
                 day_change_pct = float(mom.get("day_change_pct", 0.0) or 0.0)
                 day_volume_shares = float(mom.get("day_volume", 0.0) or 0.0)
+                runup_3d_pct = float(mom.get("runup_3d_pct", 0.0) or 0.0)
+                rsi_14 = float(mom.get("rsi_14", 50.0) or 50.0)
 
                 # Sanity guard: reject unadjusted glitch jumps exceeding +300% on a single day
                 if day_change_pct > 300.0:
                     logger.warning(f"[{cfg.portfolio_id}] ⚠️ Skipping {ticker}: Suspicious parabolic spike (+{day_change_pct:.1f}%), likely split glitch.")
+                    continue
+
+                # Task 1: Exhaustion Filter (max 3-day runup, default +40%)
+                max_runup = cfg.max_3d_runup_pct * 100.0 if (cfg.max_3d_runup_pct and cfg.max_3d_runup_pct <= 1.0) else (cfg.max_3d_runup_pct or 40.0)
+                if runup_3d_pct > max_runup:
+                    logger.info(f"[{cfg.portfolio_id}] 🛑 Exhaustion filter: Skipping {ticker} (3-day runup +{runup_3d_pct:.1f}% > +{max_runup:.1f}%).")
+                    continue
+
+                # Task 1: Overbought Filter (max RSI14, default 80.0)
+                if cfg.max_rsi_14 is not None and rsi_14 > cfg.max_rsi_14:
+                    logger.info(f"[{cfg.portfolio_id}] 🛑 Overbought filter: Skipping {ticker} (RSI14 {rsi_14:.1f} > {cfg.max_rsi_14:.1f}).")
                     continue
 
                 # Volume surge multiplier: current volume in local currency vs 20d ADV
@@ -1385,6 +1629,8 @@ class MasterLiveTradingDaemon:
                         "ticker": ticker,
                         "cand_price": cand_price,
                         "day_change_pct": day_change_pct,
+                        "runup_3d_pct": runup_3d_pct,
+                        "rsi_14": rsi_14,
                         "vol_surge": vol_surge,
                         "meta": meta,
                         "score": vol_surge * day_change_pct,
@@ -1404,7 +1650,7 @@ class MasterLiveTradingDaemon:
                 vol_surge = cand["vol_surge"]
                 day_change_pct = cand["day_change_pct"]
 
-                eff_allocation_acc = min(target_allocation_acc, portfolio.cash_balance)
+                eff_allocation_acc = min(target_allocation_acc, available_cash)
                 ticker_curr = meta.get("currency", get_ticker_currency(ticker))
                 fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
                 fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
@@ -1428,10 +1674,11 @@ class MasterLiveTradingDaemon:
                 total_cost_local = actual_gross_buy + actual_fee
                 total_cost_acc = total_cost_local * fx_to_acc
 
-                if total_cost_acc > portfolio.cash_balance:
+                if total_cost_acc > available_cash:
                     continue
 
                 portfolio.cash_balance -= total_cost_acc
+                available_cash -= total_cost_acc
                 new_pos = {
                     "Ticker": ticker,
                     "Buy Date": today.strftime("%Y-%m-%d"),

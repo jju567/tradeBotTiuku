@@ -117,6 +117,29 @@ def get_ticker_region(ticker: str) -> str:
     return "US"
 
 
+def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
+    """Calculates Relative Strength Index (RSI)."""
+    if len(prices) < period + 1:
+        return 50.0
+    delta = prices.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+    valid_g = avg_gain.dropna()
+    valid_l = avg_loss.dropna()
+    if valid_g.empty or valid_l.empty:
+        return 50.0
+    last_gain = float(valid_g.iloc[-1])
+    last_loss = float(valid_l.iloc[-1])
+    if last_gain == 0.0 and last_loss == 0.0:
+        return 50.0
+    if last_loss == 0.0:
+        return 100.0
+    rs = last_gain / last_loss
+    return float(100.0 - (100.0 / (1.0 + rs)))
+
+
 def is_market_open_for_ticker(ticker: str, dt_helsinki: datetime, force_open: bool = False) -> bool:
     """Determines whether the trading venue for the given ticker is currently open."""
     if force_open:
@@ -438,8 +461,10 @@ class IntradayP12Scanner:
             if info and hasattr(info, "previous_close") and info.previous_close:
                 prev_close = float(info.previous_close)
 
-            # Retrieve candle history for volume and split verification
-            hist = t.history(period="5d")
+            # Retrieve candle history for volume, split verification, 3-day runup, and RSI14
+            hist = t.history(period="1mo")
+            runup_3d_pct = 0.0
+            rsi_14 = 50.0
             if not hist.empty:
                 valid = hist["Close"].dropna()
                 if not valid.empty:
@@ -464,17 +489,31 @@ class IntradayP12Scanner:
                         except Exception:
                             pass
 
+                    # 3-day cumulative runup
+                    if len(valid) >= 4:
+                        p_3d = float(valid.iloc[-4])
+                        runup_3d_pct = round(((cur_price - p_3d) / p_3d) * 100.0, 2) if p_3d > 0 else 0.0
+                    elif len(valid) >= 2:
+                        p_old = float(valid.iloc[0])
+                        runup_3d_pct = round(((cur_price - p_old) / p_old) * 100.0, 2) if p_old > 0 else 0.0
+
+                    rsi_14 = round(calculate_rsi(valid, period=14), 2)
+
             if not cur_price or cur_price <= 0:
                 return None
 
             prev = prev_close if (prev_close and prev_close > 0) else cur_price
             intraday_return_pct = round(((cur_price - prev) / prev) * 100.0, 2) if prev > 0 else 0.0
+            if runup_3d_pct == 0.0:
+                runup_3d_pct = intraday_return_pct
 
             return {
                 "price": cur_price,
                 "day_volume": day_volume,
                 "prev_close": prev,
                 "day_change_pct": intraday_return_pct,
+                "runup_3d_pct": runup_3d_pct,
+                "rsi_14": rsi_14,
             }
         except Exception as e:
             logger.debug(f"Failed to fetch live intraday data for {ticker}: {e}")
@@ -712,6 +751,21 @@ class IntradayP12Scanner:
             day_change_pct = quote["day_change_pct"]
 
             if cand_price < 0.10 or day_change_pct > 300.0:
+                continue
+
+            # Task 1: Exhaustion & Overbought filter (max 3-day runup +40%, max RSI14 80.0)
+            runup_3d_pct = float(quote.get("runup_3d_pct", 0.0) or 0.0)
+            rsi_14 = float(quote.get("rsi_14", 50.0) or 50.0)
+            max_runup = float(self.config.get("max_3d_runup_pct", 0.40))
+            if max_runup <= 1.0:
+                max_runup *= 100.0
+            max_rsi = float(self.config.get("max_rsi_14", 80.0))
+
+            if runup_3d_pct > max_runup:
+                logger.info(f"🛑 [EXHAUSTION FILTER] Skipping {ticker}: 3-day runup +{runup_3d_pct:.1f}% > +{max_runup:.1f}%")
+                continue
+            if rsi_14 > max_rsi:
+                logger.info(f"🛑 [OVERBOUGHT FILTER] Skipping {ticker}: RSI14 {rsi_14:.1f} > {max_rsi:.1f}")
                 continue
 
             # Today's turnover in currency vs 20-day ADV
