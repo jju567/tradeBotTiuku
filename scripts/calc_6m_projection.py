@@ -1,112 +1,89 @@
 # -*- coding: utf-8 -*-
 """
-6-Month Quantitative Return Projection Model for TradeBotTiuku
-Comparing:
-  1. BASELINE (Old rules: 1.25% slippage, penny stocks, no cash reserve in choppy)
-  2. NEW OY (Corporate: 500k ADV, Limit orders 0.2%, 40% cash in choppy, exhaustion filter, P12 10k compounding at 0% tax)
-  3. NEW AOT (Personal AOT: 500k ADV, Limit orders 0.2%, P12 capped at 5k to minimize turnover, 30% tax drag)
+6-Month Quantitative Return Projection for a 10,000 EUR Portfolio.
+Scenarios are kept strictly separate (no summing together).
+
+Portfolio Size: 10,000 EUR
+Models compared per scenario:
+  1. BASELINE (Vanhat säännöt: 1.25% market impact slippage, sub-500k penny stocks, no choppy buffer)
+  2. UUSI OY (Yritystili: 500k ADV, Limit orders 0.2%, 10 000 EUR täysi P12-pääoma, 0% välivero)
+  3. UUSI AOT (Henkilötili: 500k ADV, Limit orders 0.2%, P12 rajattu 5 000 EUR + 5 000 EUR käteinen, 30% verovähennys)
 """
 
-def simulate_6m(scenario):
-    if scenario == 'Bull':
-        # Recovery scenario after 3-week dip
-        core_oy_ret = 0.16          # +16% core fundamental recovery
-        core_aot_ret = 0.16 * 0.90  # ~14.4% (slight tax drag on partial take profits)
-        p12_monthly_oy = 0.045      # +4.5% net monthly in Oy
-        p12_monthly_aot = 0.045 * 0.70  # +3.15% net monthly after 30% tax
-        
-        core_base_ret = 0.12        # baseline missed exits / higher slippage
-        p12_base_monthly = 0.012    # heavy 1.25% slippage eats breakout alpha
-    elif scenario == 'Choppy':
-        # Sideways choppy market
-        core_oy_ret = 0.035         # +3.5% (40% cash buffer protects, partial TPs lock +25% spikes)
-        core_aot_ret = 0.035 * 0.92 # ~3.2%
-        p12_monthly_oy = 0.020      # +2.0% monthly in Oy
-        p12_monthly_aot = 0.020 * 0.70  # +1.4% monthly
-        
-        core_base_ret = -0.05       # whipsaws and false breakouts
-        p12_base_monthly = -0.015   # continuous slippage bleed
-    else:  # Bear
-        # Deep continuation of drop (-15% index)
-        core_oy_ret = -0.065        # -6.5% (stops trigger at -8% US / -12% Nordic, 40% cash buffer)
-        core_aot_ret = -0.065       # same
-        p12_monthly_oy = -0.010     # -1.0% monthly (trailing stop limits damage)
-        p12_monthly_aot = -0.010    # -1.0% monthly
-        
-        core_base_ret = -0.165      # full drawdown, holding penny stocks down 30-50%
-        p12_base_monthly = -0.042   # severe drawdown on illiquid microcaps
+def get_scenario_results():
+    base_capital = 10000.0
 
-    # 6-Month Compounded Rates
-    p12_base_6m = ((1 + p12_base_monthly)**6 - 1)
-    p12_oy_6m = ((1 + p12_monthly_oy)**6 - 1)
-    p12_aot_6m = ((1 + p12_monthly_aot)**6 - 1)
-
-    # BASELINE: Core 20k, P12 10k
-    p12_base_eur = 10000 * (1 + p12_base_6m)
-    core_base_eur = 20000 * (1 + core_base_ret)
-    base_total = core_base_eur + p12_base_eur
-
-    # OY: Core 20k, P12 10k
-    p12_oy_eur = 10000 * (1 + p12_oy_6m)
-    core_oy_eur = 20000 * (1 + core_oy_ret)
-    oy_total = core_oy_eur + p12_oy_eur
-
-    # AOT: Core 25k (20k core + 5k cash/core), P12 5k
-    p12_aot_eur = 5000 * (1 + p12_aot_6m)
-    core_aot_eur = 25000 * (1 + core_aot_ret)
-    aot_total = core_aot_eur + p12_aot_eur
-
-    return {
-        'Baseline': (base_total - 30000) / 30000,
-        'Base_EUR': base_total,
-        'Base_Core_EUR': core_base_eur,
-        'Base_P12_EUR': p12_base_eur,
-        'OY': (oy_total - 30000) / 30000,
-        'OY_EUR': oy_total,
-        'OY_Core_EUR': core_oy_eur,
-        'OY_P12_EUR': p12_oy_eur,
-        'AOT': (aot_total - 30000) / 30000,
-        'AOT_EUR': aot_total,
-        'AOT_Core_EUR': core_aot_eur,
-        'AOT_P12_EUR': p12_aot_eur,
-        'P12_OY_6M': p12_oy_6m,
-        'P12_AOT_6M': p12_aot_6m,
-        'P12_Base_6M': p12_base_6m
+    scenarios = {
+        "BULL (Nousu- ja toipumismarkkina)": {
+            "desc": "Markkinat toipuvat syksyn laskusta, momentum-osakkeet rallattavat.",
+            "baseline_pct": 0.074,     # +7.4% (high slippage & illiquid drags eat upside)
+            "oy_p12_pct": 0.302,       # +30.2% (10k compounded with limit orders & 500k ADV)
+            "aot_p12_pct": 0.205,      # +20.5% (after 30% tax drag on gains)
+        },
+        "CHOPPY (Sahaava sivuttaismarkkina)": {
+            "desc": "Indeksit sahaavat ilman selkeää suuntaa, vääriä murtoja.",
+            "baseline_pct": -0.086,    # -8.6% (slippage bleed and false breakouts)
+            "oy_p12_pct": 0.126,       # +12.6% (exhaustion filter & stops protect, selective gains)
+            "aot_p12_pct": 0.087,      # +8.7% (after 30% tax drag)
+        },
+        "BEAR (Syvä korjaus / laskumarkkina)": {
+            "desc": "Pääindeksit laskevat edelleen -10% ... -15%.",
+            "baseline_pct": -0.228,    # -22.8% (holding crashing microcaps without stops)
+            "oy_p12_pct": -0.059,      # -5.9% (trailing stops -6% and regional stops protect)
+            "aot_p12_pct": -0.059,     # -5.9%
+        }
     }
 
-scenarios = ['Bull', 'Choppy', 'Bear']
-probs = [0.50, 0.35, 0.15]
-res = {s: simulate_6m(s) for s in scenarios}
+    results = {}
+    for name, s in scenarios.items():
+        # 1. Baseline: 10 000 € vanhoilla säännöillä
+        base_profit = base_capital * s["baseline_pct"]
+        base_end = base_capital + base_profit
 
-for s in scenarios:
-    r = res[s]
-    print(f"=== SKENAARIO: {s.upper()} (Todennäköisyys: {int(probs[scenarios.index(s)]*100)} %) ===")
-    print(f"  BASELINE: {r['Baseline']*100:+.2f}% ({r['Base_EUR']:,.2f} EUR)")
-    print(f"  UUSI OY:  {r['OY']*100:+.2f}% ({r['OY_EUR']:,.2f} EUR) | P12 Tuotto: {r['P12_OY_6M']*100:+.1f}%")
-    print(f"  UUSI AOT: {r['AOT']*100:+.2f}% ({r['AOT_EUR']:,.2f} EUR) | P12 Tuotto: {r['P12_AOT_6M']*100:+.1f}%\n")
+        # 2. Uusi OY: 10 000 € täydellä P12-allokaatiolla
+        oy_profit = base_capital * s["oy_p12_pct"]
+        oy_end = base_capital + oy_profit
 
-ev_base = sum(res[s]['Baseline'] * p for s, p in zip(scenarios, probs))
-ev_oy = sum(res[s]['OY'] * p for s, p in zip(scenarios, probs))
-ev_aot = sum(res[s]['AOT'] * p for s, p in zip(scenarios, probs))
+        # 3. Uusi AOT: 5 000 € P12:ssa + 5 000 € käteisenä
+        aot_p12_profit = 5000.0 * s["aot_p12_pct"]
+        aot_cash_profit = 0.0  # käteispuskuri säilyttää pääoman
+        aot_total_profit = aot_p12_profit + aot_cash_profit
+        aot_end = base_capital + aot_total_profit
+        aot_total_pct = aot_total_profit / base_capital
 
-# Component-specific EVs
-p12_aot_ev_eur = sum((res[s]['AOT_P12_EUR'] - 5000) * p for s, p in zip(scenarios, probs))
-core_aot_ev_eur = sum((res[s]['AOT_Core_EUR'] - 25000) * p for s, p in zip(scenarios, probs))
+        results[name] = {
+            "desc": s["desc"],
+            "baseline": {"pct": s["baseline_pct"], "profit": base_profit, "end": base_end},
+            "oy": {"pct": s["oy_p12_pct"], "profit": oy_profit, "end": oy_end},
+            "aot": {
+                "total_pct": aot_total_pct,
+                "total_profit": aot_total_profit,
+                "total_end": aot_end,
+                "p12_pct": s["aot_p12_pct"],
+                "p12_profit": aot_p12_profit,
+                "p12_end": 5000.0 + aot_p12_profit,
+                "cash_end": 5000.0
+            }
+        }
+    return results
 
-p12_oy_ev_eur = sum((res[s]['OY_P12_EUR'] - 10000) * p for s, p in zip(scenarios, probs))
-core_oy_ev_eur = sum((res[s]['OY_Core_EUR'] - 20000) * p for s, p in zip(scenarios, probs))
-
-print("======================================================================")
-print("6KK TUOTON ODOTUSARVOT (E[R]) JA PAAOMA (Lahtotaso: 30 000 EUR)")
-print("======================================================================")
-print(f"BASELINE (Vanha):   {ev_base*100:+.2f}%  ->  {30000*(1+ev_base):,.2f} EUR")
-print(f"UUSI OY (Yritys):   {ev_oy*100:+.2f}%  ->  {30000*(1+ev_oy):,.2f} EUR")
-print(f"  |-- Core (20 000 EUR paaoma):  +{core_oy_ev_eur/20000*100:.2f}%  (+{core_oy_ev_eur:,.2f} EUR)")
-print(f"  +-- P12  (10 000 EUR paaoma):  +{p12_oy_ev_eur/10000*100:.2f}%  (+{p12_oy_ev_eur:,.2f} EUR)")
-print(f"UUSI AOT (Henkilo): {ev_aot*100:+.2f}%  ->  {30000*(1+ev_aot):,.2f} EUR")
-print(f"  |-- Core (25 000 EUR paaoma):  +{core_aot_ev_eur/25000*100:.2f}%  (+{core_aot_ev_eur:,.2f} EUR)")
-print(f"  +-- P12  ( 5 000 EUR paaoma):  +{p12_aot_ev_eur/5000*100:.2f}%  (+{p12_aot_ev_eur:,.2f} EUR)")
-print("----------------------------------------------------------------------")
-print(f"Yritysmallin etu (OY vs AOT): {(ev_oy - ev_aot)*100:+.2f}%-yksikkoa (+{(ev_oy - ev_aot)*30000:,.2f} EUR)")
-print(f"Arkkitehtuurin kokonaisalfa (OY vs Baseline): {(ev_oy - ev_base)*100:+.2f}%-yksikkoa (+{(ev_oy - ev_base)*30000:,.2f} EUR)")
-
+if __name__ == "__main__":
+    res = get_scenario_results()
+    print("======================================================================")
+    print("6KK TUOTTOARVIO 10 000 EUR PAAOMALLE - SKENAARIOT ERILLISINA")
+    print("======================================================================")
+    for name, r in res.items():
+        print(f"\n>>> SKENAARIO: {name}")
+        print(f"    Kuvaus: {r['desc']}")
+        print("    " + "-"*62)
+        b = r["baseline"]
+        o = r["oy"]
+        a = r["aot"]
+        print(f"    1. BASELINE (Vanha 10k):    {b['pct']*100:+.1f} %  |  Tuotto: {b['profit']:+8.2f} EUR  |  Loppusaldo: {b['end']:9.2f} EUR")
+        print(f"    2. UUSI OY (10k P12):       {o['pct']*100:+.1f} %  |  Tuotto: {o['profit']:+8.2f} EUR  |  Loppusaldo: {o['end']:9.2f} EUR")
+        print(f"    3. UUSI AOT (5k P12 + 5k):  {a['total_pct']*100:+.1f} %  |  Tuotto: {a['total_profit']:+8.2f} EUR  |  Loppusaldo: {a['total_end']:9.2f} EUR")
+        print(f"       * josta P12 (5 000 EUR): {a['p12_pct']*100:+.1f} %  |  Tuotto: {a['p12_profit']:+8.2f} EUR  |  Loppusaldo: {a['p12_end']:9.2f} EUR")
+        print(f"       * josta Kateinen:        0.0 %  |  Tuotto:     0.00 EUR  |  Loppusaldo: {a['cash_end']:9.2f} EUR")
+        print("    " + "-"*62)
+        print(f"    -> Yritysmallin (OY) lisatuotto vs AOT: {o['profit'] - a['total_profit']:+.2f} EUR")
+        print(f"    -> Uuden arkkitehtuurin suoja vs Vanha: {o['profit'] - b['profit']:+.2f} EUR")
