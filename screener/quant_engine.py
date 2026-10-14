@@ -23,8 +23,8 @@ def check_liquidity_and_spread(
     ticker: str,
     max_spread_pct: float = 4.0,
     min_volume: int = 2000,
-    commission_min_eur: float = 7.00,
-    commission_percent: float = 0.0015,
+    commission_min_eur: float = 9.00,
+    commission_percent: float = 0.0020,
     sample_trade_size_eur: float = 1000.0,
     max_total_friction_pct: float = 5.5,
 ) -> Dict[str, Any]:

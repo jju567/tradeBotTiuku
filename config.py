@@ -67,18 +67,20 @@ def _get_int(key: str, default: int) -> int:
 INITIAL_BALANCE = _get_float("INITIAL_BALANCE", 10000.0)
 
 # Nordnet Brokerage Fee Tiers
+# Taso 4 (0 kauppaa/kk): Kotimaa min 9.00 EUR / Ulkomaat min 15.00 EUR (0.20%)
 # Taso 3 (1-10 kauppaa/kk): Kotimaa min 7.00 EUR / Ulkomaat min 15.00 EUR (0.15%)
 # Taso 2 (11-50 kauppaa/kk): Kotimaa min 5.00 EUR / Ulkomaat min 13.00 EUR (0.10%)
 # Taso 1 (>50 kauppaa/kk): Kotimaa min 3.00 EUR / Ulkomaat min 10.00 EUR (0.06%)
-NORDNET_FEE_TIER = _get_int("NORDNET_FEE_TIER", 3)
+NORDNET_FEE_TIER = _get_int("NORDNET_FEE_TIER", 4)
 
 NORDNET_TIERS = {
     1: {"min_eur": 3.00, "min_foreign_eur": 10.00, "percent": 0.0006},
     2: {"min_eur": 5.00, "min_foreign_eur": 13.00, "percent": 0.0010},
     3: {"min_eur": 7.00, "min_foreign_eur": 15.00, "percent": 0.0015},
+    4: {"min_eur": 9.00, "min_foreign_eur": 15.00, "percent": 0.0020},
 }
 
-_tier_info = NORDNET_TIERS.get(NORDNET_FEE_TIER, NORDNET_TIERS[3])
+_tier_info = NORDNET_TIERS.get(NORDNET_FEE_TIER, NORDNET_TIERS[4])
 COMMISSION_MIN_EUR = _get_float("COMMISSION_MIN_EUR", _tier_info["min_eur"])
 COMMISSION_MIN_FOREIGN_EUR = _get_float("COMMISSION_MIN_FOREIGN_EUR", _tier_info["min_foreign_eur"])
 COMMISSION_PERCENT = _get_float("COMMISSION_PERCENT", _tier_info["percent"])
