@@ -406,6 +406,11 @@ class PortfolioConfig:
     nordic_stop_loss_pct: float = 0.12
     # Task 3: Market Regime cash buffer in CHOPPY/BEAR market
     market_regime_cash_buffer_pct: float = 0.40
+    # Architecture requirements: Smart Routing, Strict Limit Orders & Tax Drag Optimization
+    order_type: str = "LIMIT"
+    limit_buffer_pct: float = 0.002
+    time_in_force: str = "FOK_15MIN"
+    account_tax_profile: str = "AOT"
 
     @classmethod
     def from_dict(cls, pid: str, data: Dict[str, Any]) -> "PortfolioConfig":
@@ -439,6 +444,10 @@ class PortfolioConfig:
             us_stop_loss_pct=float(data.get("us_stop_loss_pct", 0.08)),
             nordic_stop_loss_pct=float(data.get("nordic_stop_loss_pct", 0.12)),
             market_regime_cash_buffer_pct=float(data.get("market_regime_cash_buffer_pct", 0.40)),
+            order_type=str(data.get("order_type", "LIMIT")),
+            limit_buffer_pct=float(data.get("limit_buffer_pct", 0.002)),
+            time_in_force=str(data.get("time_in_force", "FOK_15MIN")),
+            account_tax_profile=str(data.get("account_tax_profile", "AOT")),
         )
 
 
@@ -1021,27 +1030,67 @@ class MasterLiveTradingDaemon:
     Orchestrates the 10 parallel portfolios defined in portfolios_config.yaml.
     """
 
-    def __init__(self, config_yaml_path: Path = DEFAULT_PORTFOLIOS_YAML):
+    def __init__(self, config_yaml_path: Path = DEFAULT_PORTFOLIOS_YAML, tax_profile: Optional[str] = None):
         self.config_yaml_path = config_yaml_path
+        self.tax_profile = tax_profile
         self.portfolios: List[PortfolioInstance] = []
         self.market_engine = MarketDataEngine()
-        self.load_configurations()
+        self.load_configurations(tax_profile_override=tax_profile)
 
-    def load_configurations(self) -> None:
-        """Loads portfolios from YAML."""
+    def load_configurations(self, tax_profile_override: Optional[str] = None) -> None:
+        """Loads portfolios from YAML and applies tax efficiency & smart routing policies."""
         if not self.config_yaml_path.exists():
             raise FileNotFoundError(f"Config file not found: {self.config_yaml_path}")
 
         with open(self.config_yaml_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
 
+        tax_profile = (tax_profile_override or str(data.get("account_tax_profile", "AOT"))).upper()
+        order_routing = data.get("order_routing", {})
+        limit_buffer = float(order_routing.get("limit_buffer_pct", 0.002))
+        tif = str(order_routing.get("time_in_force", "FOK_15MIN"))
+
         portfolios_dict = data.get("portfolios", {})
         self.portfolios = []
         for pid, pdata in portfolios_dict.items():
-            cfg = PortfolioConfig.from_dict(pid, pdata)
+            pdata_copy = dict(pdata)
+            pdata_copy.setdefault("account_tax_profile", tax_profile)
+            pdata_copy.setdefault("limit_buffer_pct", limit_buffer)
+            pdata_copy.setdefault("time_in_force", tif)
+
+            cfg = PortfolioConfig.from_dict(pid, pdata_copy)
+
+            # Tax Drag Optimization & Capital Allocation
+            if tax_profile == "AOT":
+                # On personal AOT account: suppress P12 allocation to 5,000 € (slot 1,000 €) to minimize tax churn
+                if pid == "P12_Momentum_Breakout":
+                    cfg.start_cash = 5000.0
+                    cfg.slot_size = 1000.0
+                    cfg.min_adv = max(cfg.min_adv, 500000.0)
+                    cfg.min_adv_20d = max(cfg.min_adv_20d or 0.0, 500000.0)
+                elif pid in ["P5_Nordic_Only", "P9_High_Conviction", "P10_Micro_Sniper", "P11_Meta_Consensus"]:
+                    # Reallocate capital into multi-week/month holding portfolios
+                    cfg.start_cash = 11250.0
+                    if cfg.slot_size:
+                        cfg.slot_size = cfg.start_cash / cfg.slots
+            else:
+                # OY / corporate account: full 10,000 € compounding
+                if pid == "P12_Momentum_Breakout":
+                    cfg.min_adv = max(cfg.min_adv, 500000.0)
+                    cfg.min_adv_20d = max(cfg.min_adv_20d or 0.0, 500000.0)
+
             self.portfolios.append(PortfolioInstance(cfg))
 
         logger.info(f"Loaded {len(self.portfolios)} portfolio configurations from {self.config_yaml_path.name}")
+        if tax_profile == "AOT":
+            logger.info(
+                f"🏛️ [TAX OPTIMIZATION: AOT ACTIVE] High-turnover P12 capital reduced to 5,000 € (slot 1,000 €) "
+                f"to minimize capital gains tax drag. Long-holding portfolios P5/P9/P10/P11 boosted to 11,250 €."
+            )
+        else:
+            logger.info(
+                f"🏢 [TAX OPTIMIZATION: OY ACTIVE] Full compounding mode active. P12 operates at 10,000 € capital."
+            )
 
         # Task 3 Architectural Note (P1_Base, P2_Fast_Cycle, P3_Diamond_Hands):
         # Empirical overlap tests confirmed that P1, P2, and P3 currently have 100% portfolio overlap.
@@ -1507,6 +1556,8 @@ class MasterLiveTradingDaemon:
 
                 portfolio.cash_balance -= total_cost_acc
                 available_cash -= total_cost_acc
+                limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
+                target_limit = round(cand_price * (1.0 + limit_buf), 4)
                 new_pos = {
                     "Ticker": ticker,
                     "Buy Date": today.strftime("%Y-%m-%d"),
@@ -1515,6 +1566,9 @@ class MasterLiveTradingDaemon:
                     "Capital Invested": round(total_cost_local, 2),
                     "Strategy": cfg.strategy,
                     "Currency": ticker_curr,
+                    "Order Type": "LIMIT",
+                    "Limit Price": target_limit,
+                    "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
                 }
                 portfolio.positions.append(new_pos)
                 held_tickers.add(ticker)
@@ -1565,12 +1619,13 @@ class MasterLiveTradingDaemon:
                     if days_since_exit < REENTRY_COOLDOWN_DAYS:
                         continue
 
-                # ADV baseline check
+                # ADV baseline check (P12 enforces minimum 500,000 USD/EUR liquidity protection)
                 adv_local = meta.get("adv_20d_local", 0.0)
                 adv_usd = meta.get("adv_20d_usd", 0.0)
-                if cfg.min_adv > 0 and (adv_usd > 0 or adv_local > 0):
-                    if adv_usd < cfg.min_adv and adv_local < cfg.min_adv:
-                        continue
+                min_adv_threshold = float(cfg.min_adv if cfg.min_adv is not None else 500000.0)
+                adv_curr = adv_local if adv_local > 0 else adv_usd
+                if adv_curr < min_adv_threshold:
+                    continue
 
                 # NLP clean guard: Must NOT have an active NLP REJECT
                 if cfg.require_nlp_clean:
@@ -1650,6 +1705,20 @@ class MasterLiveTradingDaemon:
                 vol_surge = cand["vol_surge"]
                 day_change_pct = cand["day_change_pct"]
 
+                # Smart Routing & Limit Protection (Strict prohibition of Market orders)
+                ref_px = mom.get("vwap") if (mom.get("vwap") and mom.get("vwap") > 0) else (mom.get("last_candle_close") or cand_price)
+                limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
+                target_limit = round(ref_px * (1.0 + limit_buf), 4)
+
+                if cand_price > target_limit:
+                    logger.info(
+                        f"🛑 [{cfg.portfolio_id}] Smart Routing Limit: Skipping {ticker} (Market ask {cand_price:.2f} > Limit {target_limit:.2f}, "
+                        f"Ref {ref_px:.2f} +{limit_buf*100:.1f}%). Order killed (FOK 15min TTL) to prevent market impact slippage."
+                    )
+                    continue
+
+                fill_price = min(cand_price, target_limit)
+
                 eff_allocation_acc = min(target_allocation_acc, available_cash)
                 ticker_curr = meta.get("currency", get_ticker_currency(ticker))
                 fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
@@ -1665,11 +1734,11 @@ class MasterLiveTradingDaemon:
                 if investable_cash_local <= 0:
                     continue
 
-                shares_to_buy = math.floor(investable_cash_local / cand_price)
+                shares_to_buy = math.floor(investable_cash_local / fill_price)
                 if shares_to_buy <= 0:
                     continue
 
-                actual_gross_buy = shares_to_buy * cand_price
+                actual_gross_buy = shares_to_buy * fill_price
                 actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
                 total_cost_local = actual_gross_buy + actual_fee
                 total_cost_acc = total_cost_local * fx_to_acc
@@ -1682,21 +1751,24 @@ class MasterLiveTradingDaemon:
                 new_pos = {
                     "Ticker": ticker,
                     "Buy Date": today.strftime("%Y-%m-%d"),
-                    "Buy Price": cand_price,
+                    "Buy Price": fill_price,
                     "Shares": shares_to_buy,
                     "Capital Invested": round(total_cost_local, 2),
                     "Strategy": cfg.strategy,
                     "Currency": ticker_curr,
-                    "Peak Price": cand_price,
+                    "Peak Price": fill_price,
+                    "Order Type": "LIMIT",
+                    "Limit Price": target_limit,
+                    "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
                 }
                 portfolio.positions.append(new_pos)
                 held_tickers.add(ticker)
                 new_buys += 1
 
                 logger.info(
-                    f"🚀 [{cfg.portfolio_id} BUY] {ticker} (Momentum Surge: {vol_surge:.1f}x ADV, +{day_change_pct:.1f}%) | "
-                    f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
-                    f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
+                    f"🚀 [{cfg.portfolio_id} LIMIT BUY] {ticker} (Surge: {vol_surge:.1f}x ADV, +{day_change_pct:.1f}%) | "
+                    f"Limit: {target_limit:.2f} | Fill: {fill_price:.2f} {ticker_curr} | "
+                    f"Bought {shares_to_buy} shares | Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
                     f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
                 )
 
@@ -1836,6 +1908,8 @@ class MasterLiveTradingDaemon:
                 continue
 
             portfolio.cash_balance -= total_cost_acc
+            limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
+            target_limit = round(cand_price * (1.0 + limit_buf), 4)
             new_pos = {
                 "Ticker": ticker,
                 "Buy Date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -1844,6 +1918,9 @@ class MasterLiveTradingDaemon:
                 "Capital Invested": round(total_cost_local, 2),
                 "Strategy": cfg.strategy,
                 "Currency": ticker_curr,
+                "Order Type": "LIMIT",
+                "Limit Price": target_limit,
+                "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
             }
             portfolio.positions.append(new_pos)
             held_tickers.add(ticker)
@@ -2487,10 +2564,11 @@ def main() -> None:
     parser.add_argument("--reset-portfolios", action="store_true", help="Reset all portfolios to 10,000 EUR starting capital")
     parser.add_argument("--portfolio", type=str, default=None, help="Optionally run or test a single portfolio by ID")
     parser.add_argument("--sync-universe", action="store_true", help="Force an immediate dynamic universe scan for new listings from Nordnet")
+    parser.add_argument("--tax-profile", type=str, choices=["AOT", "OY"], default=None, help="Tax structure ('AOT' for personal account with P12 cap, 'OY' for corporate full compounding)")
 
     args = parser.parse_args()
 
-    daemon = MasterLiveTradingDaemon()
+    daemon = MasterLiveTradingDaemon(tax_profile=args.tax_profile)
 
     if args.sync_universe:
         logger.info("🔄 [CLI] Forcing immediate dynamic universe scan from Nordnet...")

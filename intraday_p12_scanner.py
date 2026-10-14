@@ -285,6 +285,7 @@ class IntradayP12Scanner:
         nlp_archive_path: Path = DEFAULT_NLP_ARCHIVE_CSV,
         force_open: bool = False,
         check_only: bool = False,
+        tax_profile: Optional[str] = None,
     ):
         self.portfolios_dir = Path(portfolios_dir)
         self.config_path = Path(config_path)
@@ -292,6 +293,7 @@ class IntradayP12Scanner:
         self.nlp_archive_path = Path(nlp_archive_path)
         self.force_open = force_open
         self.check_only = check_only
+        self.tax_profile = tax_profile.upper() if tax_profile else None
 
         self.portfolio_id = "P12_Momentum_Breakout"
         self.state_file = self.portfolios_dir / f"portfolio_{self.portfolio_id}_state.json"
@@ -310,19 +312,42 @@ class IntradayP12Scanner:
             "start_cash": 10000.0,
             "volume_surge_multiplier": 3.0,
             "min_price_change_pct": 2.0,
-            "min_adv_20d": 50000.0,
+            "min_adv_20d": 500000.0,
+            "min_adv": 500000.0,
+            "order_type": "LIMIT",
+            "limit_buffer_pct": 0.002,
+            "time_in_force": "FOK_15MIN",
             "trailing_stop_pct": 0.06,
             "max_holding_days": 21,
             "require_nlp_clean": True,
+            "max_3d_runup_pct": 0.40,
+            "max_rsi_14": 80.0,
+            "account_tax_profile": "AOT",
         }
         if self.config_path.exists():
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
+                
+                # Check tax profile
+                tax_prof = (self.tax_profile or data.get("account_tax_profile", "AOT")).upper()
+                defaults["account_tax_profile"] = tax_prof
+
                 p_cfg = data.get("portfolios", {}).get(self.portfolio_id, {})
                 for k, v in p_cfg.items():
                     if k in defaults and v is not None:
                         defaults[k] = v
+
+                # Tax Drag Optimization: On personal AOT, cap P12 allocation to 5,000 € (slot 1,000 €)
+                if tax_prof == "AOT":
+                    if "slot_size" not in p_cfg:
+                        defaults["slot_size"] = 1000.0
+                    if "start_cash" not in p_cfg:
+                        defaults["start_cash"] = 5000.0
+                    logger.info(f"🏛️ [TAX PROFILE: AOT] P12 high-turnover allocation capped at {defaults['start_cash']:,.0f} € (slot {defaults['slot_size']:,.0f} €) to minimize tax drag.")
+                else:
+                    logger.info(f"🏢 [TAX PROFILE: OY] P12 corporate compounding active: {defaults['start_cash']:,.0f} € (slot {defaults['slot_size']:,.0f} €).")
+
             except Exception as e:
                 logger.warning(f"Error loading {self.config_path}, using defaults: {e}")
         return defaults
@@ -499,6 +524,15 @@ class IntradayP12Scanner:
 
                     rsi_14 = round(calculate_rsi(valid, period=14), 2)
 
+                    # Intraday VWAP calculation
+                    vwap: Optional[float] = None
+                    if "Volume" in hist and "Close" in hist:
+                        valid_v = hist[hist["Volume"] > 0]
+                        if not valid_v.empty:
+                            tot_v = float(valid_v["Volume"].sum())
+                            if tot_v > 0:
+                                vwap = round(float((valid_v["Close"] * valid_v["Volume"]).sum() / tot_v), 4)
+
             if not cur_price or cur_price <= 0:
                 return None
 
@@ -511,6 +545,7 @@ class IntradayP12Scanner:
                 "price": cur_price,
                 "day_volume": day_volume,
                 "prev_close": prev,
+                "vwap": vwap,
                 "day_change_pct": intraday_return_pct,
                 "runup_3d_pct": runup_3d_pct,
                 "rsi_14": rsi_14,
@@ -780,6 +815,8 @@ class IntradayP12Scanner:
                 breakout_candidates.append({
                     "ticker": ticker,
                     "price": cand_price,
+                    "prev_close": quote.get("prev_close"),
+                    "vwap": quote.get("vwap"),
                     "vol_surge": vol_surge,
                     "day_change_pct": day_change_pct,
                     "currency": cand["currency"],
@@ -800,6 +837,24 @@ class IntradayP12Scanner:
             cand_price = b_cand["price"]
             vol_surge = b_cand["vol_surge"]
             day_change_pct = b_cand["day_change_pct"]
+            prev_close = b_cand.get("prev_close")
+            vwap = b_cand.get("vwap")
+
+            # Smart Routing: Strict LIMIT Enforcement (Market orders strictly forbidden)
+            # Reference price: VWAP if available, else latest candle close / trigger price
+            ref_px = vwap if (vwap and vwap > 0) else (b_cand.get("last_candle_close") or cand_price)
+            limit_buffer_pct = float(self.config.get("limit_buffer_pct", 0.002))
+            target_limit_price = round(ref_px * (1.0 + limit_buffer_pct), 4)
+
+            # If market ask exceeds target limit, price ran away -> cancel order (FOK 15-min TTL)
+            if cand_price > target_limit_price:
+                logger.info(
+                    f"🛑 [SMART ROUTING LIMIT] Skipping {ticker}: Market ask ({cand_price:.2f}) > Limit ({target_limit_price:.2f}, "
+                    f"Ref: {ref_px:.2f} +{limit_buffer_pct*100:.1f}%). Order cancelled (FOK 15-min TTL) to prevent market impact slippage."
+                )
+                continue
+
+            fill_price = min(cand_price, target_limit_price)
 
             eff_allocation_acc = min(target_allocation_acc, self.state["cash_balance"])
             ticker_curr = get_ticker_currency(ticker, b_cand.get("currency"))
@@ -816,11 +871,11 @@ class IntradayP12Scanner:
             if investable_cash_local <= 0:
                 continue
 
-            shares_to_buy = math.floor(investable_cash_local / cand_price)
+            shares_to_buy = math.floor(investable_cash_local / fill_price)
             if shares_to_buy <= 0:
                 continue
 
-            actual_gross_buy = shares_to_buy * cand_price
+            actual_gross_buy = shares_to_buy * fill_price
             actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
             total_cost_local = actual_gross_buy + actual_fee
             total_cost_acc = total_cost_local * fx_to_acc
@@ -832,20 +887,23 @@ class IntradayP12Scanner:
             new_pos = {
                 "Ticker": ticker,
                 "Buy Date": now_helsinki.strftime("%Y-%m-%d"),
-                "Buy Price": cand_price,
+                "Buy Price": fill_price,
                 "Shares": shares_to_buy,
                 "Capital Invested": round(total_cost_local, 2),
                 "Strategy": "Momentum_Breakout",
                 "Currency": ticker_curr,
-                "Peak Price": cand_price,
+                "Peak Price": fill_price,
+                "Order Type": "LIMIT",
+                "Limit Price": target_limit_price,
+                "Time In Force": "FOK_15MIN",
             }
             self.state["positions"].append(new_pos)
             new_buys += 1
 
             logger.info(
-                f"🚀 [P12 BUY EXECUTED] {ticker} (Surge: {vol_surge:.1f}x ADV, +{day_change_pct:.1f}%) | "
-                f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
-                f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} EUR) | "
+                f"🚀 [P12 LIMIT BUY EXECUTED] {ticker} (Surge: {vol_surge:.1f}x ADV, +{day_change_pct:.1f}%) | "
+                f"Limit: {target_limit_price:.2f} | Fill: {fill_price:.2f} {ticker_curr} | "
+                f"Bought {shares_to_buy} shares | Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} EUR) | "
                 f"Remaining Cash: {self.state['cash_balance']:,.2f} EUR"
             )
             if not self.check_only:
@@ -856,10 +914,13 @@ class IntradayP12Scanner:
                         ticker=ticker,
                         details={
                             "action": "BUY",
+                            "order_type": "LIMIT",
+                            "limit_price": f"{target_limit_price:.2f} {ticker_curr}",
+                            "time_in_force": "FOK_15MIN",
                             "volume_surge": f"{vol_surge:.1f}x ADV",
                             "day_change": f"+{day_change_pct:.1f}%",
                             "shares": shares_to_buy,
-                            "buy_price": f"{cand_price:.2f} {ticker_curr}",
+                            "buy_price": f"{fill_price:.2f} {ticker_curr}",
                             "total_cost": f"{total_cost_acc:,.2f} EUR",
                         },
                     )
@@ -971,6 +1032,7 @@ def main() -> None:
     parser.add_argument("--portfolios-dir", type=str, default=str(DEFAULT_PORTFOLIOS_DIR), help="Path to portfolios directory")
     parser.add_argument("--universe-path", type=str, default=str(DEFAULT_CLEAN_UNIVERSE_CSV), help="Path to clean microcap universe CSV")
     parser.add_argument("--config-path", type=str, default=str(DEFAULT_PORTFOLIOS_YAML), help="Path to portfolios_config.yaml")
+    parser.add_argument("--tax-profile", type=str, choices=["AOT", "OY"], default=None, help="Tax structure ('AOT' for personal account with P12 cap, 'OY' for corporate full compounding)")
 
     args = parser.parse_args()
 
@@ -980,6 +1042,7 @@ def main() -> None:
         universe_path=Path(args.universe_path),
         force_open=args.force_market_open,
         check_only=args.check_only,
+        tax_profile=args.tax_profile,
     )
 
     if args.loop:

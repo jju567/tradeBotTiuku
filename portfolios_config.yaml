@@ -1,3 +1,10 @@
+# System Global Configuration
+account_tax_profile: "AOT"          # "AOT" (Henkilökohtainen AOT: P12 allokaatio 5k, verokiilan minimointi) tai "OY" (Yritys/Vakuutuskuori: P12 10k, vapaa kasvu)
+order_routing:
+  enforce_limit_only: true         # Ehdoton Market-toimeksiantojen kielto (Market Impact / Slippage -suoja)
+  limit_buffer_pct: 0.002          # Max +0.2% edellisen kynttilän päätöskurssiin / VWAP-hintaan
+  time_in_force: "FOK_15MIN"       # Fill-Or-Kill / 15 minuutin aikaraja, jos hinta karkaa tilaus perutaan
+
 portfolios:
   P1_Base:
     strategy: "Profile B"
@@ -118,7 +125,11 @@ portfolios:
     start_cash: 10000
     volume_surge_multiplier: 3.0   # Today_Volume >= 3.0 * ADV_20d
     min_price_change_pct: 2.0      # Today_Return >= +2.0%
-    min_adv_20d: 50000             # Minimum 20-day ADV of 50,000 €
+    min_adv_20d: 500000            # Kymmenkertaistettu ADV (500 000 USD/EUR) markkinavaikutuksen minimoimiseksi (<0.5% päivävaihdosta)
+    min_adv: 500000
+    order_type: "LIMIT"            # Ehdoton LIMIT-toimeksianto (kielletty MARKET)
+    limit_buffer_pct: 0.002        # Max +0.2% edellisen kynttilän päätöskurssiin / VWAP
+    time_in_force: "FOK_15MIN"     # 15 min aikaraja, jos hinta karkaa tilaus perutaan
     trailing_stop_pct: 0.06        # STRICT 6% trailing stop
     max_holding_days: 21           # Time stop
     require_nlp_clean: true        # Must bypass if NLP verdict is REJECT

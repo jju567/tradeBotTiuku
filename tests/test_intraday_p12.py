@@ -173,7 +173,7 @@ def test_breakout_scanner_executes_buy(tmp_path):
     universe_file = tmp_path / "clean_universe.csv"
     universe_file.write_text(
         "ticker,market,adv_20d_local,adv_20d_usd,currency\n"
-        "BREAKOUT.ST,SE,100000.0,10000.0,SEK\n",
+        "BREAKOUT.ST,SE,600000.0,60000.0,SEK\n",
         encoding="utf-8",
     )
 
@@ -186,7 +186,7 @@ def test_breakout_scanner_executes_buy(tmp_path):
     # Mock quote with 4x ADV surge and +5% return
     scanner.fetch_live_intraday_data = MagicMock(return_value={
         "price": 10.0,
-        "day_volume": 40000.0,  # 40000 * 10 = 400,000 SEK (4x 100,000 ADV)
+        "day_volume": 240000.0,  # 240000 * 10 = 2,400,000 SEK (4x 600,000 ADV)
         "prev_close": 9.52,
         "day_change_pct": 5.04,
     })

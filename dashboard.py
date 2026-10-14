@@ -992,7 +992,7 @@ with st.sidebar:
         st.caption(
             f"🎯 **{p_meta.get('strategy', 'Profile B')}** &bull; Slots: {p_meta.get('slots', 10)} ({alloc_eur:,.0f} €/kpl)\n"
             f"- Dead Money: `{p_meta.get('dead_money_days', 180)}d`\n"
-            f"- Min ADV: `{p_meta.get('min_adv', 50000):,.0f} €`\n"
+            f"- Min ADV: `{p_meta.get('min_adv_20d', p_meta.get('min_adv', 50000)):,.0f} €`\n"
             f"- Alueet: `{', '.join(p_meta.get('regions', ['FI', 'SE', 'US']))}`"
         )
         if p_meta.get("extra_filter"):
@@ -1536,7 +1536,7 @@ def render_dashboard_views(active_menu: str):
                 f"Strategia: **{portfolio_meta.get('strategy', 'Profile B')}** | "
                 f"Slots: **{portfolio_meta.get('slots', 10)}** ({alloc_eur:,.0f} €/osto) | "
                 f"Dead Money: **{portfolio_meta.get('dead_money_days', 180)}d** | "
-                f"Min ADV: **{portfolio_meta.get('min_adv', 50000):,.0f} €** | "
+                f"Min ADV: **{portfolio_meta.get('min_adv_20d', portfolio_meta.get('min_adv', 50000)):,.0f} €** | "
                 f"Alueet: **{', '.join(portfolio_meta.get('regions', ['FI', 'SE', 'US']))}**{filter_note}"
             )
 
