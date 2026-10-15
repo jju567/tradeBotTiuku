@@ -66,7 +66,11 @@ from screener.financial_metrics_engine import evaluate_profiles, get_hard_financ
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
 from screener.portfolio_manager import evaluate_position
 from screener.web_verifier import FATAL_RED_FLAG_PATTERNS, RED_FLAG_PATTERNS, WARN_PATTERNS
-from screener.tiered_filters import matches_universe_filter
+from screener.tiered_filters import (
+    matches_universe_filter,
+    get_market_cap_in_eur,
+    get_market_cap_in_usd,
+)
 from quant_analytics import calculate_top_picks_conviction
 
 # Backwards compatibility exports
@@ -754,28 +758,31 @@ class MarketDataEngine:
             }
 
         all_tickers = set(self.universe_metadata.keys()).union(held_tickers)
-        logger.info(f"📡 [MARKET ENGINE] Querying data for {len(all_tickers)} unique symbols ({len(held_tickers)} held across portfolios)...")
+        logger.info(f"📡 [MARKET ENGINE] Initializing data cache for {len(all_tickers)} symbols ({len(held_tickers)} held across portfolios)...")
 
         for ticker in all_tickers:
-            # 1. Fetch live price
+            fallback_px = self.universe_metadata.get(ticker, {}).get("current_price", 0.0)
+            if fallback_px > 0:
+                self.prices_cache[ticker] = fallback_px
+
+        # Refresh live price, financials, and news radar for active held positions
+        for ticker in held_tickers:
             px = self._fetch_live_price(ticker)
             if px and px > 0:
                 self.prices_cache[ticker] = px
-            else:
-                fallback_px = self.universe_metadata.get(ticker, {}).get("current_price", 0.0)
-                if fallback_px > 0:
-                    self.prices_cache[ticker] = fallback_px
-
-            # 2. Evaluate hard financials
-            hard_facts = get_hard_financials(ticker)
-            self.hard_facts_cache[ticker] = hard_facts
-            self.eval_profiles_cache[ticker] = evaluate_profiles(hard_facts)
-
-            # 3. Evaluate News Radar for held positions and viable candidates
-            if ticker in held_tickers or self.eval_profiles_cache[ticker].get("is_profile_b") or self.eval_profiles_cache[ticker].get("is_profile_a"):
-                self.news_radar_cache[ticker] = self._evaluate_news_radar(ticker)
+            self.get_ticker_hard_facts(ticker)
+            self.news_radar_cache[ticker] = self._evaluate_news_radar(ticker)
 
         logger.info(f"✅ [MARKET ENGINE] Market data pre-fetch completed. Ready to process portfolios.")
+
+    def get_ticker_hard_facts(self, ticker: str) -> Dict[str, Any]:
+        """Returns hard financials from cache, or fetches on-demand."""
+        if ticker in self.hard_facts_cache:
+            return self.hard_facts_cache[ticker]
+        hard_facts = get_hard_financials(ticker)
+        self.hard_facts_cache[ticker] = hard_facts
+        self.eval_profiles_cache[ticker] = evaluate_profiles(hard_facts)
+        return hard_facts
 
     def _fetch_live_price(self, ticker: str) -> Optional[float]:
         try:
@@ -1493,12 +1500,36 @@ class MasterLiveTradingDaemon:
                         if days_since_exit < REENTRY_COOLDOWN_DAYS:
                             continue
 
+                    # Region pre-filter to bypass irrelevant stocks instantly
+                    m_reg = str(meta.get("market", "")).strip().upper()
+                    if "nordic" in u_filter.lower() and m_reg not in ("FI", "SE", "DK", "NO"):
+                        continue
+                    if "us_" in u_filter.lower() and m_reg != "US":
+                        continue
+
+                    # Market cap tier pre-filter to avoid expensive network calls for out-of-tier tickers
+                    if u_filter == "Nordic_MidCap_Compounder":
+                        mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
+                        if mcap_eur > 0 and not (150_000_000.0 <= mcap_eur <= 2_000_000_000.0):
+                            continue
+                    elif u_filter == "US_MicroCap_Growth":
+                        mcap_usd = get_market_cap_in_usd(meta, fx_rates=self.market_engine.fx_rates)
+                        if mcap_usd > 0 and not (30_000_000.0 <= mcap_usd <= 350_000_000.0):
+                            continue
+                    elif u_filter == "Nordic_MicroCap_Catalyst":
+                        mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
+                        if mcap_eur > 0 and not (15_000_000.0 <= mcap_eur < 150_000_000.0):
+                            continue
+
                     # NLP Safety Guard
                     news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
                     if news_verdict == "REJECT":
                         continue
 
-                    hard_facts = self.market_engine.hard_facts_cache.get(ticker, {})
+                    if hasattr(self.market_engine, "get_ticker_hard_facts"):
+                        hard_facts = self.market_engine.get_ticker_hard_facts(ticker)
+                    else:
+                        hard_facts = getattr(self.market_engine, "hard_facts_cache", {}).get(ticker, {})
 
                     # Tiered Filter Validation
                     passed, reasons = matches_universe_filter(
@@ -2093,8 +2124,8 @@ class MasterLiveTradingDaemon:
                 continue
 
             # Check Strategy profile
+            hard_facts = self.market_engine.get_ticker_hard_facts(ticker)
             eval_res = self.market_engine.eval_profiles_cache.get(ticker, {})
-            hard_facts = self.market_engine.hard_facts_cache.get(ticker, {})
 
             if cfg.strategy.lower() == "profile a":
                 if not eval_res.get("is_profile_a"):
@@ -2851,17 +2882,17 @@ def main() -> None:
         added_cnt, added_tickers = daemon.market_engine.maybe_update_universe(force=True)
         logger.info(f"Scan complete. Added {added_cnt} new stocks: {added_tickers}")
 
-    if args.reset_portfolios:
-        for p in daemon.portfolios:
-            p.reset()
-        logger.info("All portfolios reset successfully.")
-
     if args.portfolio:
         selected = [p for p in daemon.portfolios if p.config.portfolio_id.lower() == args.portfolio.lower()]
         if not selected:
             logger.error(f"Portfolio '{args.portfolio}' not found in configuration.")
             return
         daemon.portfolios = selected
+
+    if args.reset_portfolios:
+        for p in daemon.portfolios:
+            p.reset()
+        logger.info(f"Portfolios reset successfully ({len(daemon.portfolios)} portfolio(s)).")
 
     if args.schedule:
         daemon.run_scheduler(
