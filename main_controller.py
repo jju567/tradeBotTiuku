@@ -1544,11 +1544,22 @@ class MasterLiveTradingDaemon:
                     if not passed:
                         continue
 
-                    cand_price = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
-                    if not cand_price or cand_price <= 0:
-                        cand_price = self.market_engine._fetch_live_price(ticker)
+                    # Fetch fresh live market price for the validated candidate
+                    cand_price = None
+                    if hasattr(self.market_engine, "_fetch_live_price"):
+                        try:
+                            live_px = self.market_engine._fetch_live_price(ticker)
+                            if isinstance(live_px, (int, float)) and not isinstance(live_px, bool) and live_px > 0:
+                                cand_price = float(live_px)
+                        except Exception:
+                            cand_price = None
+                    if cand_price is None:
+                        cached_px = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
+                        if isinstance(cached_px, (int, float)) and not isinstance(cached_px, bool) and cached_px > 0:
+                            cand_price = float(cached_px)
                     if not cand_price or cand_price <= 0:
                         continue
+                    self.market_engine.prices_cache[ticker] = cand_price
 
                     # Exit criteria pre-validation (ensure entry does not immediately fail exit rules)
                     financials_payload = {
@@ -2146,9 +2157,21 @@ class MasterLiveTradingDaemon:
                         continue
 
             # Exit criteria pre-validation (ensure entry does not immediately fail exit rules)
-            cand_price = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
-            if cand_price <= 0:
+            cand_price = None
+            if hasattr(self.market_engine, "_fetch_live_price"):
+                try:
+                    live_px = self.market_engine._fetch_live_price(ticker)
+                    if isinstance(live_px, (int, float)) and not isinstance(live_px, bool) and live_px > 0:
+                        cand_price = float(live_px)
+                except Exception:
+                    cand_price = None
+            if cand_price is None:
+                cached_px = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
+                if isinstance(cached_px, (int, float)) and not isinstance(cached_px, bool) and cached_px > 0:
+                    cand_price = float(cached_px)
+            if not cand_price or cand_price <= 0:
                 continue
+            self.market_engine.prices_cache[ticker] = cand_price
 
             financials_payload = {
                 "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
