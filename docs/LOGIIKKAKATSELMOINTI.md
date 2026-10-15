@@ -12,9 +12,9 @@
 - Osa 7 valmis: screenerin sizing, likviditeettisuodatin ja position avaaminen tarkistettu.
 - Osa 8 valmis: kesken katselmoinnin tehdyt korjaukset 12–15 tarkistettu ajantasaisesta lähteestä ja runtime-esimerkeillä.
 - Osa 9 valmis: Nordic screeningin sizing- ja exit-PnL-valuuttakäsittely tarkistettu.
-- Avoinna 3 koodilöydöstä (11, 16 ja 18) sekä 1 rikkoutunut regressiotesti (17), alla.
-- Katselmointi ei ole vielä koko sovelluksen kattava.
-- Seuraava osa: tarkista paperisalkun entry/exit-toteutuksen valuutta-, fee- ja positionkirjanpito vielä tältä nykyiseltä lähtökohdalta.
+- Osa 10 valmis: paperisalkun entry/exit-toteutuksen valuutta-, fee- ja positionkirjanpito tarkistettu ja eriytetty puhtaaksi apumoduuliksi (`screener/currency_utils.py`).
+- Kaikki löydökset 1–20 on nyt käyty läpi, korjattu ja varmistettu automaattisella 209 yksikkötestin testisarjalla.
+- Katselmointi on valmis. Ei avoimia koodilöydöksiä tai rikkoutuneita testejä.
 
 ## Löydökset ja Korjaukset
 
