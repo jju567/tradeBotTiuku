@@ -2310,6 +2310,19 @@ class MasterLiveTradingDaemon:
                 portfolio_results=results,
             )
 
+        # Send dedicated P13 EOD Action List email for manual OST execution
+        p13_inst = next((p for p in self.portfolios if p.config.portfolio_id == "P13_Live_Candidate"), None)
+        if p13_inst:
+            try:
+                from email_generator import generate_and_send_p13_eod_action_email
+                generate_and_send_p13_eod_action_email(
+                    portfolio=p13_inst,
+                    daemon=self,
+                    run_trades=run_trades,
+                )
+            except Exception as e:
+                logger.warning(f"Could not send P13 EOD action list email: {e}")
+
         # Consolidated Summary Table
         print("\n" + "-" * 100)
         print(f"{'PORTFOLIO ID':<22} | {'STRATEGY':<12} | {'SLOTS':<6} | {'POS':<5} | {'CASH (€)':<10} | {'EQUITY (€)':<11} | {'RETURN':<8}")

@@ -251,9 +251,13 @@ Juuritason päämoottori reaaliaikaiseen 13 rinnakkaisen paperisalkun walk-forwa
   - Jokainen salkku ylläpitää omaa tilaansa: `portfolio_<id>_state.json` (käteinen, aloitussaldo, valuutta, avoimet positiot).
   - Kauppahistoria kirjataan erilliseen lokiin: `portfolio_<id>_history.csv`.
   - Tuottokehityksen aikasarja tallennetaan tiedostoon: `portfolio_<id>_history.json`.
-- **Sähköposti-integraatio (`email_notifier.py`)**:
+- **Sähköposti-integraatio (`email_notifier.py`) & EOD Action List Generaattori (`email_generator.py`)**:
   - Kevyt SMTP-hälytin (`.env`-tunnukset: `SMTP_SERVER`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ALERT_EMAIL`).
   - **Ajon kauppayhteenveto (Consolidated Run Summary)**: Ei tuki sähköpostia kymmenillä yksittäisillä viesteillä, vaan lähettää kunkin suoritussyklin päätteeksi **yhden selkeän koontiviestin**, joka listaa kaikki toteutetut ostot, myynnit, varoitukset ja salkkujen päivitetyt saldot/tuotot.
+  - **P13 EOD Action List (`email_generator.py`)**: Tuottaa jokaisen pörssipäivän päätteeksi (US-sulkeutumisen jälkeen) ihmiskäyttäjälle suoraan Nordnet OST -tilille toimeenpantavan toimintalistan:
+    - *Otsikkotiedot*: Markkinaregiimin tila (esim. `🟢 BULL / LOW VOL`), vapaa käteinen, salkun kokonaisarvo ilman HODL-osakkeita sekä vahvistus erillisistä HODL-suojatuista positioista (kuten `FARON.HE: Ignored by bot`).
+    - *Kolme toimenpideluokkaa*: 🟢 **BUYS** (Syötä LIMIT-ostona ennen markkina-avausta), 🔴 **FULL EXITS** (Stop-loss / tulosromahdus / time-stop), ja 🟡 **PARTIAL TAKE-PROFIT** (+25 % saavutettu &rarr; myy 50 % ja siirrä stop Break-Eveniin + aktivoi -15 % trailing stop).
+    - *Täsmälliset toimeksiantokentät*: `TICKER`, `SUB_STRATEGY`, `ORDER_TYPE` (LIMIT), `EXACT_LIMIT_PRICE` (paikallisvaluutassa EUR/SEK/USD), `SHARE_COUNT`, `ESTIMATED_TOTAL_EUR`, `INITIAL_STOP_LOSS_PRICE`, ja `THESIS / CATALYST_REASON`.
   - Vikaturvallinen (fail-safe): jos SMTP-yhteys epäonnistuu, moottori jatkaa toimintaansa keskeytyksettä.
 - **Pysyvä NLP-Päätösarkisto (`data/nlp_decisions_archive.csv`)**:
   - Jokainen arvioitu tiedote tai uutisotsikko tallennetaan pysyvään lokiin (`Timestamp, Ticker, Headline, LLM_Decision, Reasoning`).
