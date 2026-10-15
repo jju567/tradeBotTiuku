@@ -77,35 +77,54 @@ def test_portfolios_yaml_structure():
     assert p12["max_holding_days"] == 21
     assert p12["require_nlp_clean"] is True
 
-    # Specific checks for P13_Live_Candidate
+    # Specific checks for P13_Live_Candidate (70% Mid-Cap Core + 30% Micro-Cap Satellite)
     assert "P13_Live_Candidate" in portfolios
     p13 = portfolios["P13_Live_Candidate"]
-    assert p13["description"] == "Live 10k € Fundamental OST Portfolio (Manual EOD Execution)"
+    assert p13["description"] == "Live 10k € OST Hybrid: 70% Nordic Mid-Cap Core + 30% US/Nordic Micro-Cap Satellite"
     assert p13["start_cash"] == 10000
+    assert p13.get("ignore_hodl_positions") is True
     assert "sub_strategies" in p13
-    assert "core_nordic_quality" in p13["sub_strategies"]
-    assert "satellite_us_growth" in p13["sub_strategies"]
+    assert "core_nordic_midcap_quality" in p13["sub_strategies"]
+    assert "satellite_us_microcap_growth" in p13["sub_strategies"]
+    assert "satellite_nordic_microcap_catalyst" in p13["sub_strategies"]
     assert "satellite_p12_momentum" not in p13["sub_strategies"]
-    assert p13["sub_strategies"]["core_nordic_quality"]["allocated_capital"] == 7000
-    assert p13["sub_strategies"]["core_nordic_quality"]["slots"] == 3
-    assert p13["sub_strategies"]["core_nordic_quality"]["slot_size"] == 2300
-    assert p13["sub_strategies"]["satellite_us_growth"]["allocated_capital"] == 3000
-    assert p13["sub_strategies"]["satellite_us_growth"]["slots"] == 2
-    assert p13["sub_strategies"]["satellite_us_growth"]["slot_size"] == 1500
-    assert any("Dividend_Yield: 0.0" in r for r in p13["sub_strategies"]["satellite_us_growth"]["rules"])
+
+    core_sub = p13["sub_strategies"]["core_nordic_midcap_quality"]
+    assert core_sub["allocated_capital"] == 7000
+    assert core_sub["slots"] == 3
+    assert core_sub["slot_sizes"] == [2350, 2350, 2300]
+    assert core_sub["universe_filter"] == "Nordic_MidCap_Compounder"
+
+    us_sub = p13["sub_strategies"]["satellite_us_microcap_growth"]
+    assert us_sub["allocated_capital"] == 1500
+    assert us_sub["slots"] == 1
+    assert us_sub["slot_sizes"] == [1500]
+    assert us_sub["universe_filter"] == "US_MicroCap_Growth"
+    assert any("Dividend_Yield: 0.0" in r for r in us_sub["rules"])
+
+    nordic_sub = p13["sub_strategies"]["satellite_nordic_microcap_catalyst"]
+    assert nordic_sub["allocated_capital"] == 1500
+    assert nordic_sub["slots"] == 1
+    assert nordic_sub["slot_sizes"] == [1500]
+    assert nordic_sub["universe_filter"] == "Nordic_MicroCap_Catalyst"
+
     assert p13["execution_constraints"]["allowed_order_types"] == ["LIMIT"]
     assert p13["execution_constraints"]["market_regime_cash_buffer_pct"] == 40.0
+    assert p13["execution_constraints"]["portfolio_max_drawdown_alert_pct"] == -15.0
 
     # Also check PortfolioConfig.from_dict mapping
     cfg13 = PortfolioConfig.from_dict("P13_Live_Candidate", p13)
     assert cfg13.portfolio_id == "P13_Live_Candidate"
     assert cfg13.start_cash == 10000.0
-    assert cfg13.slots == 5  # 3 core + 2 satellite
+    assert cfg13.slots == 5  # 3 core + 1 US + 1 Nordic
     assert cfg13.order_type == "LIMIT"
     assert cfg13.limit_buffer_pct == pytest.approx(0.002)
     assert cfg13.market_regime_cash_buffer_pct == pytest.approx(0.40)
-    assert "core_nordic_quality" in cfg13.sub_strategies
-    assert "satellite_us_growth" in cfg13.sub_strategies
+    assert cfg13.ignore_hodl_positions is True
+    assert cfg13.portfolio_max_drawdown_alert_pct == pytest.approx(-15.0)
+    assert "core_nordic_midcap_quality" in cfg13.sub_strategies
+    assert "satellite_us_microcap_growth" in cfg13.sub_strategies
+    assert "satellite_nordic_microcap_catalyst" in cfg13.sub_strategies
 
 
 
@@ -728,6 +747,197 @@ def test_execute_phase1_exits_forwards_peak_and_catastrophic_stop(tmp_path):
     # Verify evaluate_position received highest_price_seen and catastrophic_stop
     assert captured_pos.get("highest_price_seen") == 120.0
     assert captured_pos.get("catastrophic_stop") == 90.0
+
+
+def test_p13_ignore_hodl_protection(tmp_path):
+    """Positions marked with hodl=True or FARON.HE must never be sold when ignore_hodl_positions=True."""
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.universe_metadata = {
+        "FARON.HE": {"currency": "EUR"},
+        "REGULAR.HE": {"currency": "EUR"},
+    }
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        ignore_hodl_positions=True,
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.positions = [
+        {
+            "Ticker": "FARON.HE",
+            "Buy Price": 2.0,
+            "Shares": 1000,
+            "Capital Invested": 2000.0,
+            "Buy Date": "2026-01-01",
+            "hodl": True,
+        },
+        {
+            "Ticker": "REGULAR.HE",
+            "Buy Price": 10.0,
+            "Shares": 100,
+            "Capital Invested": 1000.0,
+            "Buy Date": "2026-01-01",
+            "hodl": False,
+        },
+    ]
+
+    # Both stocks crash 50%
+    daemon.market_engine.prices_cache = {"FARON.HE": 1.0, "REGULAR.HE": 5.0}
+    daemon.market_engine.news_radar_cache = {
+        "FARON.HE": ("REJECT", "Trial delayed"),
+        "REGULAR.HE": ("REJECT", "Dilution"),
+    }
+    daemon.market_engine.hard_facts_cache = {"FARON.HE": {}, "REGULAR.HE": {}}
+
+    closed = daemon.execute_phase1_exits(p)
+
+    # REGULAR.HE was sold due to -50% loss / REJECT, but FARON.HE was protected and retained!
+    assert closed == 1
+    assert len(p.positions) == 1
+    assert p.positions[0]["Ticker"] == "FARON.HE"
+
+
+def test_p13_runner_breakeven_rule(tmp_path):
+    """Runner rule: after partial take-profit, if price drops below entry buy price, RUNNER_BREAKEVEN_STOP must trigger."""
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.universe_metadata = {"RUNNER.ST": {"currency": "SEK"}}
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        partial_take_profit=True,
+        partial_trailing_stop_pct=0.15,
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.positions = [
+        {
+            "Ticker": "RUNNER.ST",
+            "Buy Price": 100.0,
+            "Peak Price": 130.0,
+            "Shares": 50,  # 50 shares remaining after partial TP
+            "Capital Invested": 5000.0,
+            "Buy Date": "2026-01-01",
+            "partial_profit_taken": True,
+        }
+    ]
+
+    # Case 1: Price drops to 115 (above entry 100, and drop is (130-115)/130 = 11.5% < 15%) -> HOLD
+    daemon.market_engine.prices_cache = {"RUNNER.ST": 115.0}
+    daemon.market_engine.news_radar_cache = {"RUNNER.ST": ("HOLD", "OK")}
+    daemon.market_engine.hard_facts_cache = {"RUNNER.ST": {}}
+    closed = daemon.execute_phase1_exits(p)
+    assert closed == 0
+    assert len(p.positions) == 1
+
+    # Case 2: Price drops to 99 (below entry 100) -> RUNNER_BREAKEVEN_STOP triggers!
+    daemon.market_engine.prices_cache = {"RUNNER.ST": 99.0}
+    closed = daemon.execute_phase1_exits(p)
+    assert closed == 1
+    assert len(p.positions) == 0
+    trades = p.load_trade_history()
+    assert len(trades) == 1
+    assert "RUNNER_BREAKEVEN_STOP" in trades[0]["Exit Reason"]
+
+
+def test_p13_sub_strategies_screening_execution(tmp_path):
+    """execute_phase2_sub_strategies_screening enforces slot_sizes and assigns Sub_Strategy metadata."""
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 7000,
+                "slots": 3,
+                "slot_sizes": [2350, 2350, 2300],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+            "satellite_us_microcap_growth": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "US_MicroCap_Growth",
+            },
+            "satellite_nordic_microcap_catalyst": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "Nordic_MicroCap_Catalyst",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    # Mock market engine universe with 1 candidate for each sub-strategy
+    daemon.market_engine.universe_metadata = {
+        "CORE1.HE": {
+            "market": "FI",
+            "market_cap_eur": 500_000_000.0,
+            "currency": "EUR",
+            "adv_20d_local": 200_000.0,
+            "current_price": 50.0,
+        },
+        "USGROW": {
+            "market": "US",
+            "market_cap_usd": 120_000_000.0,
+            "currency": "USD",
+            "adv_20d_local": 500_000.0,
+            "current_price": 10.0,
+            "exchange": "NASDAQ",
+        },
+        "NORDCAT.ST": {
+            "market": "SE",
+            "market_cap_eur": 60_000_000.0,
+            "currency": "SEK",
+            "adv_20d_local": 50_000.0,
+            "current_price": 20.0,
+        },
+    }
+    daemon.market_engine.prices_cache = {
+        "CORE1.HE": 50.0,
+        "USGROW": 10.0,
+        "NORDCAT.ST": 20.0,
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "CORE1.HE": {
+            "roe": 0.18,
+            "ebit_margin": 0.15,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 1.0,
+            "is_profile_b": True,
+        },
+        "USGROW": {
+            "exchange": "NASDAQ",
+            "dividend_yield": 0.0,
+            "revenue_growth_yoy_pct": 25.0,
+            "is_profile_a": True,
+        },
+        "NORDCAT.ST": {
+            "is_profile_b": True,
+            "cash_runway_months": "Infinite",
+        },
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "OK")
+
+    opened = daemon.execute_phase2_screening(p)
+
+    # 3 positions opened (one for each sub_strategy having valid candidates)
+    assert opened == 3
+    assert len(p.positions) == 3
+
+    # Check that Sub_Strategy metadata was correctly recorded
+    sub_strats_bought = {pos["Sub_Strategy"] for pos in p.positions}
+    assert "core_nordic_midcap_quality" in sub_strats_bought
+    assert "satellite_us_microcap_growth" in sub_strats_bought
+    assert "satellite_nordic_microcap_catalyst" in sub_strats_bought
+
 
 
 

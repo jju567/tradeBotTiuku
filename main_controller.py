@@ -66,6 +66,7 @@ from screener.financial_metrics_engine import evaluate_profiles, get_hard_financ
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
 from screener.portfolio_manager import evaluate_position
 from screener.web_verifier import FATAL_RED_FLAG_PATTERNS, RED_FLAG_PATTERNS, WARN_PATTERNS
+from screener.tiered_filters import matches_universe_filter
 from quant_analytics import calculate_top_picks_conviction
 
 # Backwards compatibility exports
@@ -338,6 +339,8 @@ class PortfolioConfig:
     time_in_force: str = "FOK_15MIN"
     account_tax_profile: str = "AOT"
     description: Optional[str] = None
+    ignore_hodl_positions: bool = False
+    portfolio_max_drawdown_alert_pct: float = -15.0
     sub_strategies: Dict[str, Any] = field(default_factory=dict)
     execution_constraints: Dict[str, Any] = field(default_factory=dict)
 
@@ -371,13 +374,18 @@ class PortfolioConfig:
         order_types = exec_constraints.get("allowed_order_types")
         order_type_val = order_types[0] if (order_types and isinstance(order_types, list)) else str(data.get("order_type", "LIMIT"))
 
-        limit_buf = exec_constraints.get("max_slippage_allowance_pct")
+        limit_buf = exec_constraints.get("limit_price_buffer_pct")
+        if limit_buf is None:
+            limit_buf = exec_constraints.get("max_slippage_allowance_pct")
         if limit_buf is not None:
             limit_buf = float(limit_buf)
             if limit_buf > 0.05:
                 limit_buf = limit_buf / 100.0
         else:
             limit_buf = float(data.get("limit_buffer_pct", 0.002))
+
+        dd_alert = float(exec_constraints.get("portfolio_max_drawdown_alert_pct", data.get("portfolio_max_drawdown_alert_pct", -15.0)))
+        ignore_hodl = bool(data.get("ignore_hodl_positions", False))
 
         return cls(
             portfolio_id=pid,
@@ -413,6 +421,8 @@ class PortfolioConfig:
             time_in_force=str(data.get("time_in_force", "FOK_15MIN")),
             account_tax_profile=str(data.get("account_tax_profile", "AOT")),
             description=data.get("description"),
+            ignore_hodl_positions=ignore_hodl,
+            portfolio_max_drawdown_alert_pct=dd_alert,
             sub_strategies=sub_strats,
             execution_constraints=exec_constraints,
         )
@@ -1104,6 +1114,16 @@ class MasterLiveTradingDaemon:
             fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
             fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
 
+            # --- HODL Protection (Task 3: Never touch holdings where hodl=True) ---
+            is_hodl = bool(pos.get("hodl", False))
+            if not is_hodl and portfolio.config.ignore_hodl_positions:
+                if str(ticker).upper() in ["FARON.HE", "FARON"] or pos.get("note") == "Lottolappu":
+                    is_hodl = True
+            if is_hodl:
+                logger.info(f"[{portfolio.config.portfolio_id}] 🔒 HODL position {ticker} protected. Retaining.")
+                retained_positions.append(pos)
+                continue
+
             current_price = self.market_engine.prices_cache.get(ticker)
             if not current_price or current_price <= 0:
                 logger.warning(f"[{portfolio.config.portfolio_id}] ⚠️ {ticker}: Price unavailable. Retaining.")
@@ -1240,7 +1260,7 @@ class MasterLiveTradingDaemon:
                 current_price=current_price,
                 latest_news_judgment=news_verdict,
                 latest_financials=financials_payload,
-                dead_money_days=portfolio.config.dead_money_days,
+                dead_money_days=None if pos.get("partial_profit_taken") else portfolio.config.dead_money_days,
             )
 
             if is_conviction_exit:
@@ -1250,28 +1270,58 @@ class MasterLiveTradingDaemon:
                 action = "SELL"
                 reason = f"NLP_{news_verdict} ({news_reason})"
 
-            # --- Task 4: Region-differentiated Stop-Loss (US -8%, Nordic -12%) & Runner Trailing Stop ---
-            if action != "SELL" and portfolio.config.strategy != "Momentum_Breakout":
+            # --- Task 4 & Task 3: Stop-Loss, Runner Rule, and Sub-Strategy Exits ---
+            if portfolio.config.strategy != "Momentum_Breakout":
                 if pos.get("partial_profit_taken", False):
-                    # Runner position trailing stop (-15% from post-profit peak)
-                    drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
-                    if drawdown_from_peak >= portfolio.config.partial_trailing_stop_pct:
+                    # Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% Trailing_Stop
+                    if current_price < buy_price:
                         action = "SELL"
-                        reason = f"PARTIAL_RUNNER_TRAILING_STOP (Peak {cur_peak:.2f} -> {current_price:.2f}, -{drawdown_from_peak*100:.1f}% >= -{portfolio.config.partial_trailing_stop_pct*100:.1f}%)"
-                else:
-                    pos_market = pos.get("market") or pos.get("Market")
-                    region = get_ticker_region(ticker, pos_market)
-                    if portfolio.config.stop_loss_pct is not None:
-                        effective_stop = portfolio.config.stop_loss_pct
-                    elif region == "US":
-                        effective_stop = portfolio.config.us_stop_loss_pct
+                        reason = f"RUNNER_BREAKEVEN_STOP (Current {current_price:.2f} < Entry {buy_price:.2f})"
                     else:
-                        effective_stop = portfolio.config.nordic_stop_loss_pct
-
+                        drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
+                        if drawdown_from_peak >= portfolio.config.partial_trailing_stop_pct:
+                            action = "SELL"
+                            reason = f"PARTIAL_RUNNER_TRAILING_STOP (Peak {cur_peak:.2f} -> {current_price:.2f}, -{drawdown_from_peak*100:.1f}% >= -{portfolio.config.partial_trailing_stop_pct*100:.1f}%)"
+                elif action != "SELL":
+                    sub_strat = pos.get("Sub_Strategy") or pos.get("sub_strategy")
                     loss_from_buy = (buy_price - current_price) / buy_price if buy_price > 0 else 0.0
-                    if loss_from_buy >= effective_stop:
-                        action = "SELL"
-                        reason = f"STOP_LOSS_{region} (Loss -{loss_from_buy*100:.1f}% >= -{effective_stop*100:.1f}%)"
+
+                    if sub_strat == "core_nordic_midcap_quality":
+                        # Core: Exit on Quarterly Fundamental Breakdown or Catastrophic Stop Loss (-15.0%)
+                        if loss_from_buy >= 0.15:
+                            action = "SELL"
+                            reason = f"CATASTROPHIC_STOP_LOSS_CORE (Loss -{loss_from_buy*100:.1f}% >= -15.0%)"
+                        elif news_verdict == "REJECT":
+                            action = "SELL"
+                            reason = f"QUARTERLY_FUNDAMENTAL_BREAKDOWN ({news_reason})"
+                    elif sub_strat in ["satellite_us_microcap_growth", "satellite_nordic_microcap_catalyst"]:
+                        # Satellite: Stop-Loss -12.0% and Time-Stop: 45 trading days if PnL < +5.0%
+                        if loss_from_buy >= 0.12:
+                            action = "SELL"
+                            reason = f"STOP_LOSS_SATELLITE (Loss -{loss_from_buy*100:.1f}% >= -12.0%)"
+                        else:
+                            try:
+                                b_date = datetime.strptime(str(buy_date)[:10], "%Y-%m-%d").date()
+                                holding_days = (today - b_date).days
+                            except Exception:
+                                holding_days = 0
+                            pnl_pct = ((current_price - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
+                            if holding_days >= 45 and pnl_pct < 5.0:
+                                action = "SELL"
+                                reason = f"TIME_STOP_DECAY ({holding_days}d >= 45d, PnL {pnl_pct:+.1f}% < +5.0%)"
+                    else:
+                        pos_market = pos.get("market") or pos.get("Market")
+                        region = get_ticker_region(ticker, pos_market)
+                        if portfolio.config.stop_loss_pct is not None:
+                            effective_stop = portfolio.config.stop_loss_pct
+                        elif region == "US":
+                            effective_stop = portfolio.config.us_stop_loss_pct
+                        else:
+                            effective_stop = portfolio.config.nordic_stop_loss_pct
+
+                        if loss_from_buy >= effective_stop:
+                            action = "SELL"
+                            reason = f"STOP_LOSS_{region} (Loss -{loss_from_buy*100:.1f}% >= -{effective_stop*100:.1f}%)"
 
             # Dedicated Momentum Breakout Exits (Strict Trailing Stop 6%, Stalled Momentum 21d, NLP Clean Guard)
             if portfolio.config.strategy == "Momentum_Breakout":
@@ -1350,6 +1400,235 @@ class MasterLiveTradingDaemon:
         portfolio.save_state()
         return closed_count
 
+    def execute_phase2_sub_strategies_screening(
+        self,
+        portfolio: PortfolioInstance,
+        run_trades: Optional[List[Dict[str, Any]]] = None,
+        available_cash: float = 0.0,
+        held_tickers: Optional[Set[str]] = None,
+        cooldown_tickers: Optional[Dict[str, Any]] = None,
+        today: Optional[date] = None,
+    ) -> int:
+        """
+        Executes screening and sizing for composite/hybrid portfolios using sub-strategies
+        (such as P13_Live_Candidate with Nordic MidCap Core and US/Nordic MicroCap Satellites).
+        """
+        cfg = portfolio.config
+        if held_tickers is None:
+            held_tickers = {p["Ticker"] for p in portfolio.positions}
+        if cooldown_tickers is None:
+            cooldown_tickers = {}
+        if today is None:
+            today = datetime.now(timezone.utc).date()
+
+        new_buys = 0
+
+        # Map each existing position to its sub-strategy
+        positions_by_sub: Dict[str, List[Dict[str, Any]]] = {k: [] for k in cfg.sub_strategies.keys()}
+        for pos in portfolio.positions:
+            s_name = pos.get("Sub_Strategy") or pos.get("sub_strategy")
+            if s_name and s_name in positions_by_sub:
+                positions_by_sub[s_name].append(pos)
+            else:
+                # Infer for legacy or untagged positions
+                t_sym = str(pos.get("Ticker") or pos.get("ticker", "")).strip().upper()
+                is_us = ("." not in t_sym)
+                assigned = False
+                for k, sc in cfg.sub_strategies.items():
+                    u_filt = sc.get("universe_filter", "")
+                    if is_us and "US" in u_filt:
+                        positions_by_sub[k].append(pos)
+                        assigned = True
+                        break
+                    elif not is_us and "Nordic" in u_filt:
+                        if "MidCap" in u_filt and len(positions_by_sub[k]) < int(sc.get("slots", 3)):
+                            positions_by_sub[k].append(pos)
+                            assigned = True
+                            break
+                        elif "MicroCap" in u_filt:
+                            positions_by_sub[k].append(pos)
+                            assigned = True
+                            break
+                if not assigned and positions_by_sub:
+                    first_k = next(iter(cfg.sub_strategies.keys()))
+                    positions_by_sub[first_k].append(pos)
+
+        # Iterate through each sub_strategy in order
+        for sub_name, sub_cfg in cfg.sub_strategies.items():
+            if len(portfolio.positions) >= cfg.slots:
+                break
+
+            sub_slots = int(sub_cfg.get("slots", 1))
+            current_held = len(positions_by_sub.get(sub_name, []))
+            needed = sub_slots - current_held
+
+            if needed <= 0:
+                logger.info(f"[{cfg.portfolio_id}] Sub-strategy `{sub_name}` slots full ({current_held}/{sub_slots}). Skipping.")
+                continue
+
+            u_filter = str(sub_cfg.get("universe_filter", ""))
+            slot_sizes = sub_cfg.get("slot_sizes") or [sub_cfg.get("slot_size") or (float(sub_cfg.get("allocated_capital", 1500)) / sub_slots)]
+
+            logger.info(f"[{cfg.portfolio_id}] Screening for `{sub_name}` ({needed} slots open, filter: `{u_filter}`)...")
+
+            for slot_idx in range(current_held, sub_slots):
+                if len(portfolio.positions) >= cfg.slots:
+                    break
+                if available_cash < (MIN_BROKER_FEE + 10.0):
+                    logger.info(f"[{cfg.portfolio_id}] Available cash exhausted ({available_cash:.2f}€). Halting buys.")
+                    break
+
+                target_alloc_acc = float(slot_sizes[slot_idx] if slot_idx < len(slot_sizes) else slot_sizes[-1])
+                eff_allocation_acc = min(target_alloc_acc, available_cash)
+
+                found_candidate = False
+
+                for ticker, meta in self.market_engine.universe_metadata.items():
+                    if ticker in held_tickers:
+                        continue
+
+                    # Anti-whipsaw cooldown
+                    if ticker in cooldown_tickers:
+                        days_since_exit = (today - cooldown_tickers[ticker]).days
+                        if days_since_exit < REENTRY_COOLDOWN_DAYS:
+                            continue
+
+                    # NLP Safety Guard
+                    news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
+                    if news_verdict == "REJECT":
+                        continue
+
+                    hard_facts = self.market_engine.hard_facts_cache.get(ticker, {})
+
+                    # Tiered Filter Validation
+                    passed, reasons = matches_universe_filter(
+                        ticker=ticker,
+                        filter_name=u_filter,
+                        hard_facts=hard_facts,
+                        meta=meta,
+                        nlp_verdict=news_verdict,
+                        fx_rates=self.market_engine.fx_rates,
+                    )
+
+                    if not passed:
+                        continue
+
+                    cand_price = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
+                    if not cand_price or cand_price <= 0:
+                        cand_price = self.market_engine._fetch_live_price(ticker)
+                    if not cand_price or cand_price <= 0:
+                        continue
+
+                    # Exit criteria pre-validation (ensure entry does not immediately fail exit rules)
+                    financials_payload = {
+                        "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
+                        "cash_runway_months": hard_facts.get("cash_runway_months"),
+                        "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
+                    }
+                    exit_act, _ = evaluate_position(
+                        position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
+                        current_price=cand_price,
+                        latest_news_judgment=news_verdict,
+                        latest_financials=financials_payload,
+                        dead_money_days=cfg.dead_money_days,
+                    )
+                    if exit_act == "SELL":
+                        continue
+
+                    # Position sizing
+                    ticker_curr = meta.get("currency", get_ticker_currency(ticker))
+                    fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
+                    fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+                    target_allocation_local = eff_allocation_acc * fx_acc_to_local
+                    min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+
+                    # Max ADV allocation constraint (< 5% of ADV)
+                    adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
+                    max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
+                    if max_adv_allowed > 0 and target_allocation_local > max_adv_allowed:
+                        target_allocation_local = max_adv_allowed
+
+                    if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
+                        continue
+
+                    investable_cash_local = target_allocation_local - min_fee_local
+                    if investable_cash_local <= 0:
+                        continue
+
+                    shares_to_buy = math.floor(investable_cash_local / cand_price)
+                    if shares_to_buy <= 0:
+                        continue
+
+                    actual_gross_buy = shares_to_buy * cand_price
+                    actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
+                    total_cost_local = actual_gross_buy + actual_fee
+                    total_cost_acc = total_cost_local * fx_to_acc
+
+                    if total_cost_acc > available_cash:
+                        continue
+
+                    # Limit price calculation (Prev Close + 0.2%)
+                    limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
+                    target_limit = round(cand_price * (1.0 + limit_buf), 4)
+
+                    portfolio.cash_balance -= total_cost_acc
+                    available_cash -= total_cost_acc
+
+                    new_pos = {
+                        "Ticker": ticker,
+                        "Buy Date": today.strftime("%Y-%m-%d"),
+                        "Buy Price": cand_price,
+                        "Shares": shares_to_buy,
+                        "Capital Invested": round(total_cost_local, 2),
+                        "Strategy": "Hybrid Core-Satellite",
+                        "Sub_Strategy": sub_name,
+                        "Universe_Filter": u_filter,
+                        "Currency": ticker_curr,
+                        "Peak Price": cand_price,
+                        "Order Type": "LIMIT",
+                        "Limit Price": target_limit,
+                        "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
+                    }
+                    portfolio.positions.append(new_pos)
+                    positions_by_sub[sub_name].append(new_pos)
+                    held_tickers.add(ticker)
+                    new_buys += 1
+                    found_candidate = True
+
+                    logger.info(
+                        f"🎯 [{cfg.portfolio_id} BUY] [{sub_name}] {ticker} (Filter: {u_filter}) | "
+                        f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
+                        f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
+                        f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
+                    )
+
+                    if run_trades is not None:
+                        run_trades.append({
+                            "portfolio_id": cfg.portfolio_id,
+                            "action": "BUY",
+                            "ticker": ticker,
+                            "details": {
+                                "strategy": "Hybrid Core-Satellite",
+                                "sub_strategy": sub_name,
+                                "universe_filter": u_filter,
+                                "shares": shares_to_buy,
+                                "buy_price": f"{cand_price:.2f} {ticker_curr}",
+                                "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
+                                "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                            },
+                        })
+
+                    break  # Move to next slot!
+
+                if not found_candidate:
+                    logger.info(f"[{cfg.portfolio_id}] No eligible candidates found for slot {slot_idx+1} in `{sub_name}`.")
+
+        if new_buys > 0:
+            portfolio.save_state()
+
+        return new_buys
+
     def execute_phase2_screening(self, portfolio: PortfolioInstance, run_trades: Optional[List[Dict[str, Any]]] = None) -> int:
         """
         Phase 2: Screening & Sizing for a specific portfolio based on its parameters.
@@ -1410,6 +1689,17 @@ class MasterLiveTradingDaemon:
                     pass
 
         new_buys = 0
+
+        # Dedicated execution branch for composite portfolios with sub_strategies (e.g. P13_Live_Candidate)
+        if cfg.sub_strategies:
+            return self.execute_phase2_sub_strategies_screening(
+                portfolio=portfolio,
+                run_trades=run_trades,
+                available_cash=available_cash,
+                held_tickers=held_tickers,
+                cooldown_tickers=cooldown_tickers,
+                today=today,
+            )
 
         # Dedicated execution branch for P11 Meta_Consensus strategy
         if cfg.strategy == "Meta_Consensus":

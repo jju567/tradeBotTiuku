@@ -129,6 +129,16 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "revenue_current": None,
         "revenue_previous": None,
         "revenue_growth_yoy_pct": None,
+        "gross_profit": None,
+        "gross_margin_pct": None,
+        "roe": None,
+        "ebit_margin": None,
+        "free_cash_flow": None,
+        "ebitda": None,
+        "net_debt_to_ebitda": None,
+        "dividend_yield": None,
+        "exchange": None,
+        "market_cap": None,
         "latest_statement_date": None,
         "data_age_days": None,
         "data_source": "yfinance",
@@ -305,6 +315,64 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             result["data_quality"]["is_fresh"] = is_fresh
             if not is_fresh:
                 result["errors"].append(f"DATA_STALENESS_WARNING: Latest statement is {age_days} days old (>120d).")
+
+        # ---- 7. Tiered Quality & Constraint Metrics (Core MidCap, US Growth, Nordic Catalyst) ----
+        try:
+            info = getattr(t, "info", None) or {}
+            fast_info = getattr(t, "fast_info", None)
+
+            # ROE
+            roe = info.get("returnOnEquity")
+            if roe is None:
+                net_inc = _extract_metric_from_df(inc_a, ["Net Income", "NetIncome"])
+                equity = _extract_metric_from_df(bs_a, ["Stockholders Equity", "StockholdersEquity", "Total Stockholder Equity"])
+                if net_inc is not None and equity is not None and equity > 0:
+                    roe = net_inc / equity
+            result["roe"] = float(roe) if roe is not None else None
+
+            # EBIT Margin
+            ebit_m = info.get("operatingMargins") or info.get("ebitMargins")
+            if ebit_m is None:
+                op_inc = _extract_metric_from_df(inc_a, ["Operating Income", "OperatingIncome", "EBIT"])
+                if op_inc is not None and rev_curr is not None and rev_curr > 0:
+                    ebit_m = op_inc / rev_curr
+            result["ebit_margin"] = float(ebit_m) if ebit_m is not None else None
+
+            # Free Cash Flow
+            fcf = info.get("freeCashflow")
+            if fcf is None and ocf_val is not None:
+                capex = _extract_metric_from_df(cf_a, ["Capital Expenditure", "CapitalExpenditure", "CapitalExpenditures"]) or 0.0
+                fcf = ocf_val - abs(capex)
+            result["free_cash_flow"] = float(fcf) if fcf is not None else None
+
+            # EBITDA & Net Debt to EBITDA
+            ebitda = info.get("ebitda")
+            result["ebitda"] = float(ebitda) if ebitda is not None else None
+            
+            nd_ebitda = None
+            if debt is not None and cash is not None:
+                net_d = debt - cash
+                if net_d <= 0:
+                    nd_ebitda = 0.0  # Net cash -> solvent
+                elif ebitda is not None and ebitda > 0:
+                    nd_ebitda = round(net_d / ebitda, 2)
+            result["net_debt_to_ebitda"] = nd_ebitda
+
+            # Dividend Yield
+            div_y = info.get("dividendYield")
+            if div_y is None:
+                div_y = info.get("trailingAnnualDividendYield")
+            result["dividend_yield"] = float(div_y) if div_y is not None else 0.0
+
+            # Exchange
+            exch = info.get("exchange")
+            result["exchange"] = str(exch).upper() if exch else None
+
+            # Market Cap
+            mcap = (fast_info and getattr(fast_info, "market_cap", None)) or info.get("marketCap")
+            result["market_cap"] = float(mcap) if mcap is not None else None
+        except Exception as e_extra:
+            logger.debug(f"Tiered metrics extraction skipped for {cleaned_ticker}: {e_extra}")
 
         has_any_data = (cash is not None or ocf_val is not None or rev_curr is not None)
         result["status"] = "OK" if has_any_data else "PARTIAL"

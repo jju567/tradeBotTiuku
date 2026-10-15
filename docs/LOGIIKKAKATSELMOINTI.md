@@ -112,13 +112,24 @@
     - **Korjaus**: `screener/price_fetcher.py` käyttää nyt `math.isfinite()` -tarkistusta (`price`, `prev_close`, `market_cap`), hyläten sekä `NaN`- että `inf`-arvot ja palauttaen `status=ERROR`. `screener/portfolio_manager.py` validoi `current_price`-, `buy_price`- ja `shares`-arvot (`math.isfinite() > 0`) ja hylkää kaupan, jos hinta tai osakemäärä ei ole äärellinen ja positiivinen. Myös `load_open_positions()` ja `update_portfolio()` varmistavat arvot äärellisiksi.
     - **Testit**: `test_get_realtime_data_rejects_inf_price` ([test_price_fetcher.py](../tests/test_price_fetcher.py#L95-L113)) ja `test_execute_trade_signal_rejects_inf_price` ([test_portfolio_manager.py](../tests/test_portfolio_manager.py#L385-L420)).
 
+22. **[TOTEUTETTU] Tuotantokonfiguraatio: P13_Live_Candidate 10k € OST Core + Satellite & Porrastetut Markkina-arvosuodattimet.**
+    - **Kuvaus**: P13-tuotantosalkku konfiguroitu Osakesäästötilille (OST) manuaaliseen EOD-toteutukseen 70/15/15 -jaolla (Core Nordic MidCap Compounder 7 000 €, Satellite 1 US MicroCap Growth 1 500 €, Satellite 2 Nordic MicroCap Catalyst 1 500 €).
+    - **Toteutus**:
+      - Luotu `screener/tiered_filters.py` suodattamaan kandidaatit kolmeen selkeään kategoriaan (MidCap 150M–2B EUR + vahvat fundamentit ROE > 15%, EBIT > 12%, FCF > 0, NetDebt/EBITDA < 2.5; US MicroCap 30M–350M USD + säännellyt NASDAQ/NYSE + ehdoton 0 % osinkotuotto OST-verosäännön mukaisesti; Nordic MicroCap 15M–150M EUR laatumikro tai uutis-/tuloskatalyytin turnaround).
+      - Päivitetty `screener/financial_metrics_engine.py` palauttamaan kaikki tarvittavat tunnusluvut (`roe`, `ebit_margin`, `free_cash_flow`, `ebitda`, `net_debt_to_ebitda`, `dividend_yield`, `exchange`, `market_cap`).
+      - Lisätty HODL-suojaus (`ignore_hodl_positions: true`), joka estää manuaalisten "lottolappujen" (kuten `FARON.HE` / `hodl=True`) myynnin tai käsittelyn.
+      - Lisätty Runner-sääntö (+25 % Partial TP:n jälkeen siirtää stopin Break-Eveniin 0.0 % ja aktivoi -15.0 % Trailing Stopin ilman dead-money -aikakatkaisun häiriötä).
+      - Decommissionoitu intraday-skannaus: moottori toimii puhtaasti EOD-syklissä pörssien sulkeuduttua klo 23:05.
+    - **Testit**: `tests/test_tiered_filters.py` (13 testiä) ja `tests/test_multi_portfolio.py` (`test_p13_ignore_hodl_protection`, `test_p13_runner_breakeven_rule`, `test_p13_sub_strategies_screening_execution`).
+
 ## Tarkistukset
 
 - `pytest -q tests/test_risk_manager.py tests/test_portfolio.py tests/test_rebalancer.py tests/test_ai_advisor.py tests/test_etf_watchlist.py tests/test_csv_importer.py tests/test_indicators.py`: **132 passed**.
-- `pytest -q tests/test_financial_metrics_engine.py tests/test_nlp_openrouter.py tests/test_portfolio_manager.py tests/test_dynamic_universe_updater.py tests/test_multi_portfolio.py tests/test_action_plan_improvements.py tests/test_screener_pipeline.py tests/test_exit_manager.py`: **78 passed**.
-- `pytest -q tests/test_price_fetcher.py`: **6 passed** (kattaa normaalin float-hinnan, NaN-hinnan, äärettömän `inf`-hinnan, nolla-/negatiivisen hinnan, NaN-edellisen päätöksen ja -markkina-arvon sekä tickernormalisoinnin).
-- Kaikki 21 raportoitua logiikka- ja reunaehtobugia toistettu, korjattu ja varmistettu uusilla kohdennetuilla yksikkötesteillä.
+- `pytest -q tests/test_financial_metrics_engine.py tests/test_nlp_openrouter.py tests/test_portfolio_manager.py tests/test_dynamic_universe_updater.py tests/test_multi_portfolio.py tests/test_action_plan_improvements.py tests/test_screener_pipeline.py tests/test_exit_manager.py tests/test_tiered_filters.py`: **91 passed**.
+- `pytest -q tests/test_price_fetcher.py`: **6 passed**.
+- Kaikki 22 raportoitua ominaisuutta ja reunaehtoa todennettu yksikkötesteillä.
 
 ## Status
 
-Kaikki katselmoinnissa havaitut peruslogiikan virheet ja puutteet (löydökset 1–21) on korjattu ja varmennettu automaattisilla testeillä (yhteensä 216 läpäissyttä testiä). Äärettömän hinnan (`inf`) ja nollaosakeposition suojaus on toteutettu ja todennettu. Sovellus, hintahaku ja positiokirjanpito ovat vakaassa tilassa.
+Kaikki katselmoinnissa havaitut peruslogiikan virheet ja puutteet (löydökset 1–22) on korjattu ja varmennettu automaattisilla testeillä. Tuotantosalkku `P13_Live_Candidate` ja sen porrastetut universumisuodattimet sekä suojaussäännöt ovat valmiina tuotantoon.
+
