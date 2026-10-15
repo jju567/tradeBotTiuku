@@ -6,6 +6,7 @@ Uses yfinance to retrieve spot prices, market cap, and currencies for US and Nor
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Dict, Any, Optional
 

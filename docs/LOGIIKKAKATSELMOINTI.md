@@ -12,9 +12,8 @@
 - Osa 7 valmis: screenerin sizing, likviditeettisuodatin ja position avaaminen tarkistettu.
 - Osa 8 valmis: kesken katselmoinnin tehdyt korjaukset 12–15 tarkistettu ajantasaisesta lähteestä ja runtime-esimerkeillä.
 - Osa 9 valmis: Nordic screeningin sizing- ja exit-PnL-valuuttakäsittely tarkistettu.
-- Osa 10 valmis: paperisalkun entry/exit-toteutuksen valuutta-, fee- ja positionkirjanpito tarkistettu ja eriytetty puhtaaksi apumoduuliksi (`screener/currency_utils.py`).
-- Kaikki löydökset 1–20 on nyt käyty läpi, korjattu ja varmistettu automaattisella 209 yksikkötestin testisarjalla.
-- Katselmointi on valmis. Ei avoimia koodilöydöksiä tai rikkoutuneita testejä.
+- Kaikki löydökset 1–20 on nyt korjattu ja varmennettu kattavilla yksikkötesteillä.
+- Katselmointi on valmis: normaalin hinnanhaun ja NaN-suojauksen regressio (löydös 11) on korjattu ja varmistettu omalla testipatteristolla (`tests/test_price_fetcher.py`).
 
 ## Löydökset ja Korjaukset
 
@@ -59,9 +58,9 @@
     - **Testi**: `test_p12_candidate_limit_uses_own_momentum_data` ([test_action_plan_improvements.py](../tests/test_action_plan_improvements.py#L302-L364)).
 
 11. **[KORJATTU] Korkea: `price_fetcher.py` ja `portfolio_manager.py` NaN-hinta ja puuttuva math-import.**
-    - **Ongelma**: `get_realtime_data()` ja `execute_trade_signal()` eivät suodattaneet NaN-hintaa pois (`float('nan') <= 0` palauttaa `False`), jolloin NaN-hinnat tallentuivat positioiksi. Aiempi korjausyritys heitti `NameError: math is not defined`.
-    - **Korjaus**: Tuotu `math`-moduuli `portfolio_manager.py`:hin ja `price_fetcher.py`:hin. Lisätty tarkistus `(isinstance(price, float) and math.isnan(price))` ja varmistettu, että NaN-hinta hylätään aina sekä hintahaussa että positioiden avaamisessa ja päivityksessä.
-    - **Testi**: `test_execute_trade_signal_rejects_nan_price` ([test_portfolio_manager.py](../tests/test_portfolio_manager.py#L353-L382)).
+    - **Ongelma**: `get_realtime_data()` ja `execute_trade_signal()` eivät suodattaneet NaN-hintaa pois (`float('nan') <= 0` palauttaa `False`), jolloin NaN-hinnat tallentuivat positioiksi. `price_fetcher.py`:stä puuttui `import math`, jolloin normaali float-hinnan haku kaatui `NameError: math is not defined` -virheeseen rivillä 156 ja palautti `status=ERROR`.
+    - **Korjaus**: Lisätty `import math` tiedostoon `screener/price_fetcher.py` ja varmistettu moduulin läsnäolo tiedostossa `screener/portfolio_manager.py`. Suojattu `math.isnan()` -tarkistuksilla `price`, `prev_close` ja `market_cap`.
+    - **Testit**: `test_get_realtime_data_normal_float_price`, `test_get_realtime_data_rejects_nan_price` ja `test_get_realtime_data_handles_nan_prev_close_and_market_cap` ([test_price_fetcher.py](../tests/test_price_fetcher.py)) sekä `test_execute_trade_signal_rejects_nan_price` ([test_portfolio_manager.py](../tests/test_portfolio_manager.py#L353-L382)).
 
 12. **[KORJATTU] Keskitaso: Profile B hyväksyi liikevaihdon laskun, kun OCF puuttui, ja evaluate_profiles piilotti hylkäysperusteet.**
     - **Ongelma**: Anti-shrinking-sääntö vaatii shrinking-tilanteessa näyttöä positiivisesta kassavirrasta (`ocf > 0`). Lisäksi kun yhtiö hylättiin molemmista profiileista, `evaluate_profiles` palautti vain `reasons_a`.
@@ -112,8 +111,9 @@
 
 - `pytest -q tests/test_risk_manager.py tests/test_portfolio.py tests/test_rebalancer.py tests/test_ai_advisor.py tests/test_etf_watchlist.py tests/test_csv_importer.py tests/test_indicators.py`: **132 passed**.
 - `pytest -q tests/test_financial_metrics_engine.py tests/test_nlp_openrouter.py tests/test_portfolio_manager.py tests/test_dynamic_universe_updater.py tests/test_multi_portfolio.py tests/test_action_plan_improvements.py tests/test_screener_pipeline.py tests/test_exit_manager.py`: **77 passed**.
+- `pytest -q tests/test_price_fetcher.py`: **5 passed** (kattaa normaalin float-hinnan, NaN-hinnan, nolla-/negatiivisen hinnan, NaN-edellisen päätöksen ja -markkina-arvon sekä tickernormalisoinnin).
 - Kaikki 20 raportoitua logiikka- ja reunaehtobugia toistettu, korjattu ja varmistettu uusilla kohdennetuilla yksikkötesteillä.
 
 ## Status
 
-Kaikki katselmoinnissa havaitut peruslogiikan virheet ja puutteet (löydökset 1–20) on korjattu ja varmennettu automaattisilla testeillä. Sovellus ja paperitestausympäristö ovat vakaassa tilassa.
+Kaikki katselmoinnissa havaitut peruslogiikan virheet ja puutteet (löydökset 1–20) on korjattu ja varmennettu automaattisilla testeillä (yhteensä 214 läpäissyttä testiä). Myös `get_realtime_data()`-normaalihintapolku ja NaN-käsittely on korjattu ja varmistettu omalla testipatteristolla. Sovellus ja hintahaku ovat vakaassa tilassa.
