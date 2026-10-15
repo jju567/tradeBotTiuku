@@ -285,34 +285,61 @@ class PortfolioManager:
                     if not ticker:
                         continue
 
-                    buy_p = float(
-                        row.get("buy_price")
-                        or row.get("buyprice")
-                        or row.get("buy price")
-                        or row.get("entry_price")
-                        or row.get("entryprice")
-                        or row.get("entry price")
-                        or 0.0
-                    )
-                    curr_p = float(row.get("current_price") or row.get("currentprice") or 0.0)
-                    shs = float(row.get("shares", 0.0) or 0.0)
+                    try:
+                        buy_p = float(
+                            row.get("buy_price")
+                            or row.get("buyprice")
+                            or row.get("buy price")
+                            or row.get("entry_price")
+                            or row.get("entryprice")
+                            or row.get("entry price")
+                            or 0.0
+                        )
+                    except (ValueError, TypeError):
+                        buy_p = 0.0
 
-                    # Auto-heal: if buy_p was missing or 0.0, recover from KNOWN_ENTRY_PRICES, capital invested, or current_price
-                    if buy_p <= 0.0:
+                    try:
+                        curr_p = float(row.get("current_price") or row.get("currentprice") or 0.0)
+                    except (ValueError, TypeError):
+                        curr_p = 0.0
+
+                    try:
+                        shs = float(row.get("shares", 0.0) or 0.0)
+                    except (ValueError, TypeError):
+                        shs = 0.0
+
+                    # Auto-heal: if buy_p was missing, <= 0 or not finite, recover from KNOWN_ENTRY_PRICES, capital invested, or current_price
+                    if not math.isfinite(buy_p) or buy_p <= 0.0:
                         if ticker in KNOWN_ENTRY_PRICES:
                             buy_p = KNOWN_ENTRY_PRICES[ticker]
                         else:
-                            cap_inv = float(row.get("positionvalue") or row.get("position_value") or row.get("capital_invested") or row.get("capital invested") or 0.0)
-                            if cap_inv > 0 and shs > 0:
+                            try:
+                                cap_inv = float(row.get("positionvalue") or row.get("position_value") or row.get("capital_invested") or row.get("capital invested") or 0.0)
+                            except (ValueError, TypeError):
+                                cap_inv = 0.0
+                            if cap_inv > 0 and shs > 0 and math.isfinite(cap_inv) and math.isfinite(shs):
                                 buy_p = round(cap_inv / shs, 4)
-                            elif curr_p > 0:
+                            elif curr_p > 0 and math.isfinite(curr_p):
                                 buy_p = curr_p
+                            else:
+                                buy_p = 1.0
 
-                    if curr_p <= 0.0:
+                    if not math.isfinite(curr_p) or curr_p <= 0.0:
                         curr_p = buy_p
 
-                    high_p = float(row.get("highest_price_seen") or row.get("highestprice") or max(curr_p, buy_p) or 0.0)
-                    stop_p = float(row.get("catastrophic_stop") or row.get("trailing_stop") or (buy_p * 0.50))
+                    try:
+                        high_p = float(row.get("highest_price_seen") or row.get("highestprice") or max(curr_p, buy_p) or 0.0)
+                    except (ValueError, TypeError):
+                        high_p = max(curr_p, buy_p)
+                    if not math.isfinite(high_p) or high_p <= 0.0:
+                        high_p = max(curr_p, buy_p)
+
+                    try:
+                        stop_p = float(row.get("catastrophic_stop") or row.get("trailing_stop") or (buy_p * 0.50))
+                    except (ValueError, TypeError):
+                        stop_p = buy_p * 0.50
+                    if not math.isfinite(stop_p) or stop_p <= 0.0:
+                        stop_p = buy_p * 0.50
 
                     # Suffix-aware currency & market detection
                     curr = row.get("currency", "").strip().upper()
@@ -451,7 +478,10 @@ class PortfolioManager:
             return None
 
         # Fetch real-time price data or use passed price
-        if current_price is not None and not (isinstance(current_price, float) and math.isnan(current_price)) and float(current_price) > 0:
+        if current_price is not None:
+            if not isinstance(current_price, (int, float)) or not math.isfinite(current_price) or float(current_price) <= 0:
+                logger.error(f"Cannot execute trade for {clean_ticker}: Invalid explicit current_price '{current_price}'")
+                return None
             buy_price = float(current_price)
             detected_market = market or ("US" if "." not in clean_ticker else clean_ticker.split(".")[-1])
             currency = currency or ("EUR" if clean_ticker.endswith(".HE") else ("SEK" if clean_ticker.endswith(".ST") else ("DKK" if clean_ticker.endswith(".CO") else ("NOK" if clean_ticker.endswith(".OL") else "USD"))))
@@ -461,7 +491,8 @@ class PortfolioManager:
             if (
                 price_data.get("status") != "SUCCESS"
                 or raw_price is None
-                or (isinstance(raw_price, float) and math.isnan(raw_price))
+                or not isinstance(raw_price, (int, float))
+                or not math.isfinite(raw_price)
                 or float(raw_price) <= 0
             ):
                 logger.error(f"Cannot execute trade for {clean_ticker}: Price retrieval failed ({price_data.get('error')})")
@@ -473,7 +504,13 @@ class PortfolioManager:
 
         # Position Sizing: 5,000 allocation per position (5% of equity)
         alloc = allocated_capital or self.position_allocation
+        if not math.isfinite(buy_price) or buy_price <= 0:
+            logger.error(f"Cannot execute trade for {clean_ticker}: Invalid buy price {buy_price}")
+            return None
         shares = round(alloc / buy_price, 4)
+        if not math.isfinite(shares) or shares <= 0:
+            logger.error(f"Cannot execute trade for {clean_ticker}: Invalid shares calculated ({shares}) for alloc {alloc} and price {buy_price}")
+            return None
         buy_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # Layer 1: Catastrophic Failsafe Stop (-50%)
@@ -552,7 +589,8 @@ class PortfolioManager:
             if (
                 price_data.get("status") != "SUCCESS"
                 or raw_price is None
-                or (isinstance(raw_price, float) and math.isnan(raw_price))
+                or not isinstance(raw_price, (int, float))
+                or not math.isfinite(raw_price)
                 or float(raw_price) <= 0
             ):
                 logger.warning(f"Failed to fetch price for {ticker}: {price_data.get('error')}. Retaining current state.")

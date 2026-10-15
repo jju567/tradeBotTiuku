@@ -153,15 +153,15 @@ def get_realtime_data(ticker: str, market: Optional[str] = None) -> Dict[str, An
             except Exception as hist_err:
                 logger.debug(f"history lookup fallback failed for {norm_ticker}: {hist_err}")
 
-        # Validate that we retrieved a valid spot price
-        if price is None or (isinstance(price, float) and math.isnan(price)) or price <= 0:
+        # Validate that we retrieved a valid spot price (must be finite positive number)
+        if price is None or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
             result["error"] = f"No valid pricing data returned for ticker '{norm_ticker}' (possibly delisted or suspended)."
             logger.warning(f"[{norm_ticker}] {result['error']}")
             return result
 
-        if prev_close is not None and (math.isnan(prev_close) or prev_close <= 0):
+        if prev_close is not None and (not isinstance(prev_close, (int, float)) or not math.isfinite(prev_close) or prev_close <= 0):
             prev_close = None
-        if market_cap is not None and (math.isnan(market_cap) or market_cap <= 0):
+        if market_cap is not None and (not isinstance(market_cap, (int, float)) or not math.isfinite(market_cap) or market_cap <= 0):
             market_cap = None
 
         # Compute intraday percent change if possible

@@ -90,3 +90,22 @@ def test_get_realtime_data_handles_nan_prev_close_and_market_cap(monkeypatch):
     assert result["day_change_pct"] is None
     assert result["market_cap"] is None
     assert result["currency"] == "SEK"
+
+
+def test_get_realtime_data_rejects_inf_price(monkeypatch):
+    """Verifies that infinite price (float('inf')) is rejected with ERROR status."""
+    mock_ticker = MagicMock()
+    mock_ticker.fast_info.last_price = float("inf")
+    mock_ticker.fast_info.previous_close = 10.0
+    mock_ticker.fast_info.market_cap = 10_000_000.0
+    mock_ticker.fast_info.currency = "USD"
+    mock_ticker.info = {}
+    mock_ticker.history.return_value = pd.DataFrame()
+
+    monkeypatch.setattr("yfinance.Ticker", lambda symbol: mock_ticker)
+
+    result = get_realtime_data("INF.US")
+    assert result["status"] == "ERROR"
+    assert result["current_price"] is None
+    assert "No valid pricing data" in result["error"]
+

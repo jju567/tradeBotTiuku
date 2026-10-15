@@ -12,8 +12,8 @@
 - Osa 7 valmis: screenerin sizing, likviditeettisuodatin ja position avaaminen tarkistettu.
 - Osa 8 valmis: kesken katselmoinnin tehdyt korjaukset 12–15 tarkistettu ajantasaisesta lähteestä ja runtime-esimerkeillä.
 - Osa 9 valmis: Nordic screeningin sizing- ja exit-PnL-valuuttakäsittely tarkistettu.
-- Kaikki löydökset 1–20 on nyt korjattu ja varmennettu kattavilla yksikkötesteillä.
-- Katselmointi on valmis: normaalin hinnanhaun ja NaN-suojauksen regressio (löydös 11) on korjattu ja varmistettu omalla testipatteristolla (`tests/test_price_fetcher.py`).
+- Kaikki löydökset 1–21 on korjattu ja varmennettu kattavilla yksikkötesteillä.
+- Katselmointi on valmis: äärettömän hinta-arvon (`inf`) ja nollaosakeposition suojaus (löydös 21) on korjattu ja varmistettu omilla yksikkötesteillään.
 
 ## Löydökset ja Korjaukset
 
@@ -107,13 +107,18 @@
     - **Korjaus**: `execute_trade_signal()` ottaa vastaan `current_price` ja `currency` ja käyttää niitä suoraan annettaessa.
     - **Testi**: `test_open_position_passes_explicit_price_and_currency` ([test_portfolio_manager.py](../tests/test_portfolio_manager.py#L384-L408)).
 
+21. **[KORJATTU] Keskitaso: Äärettömän hinta-arvon (`inf`) validointi puuttui.**
+    - **Ongelma**: `get_realtime_data()` hylkäsi NaN-arvon mutta ei `inf`-arvoa (`math.isnan(inf)` on `False`), jolloin se palautti äärettömän hinnan `SUCCESS`-tilassa. `PortfolioManager.execute_trade_signal(current_price=inf)` laski `shares = alloc / inf = 0.0` ja tallensi äärettömät hinnat ja stopit sekä nollaosakkeisen position salkkuun.
+    - **Korjaus**: `screener/price_fetcher.py` käyttää nyt `math.isfinite()` -tarkistusta (`price`, `prev_close`, `market_cap`), hyläten sekä `NaN`- että `inf`-arvot ja palauttaen `status=ERROR`. `screener/portfolio_manager.py` validoi `current_price`-, `buy_price`- ja `shares`-arvot (`math.isfinite() > 0`) ja hylkää kaupan, jos hinta tai osakemäärä ei ole äärellinen ja positiivinen. Myös `load_open_positions()` ja `update_portfolio()` varmistavat arvot äärellisiksi.
+    - **Testit**: `test_get_realtime_data_rejects_inf_price` ([test_price_fetcher.py](../tests/test_price_fetcher.py#L95-L113)) ja `test_execute_trade_signal_rejects_inf_price` ([test_portfolio_manager.py](../tests/test_portfolio_manager.py#L385-L420)).
+
 ## Tarkistukset
 
 - `pytest -q tests/test_risk_manager.py tests/test_portfolio.py tests/test_rebalancer.py tests/test_ai_advisor.py tests/test_etf_watchlist.py tests/test_csv_importer.py tests/test_indicators.py`: **132 passed**.
-- `pytest -q tests/test_financial_metrics_engine.py tests/test_nlp_openrouter.py tests/test_portfolio_manager.py tests/test_dynamic_universe_updater.py tests/test_multi_portfolio.py tests/test_action_plan_improvements.py tests/test_screener_pipeline.py tests/test_exit_manager.py`: **77 passed**.
-- `pytest -q tests/test_price_fetcher.py`: **5 passed** (kattaa normaalin float-hinnan, NaN-hinnan, nolla-/negatiivisen hinnan, NaN-edellisen päätöksen ja -markkina-arvon sekä tickernormalisoinnin).
-- Kaikki 20 raportoitua logiikka- ja reunaehtobugia toistettu, korjattu ja varmistettu uusilla kohdennetuilla yksikkötesteillä.
+- `pytest -q tests/test_financial_metrics_engine.py tests/test_nlp_openrouter.py tests/test_portfolio_manager.py tests/test_dynamic_universe_updater.py tests/test_multi_portfolio.py tests/test_action_plan_improvements.py tests/test_screener_pipeline.py tests/test_exit_manager.py`: **78 passed**.
+- `pytest -q tests/test_price_fetcher.py`: **6 passed** (kattaa normaalin float-hinnan, NaN-hinnan, äärettömän `inf`-hinnan, nolla-/negatiivisen hinnan, NaN-edellisen päätöksen ja -markkina-arvon sekä tickernormalisoinnin).
+- Kaikki 21 raportoitua logiikka- ja reunaehtobugia toistettu, korjattu ja varmistettu uusilla kohdennetuilla yksikkötesteillä.
 
 ## Status
 
-Kaikki katselmoinnissa havaitut peruslogiikan virheet ja puutteet (löydökset 1–20) on korjattu ja varmennettu automaattisilla testeillä (yhteensä 214 läpäissyttä testiä). Myös `get_realtime_data()`-normaalihintapolku ja NaN-käsittely on korjattu ja varmistettu omalla testipatteristolla. Sovellus ja hintahaku ovat vakaassa tilassa.
+Kaikki katselmoinnissa havaitut peruslogiikan virheet ja puutteet (löydökset 1–21) on korjattu ja varmennettu automaattisilla testeillä (yhteensä 216 läpäissyttä testiä). Äärettömän hinnan (`inf`) ja nollaosakeposition suojaus on toteutettu ja todennettu. Sovellus, hintahaku ja positiokirjanpito ovat vakaassa tilassa.

@@ -382,6 +382,42 @@ def test_execute_trade_signal_rejects_nan_price(tmp_path, monkeypatch):
     assert len(open_pos) == 0
 
 
+def test_execute_trade_signal_rejects_inf_price(tmp_path, monkeypatch):
+    """Verifies that infinite price (float('inf')) is rejected and no zero-share position is created."""
+    from screener.portfolio_manager import PortfolioManager
+
+    mgr = PortfolioManager(
+        open_positions_path=tmp_path / "open_inf.csv",
+        trade_history_path=tmp_path / "trades_inf.csv",
+    )
+
+    # 1. Passed current_price = inf
+    res = mgr.execute_trade_signal(
+        ticker="INF_STOCK",
+        market="US",
+        verdict="STRONG BUY",
+        current_price=float("inf"),
+    )
+    assert res is None
+
+    # 2. Mock get_realtime_data returning inf
+    monkeypatch.setattr(
+        "screener.portfolio_manager.get_realtime_data",
+        lambda t, m: {"status": "SUCCESS", "current_price": float("inf"), "currency": "USD"},
+    )
+    res2 = mgr.execute_trade_signal(
+        ticker="INF_STOCK2",
+        market="US",
+        verdict="STRONG BUY",
+    )
+    assert res2 is None
+
+    # Guarantee no position with infinite price or zero shares was saved
+    open_pos = mgr.load_open_positions()
+    assert len(open_pos) == 0
+
+
+
 def test_open_position_passes_explicit_price_and_currency(tmp_path):
     from screener.portfolio_manager import PortfolioManager
 
