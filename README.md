@@ -354,6 +354,7 @@ tradeBotTiuku/
 │   ├── batch_results.csv    # Seulonnan konsolidoidut tulokset
 │   ├── watchlist_turnarounds.csv # Tunnistetut käänneyhtiöt
 ├── docs/
+│   ├── SATELLITE_SKANNERI_KATSELMOINTI.md # Satellite-skannerin arkkitehtuuri, seulontakriteerit ja exit-säännöt
 │   ├── LOGIIKKAKATSELMOINTI.md # Peruslogiikan koodikatselmoinnin havainnot ja korjaukset (10/10 korjattu)
 │   ├── LINUX_DAEMON_OHJEET.md # Linux-palvelinasennus ja systemd-ohjeet
 │   ├── OSAKEPOIMINTALOGIIKKA.md # Mikroyhtiöseulonnan säännöt ja fundamenttikriteerit
