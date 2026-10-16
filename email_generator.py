@@ -613,6 +613,7 @@ def generate_and_send_p13_eod_action_email(
     portfolio: Any,
     daemon: Any,
     run_trades: Optional[List[Dict[str, Any]]] = None,
+    send_if_empty: bool = False,
 ) -> bool:
     """Convenience integration method invoked by main_controller at EOD."""
     regime = getattr(daemon.market_engine, "market_regime", {}) if hasattr(daemon, "market_engine") else {}
@@ -620,6 +621,14 @@ def generate_and_send_p13_eod_action_email(
     limit_buf = getattr(portfolio.config, "limit_price_buffer_pct", 0.002) if hasattr(portfolio, "config") else 0.002
     if limit_buf > 0.05:  # e.g. if passed as 0.2 meaning 0.2%
         limit_buf = limit_buf / 100.0
+
+    buys, full_exits, partial_tps = build_eod_action_orders(
+        portfolio=portfolio,
+        run_trades=run_trades,
+        fx_rates=fx,
+        limit_buffer_pct=limit_buf,
+    )
+    total_actions = len(buys) + len(full_exits) + len(partial_tps)
 
     subject, text_body, html_body = generate_eod_action_list_email(
         portfolio=portfolio,
@@ -631,6 +640,14 @@ def generate_and_send_p13_eod_action_email(
 
     # Always log text version for local inspection
     logger.info(f"\n{text_body}")
+
+    if total_actions == 0 and not send_if_empty:
+        logger.info(
+            f"[{getattr(portfolio.config, 'portfolio_id', 'P13')}] "
+            f"0 toimenpidettä Action Listissä. Sähköpostia ei lähetetä (hiljainen tila)."
+        )
+        return False
+
     return send_eod_action_list_email(subject, text_body, html_body)
 
 

@@ -209,3 +209,40 @@ def test_send_eod_action_list_email_mock_smtp():
             assert res is True
             assert instance.sendmail.called
             assert instance.quit.called
+
+
+def test_generate_and_send_p13_eod_action_email_suppresses_empty():
+    """When there are 0 actions and send_if_empty=False, no email should be dispatched."""
+    from email_generator import generate_and_send_p13_eod_action_email
+
+    class DummyConfig:
+        portfolio_id = "P13_Live_Candidate"
+        limit_price_buffer_pct = 0.2
+
+    class DummyPortfolio:
+        config = DummyConfig()
+        cash_balance = 10000.0
+        positions = []
+
+    daemon = type("Daemon", (), {"market_engine": type("ME", (), {"market_regime": {}, "fx_rates": {}})()})()
+
+    with patch("email_generator.send_eod_action_list_email") as mock_send:
+        res = generate_and_send_p13_eod_action_email(
+            portfolio=DummyPortfolio(),
+            daemon=daemon,
+            run_trades=[],
+            send_if_empty=False,
+        )
+        assert res is False
+        assert not mock_send.called
+
+        # When send_if_empty=True, it should dispatch
+        mock_send.return_value = True
+        res_empty_allowed = generate_and_send_p13_eod_action_email(
+            portfolio=DummyPortfolio(),
+            daemon=daemon,
+            run_trades=[],
+            send_if_empty=True,
+        )
+        assert res_empty_allowed is True
+        assert mock_send.called
