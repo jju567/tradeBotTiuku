@@ -61,6 +61,9 @@ BASE_DIR = _current_dir.parent if _current_dir.name == "screener" else _current_
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from dotenv import load_dotenv
+load_dotenv(BASE_DIR / ".env")
+
 from email_notifier import send_portfolio_alert, send_run_summary_email
 from screener.financial_metrics_engine import evaluate_profiles, get_hard_financials
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
@@ -863,6 +866,19 @@ class MarketDataEngine:
         try:
             t = yf.Ticker(ticker)
             raw_news = getattr(t, "news", []) or []
+            if not raw_news:
+                # Yahoo Finance does not index Nordic micro/midcap news.
+                # Fall back to localized Google News RSS & regulatory PR channels (Cision, MFN, Kauppalehti).
+                if not hasattr(self, "_web_verifier") or self._web_verifier is None:
+                    from screener.web_verifier import WebSearchVerifier
+                    self._web_verifier = WebSearchVerifier()
+                try:
+                    snippets = self._web_verifier.fetch_snippets(ticker)
+                    raw_news = [{"title": s, "summary": ""} for s in snippets]
+                except Exception as snip_err:
+                    logger.debug(f"WebSearchVerifier fetch failed for {ticker}: {snip_err}")
+                    raw_news = []
+
             if not raw_news:
                 return "HOLD", "No new press releases"
 
