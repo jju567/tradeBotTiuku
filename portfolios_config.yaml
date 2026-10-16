@@ -140,6 +140,10 @@ portfolios:
     description: "Live 10k € OST Hybrid: 70% Nordic Mid-Cap Core + 30% US/Nordic Micro-Cap Satellite"
     start_cash: 10000
     ignore_hodl_positions: true # Never touch holdings where hodl=True (e.g., FARON.HE)
+    partial_take_profit: true
+    take_profit_threshold_pct: 0.25
+    partial_sell_fraction: 0.50
+    partial_trailing_stop_pct: 0.15
     sub_strategies:
       core_nordic_midcap_quality:
         allocated_capital: 7000

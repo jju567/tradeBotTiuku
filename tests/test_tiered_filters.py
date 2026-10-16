@@ -322,3 +322,56 @@ def test_unified_router():
     p_nordic, _ = matches_universe_filter("NORD.ST", "Nordic_MicroCap_Catalyst", hf_nordic, meta_nordic)
     assert p_nordic is True
 
+
+def test_nordic_midcap_compounder_rejects_low_sek_liquidity():
+    """Stock on Stockholm exchange with 30,000 SEK ADV (~2,650 EUR) must be rejected from Core."""
+    meta = {
+        "market": "SE",
+        "market_cap_eur": 400_000_000.0,
+        "currency": "SEK",
+        "adv_20d_local": 30_000.0,  # ~2,654 EUR < 50,000 EUR
+    }
+    hard_facts = {
+        "roe": 0.20,
+        "ebit_margin": 0.15,
+        "free_cash_flow": 20_000_000.0,
+        "net_debt_to_ebitda": 0.5,
+    }
+    passed, reasons = matches_nordic_midcap_compounder("SEKCORE.ST", hard_facts, meta)
+    assert passed is False
+    assert any("< 50,000 EUR threshold" in r for r in reasons)
+
+
+def test_both_nordic_filters_reject_30k_sek_liquidity():
+    """SEK-denominated stock with 30,000 SEK ADV is rejected by BOTH Core and Nordic Satellite."""
+    meta_core = {
+        "market": "SE",
+        "market_cap_eur": 300_000_000.0,
+        "currency": "SEK",
+        "adv_20d_local": 30_000.0,
+    }
+    hf_core = {
+        "roe": 0.25,
+        "ebit_margin": 0.20,
+        "free_cash_flow": 10_000_000.0,
+        "net_debt_to_ebitda": 0.2,
+    }
+    passed_core, reasons_core = matches_nordic_midcap_compounder("TEST.ST", hf_core, meta_core)
+    assert passed_core is False
+    assert any("50,000 EUR threshold" in r for r in reasons_core)
+
+    meta_sat = {
+        "market": "SE",
+        "market_cap_eur": 50_000_000.0,
+        "currency": "SEK",
+        "adv_20d_local": 30_000.0,
+    }
+    hf_sat = {
+        "is_profile_b": True,
+        "cash_runway_months": "Infinite",
+    }
+    passed_sat, reasons_sat = matches_nordic_microcap_catalyst("TEST.ST", hf_sat, meta_sat)
+    assert passed_sat is False
+    assert any("20,000 EUR threshold" in r for r in reasons_sat)
+
+

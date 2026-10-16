@@ -382,6 +382,16 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         result["errors"].append(str(e))
         result["status"] = "ERROR"
 
+    try:
+        prof_eval = evaluate_profiles(result)
+        result["is_profile_a"] = prof_eval.get("is_profile_a", False)
+        result["is_profile_b"] = prof_eval.get("is_profile_b", False)
+        result["profile_signal"] = prof_eval.get("signal", "REJECT")
+    except Exception as e_prof:
+        logger.debug(f"Profile evaluation skipped for {cleaned_ticker}: {e_prof}")
+        result["is_profile_a"] = False
+        result["is_profile_b"] = False
+        result["profile_signal"] = "REJECT"
 
     return result
 

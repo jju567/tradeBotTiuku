@@ -107,6 +107,53 @@ def get_market_cap_in_usd(
     return mcap_local
 
 
+def get_adv_in_eur(
+    meta: Dict[str, Any],
+    ticker: str = "",
+    fx_rates: Optional[Dict[str, float]] = None,
+) -> float:
+    """Extracts or converts 20-day Average Daily Volume (ADV) to EUR."""
+    rates = fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+    t_clean = ticker.strip().upper()
+    market = str(meta.get("market", "")).upper()
+    curr = str(meta.get("currency", "")).upper()
+    if not curr:
+        if t_clean.endswith(".ST") or ".ST" in t_clean or market == "SE":
+            curr = "SEK"
+        elif t_clean.endswith(".NO") or t_clean.endswith(".OL") or market == "NO":
+            curr = "NOK"
+        elif t_clean.endswith(".CO") or market == "DK":
+            curr = "DKK"
+        elif t_clean.endswith(".HE") or market == "FI":
+            curr = "EUR"
+        else:
+            curr = "EUR"
+
+    adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
+    if curr == "EUR":
+        adv_eur = adv_local
+    elif curr == "SEK":
+        r = rates.get("EURSEK", 11.30)
+        adv_eur = adv_local / r if r > 0 else adv_local
+    elif curr == "NOK":
+        r = rates.get("EURNOK", 11.50)
+        adv_eur = adv_local / r if r > 0 else adv_local
+    elif curr == "DKK":
+        r = rates.get("EURDKK", 7.46)
+        adv_eur = adv_local / r if r > 0 else adv_local
+    elif curr == "USD":
+        r = rates.get("EURUSD", 1.08)
+        adv_eur = adv_local / r if r > 0 else adv_local
+    else:
+        adv_eur = adv_local
+
+    if adv_local <= 0 and meta.get("adv_20d_usd"):
+        r_usd = rates.get("EURUSD", 1.08)
+        adv_eur = float(meta["adv_20d_usd"]) / r_usd if r_usd > 0 else float(meta["adv_20d_usd"])
+
+    return adv_eur
+
+
 def matches_nordic_midcap_compounder(
     ticker: str,
     hard_facts: Dict[str, Any],
@@ -202,10 +249,9 @@ def matches_nordic_midcap_compounder(
                 reasons.append("Net Debt > 0 but EBITDA <= 0 or missing")
 
     # 6. High Liquidity (tight spread / ADV >= 50,000 EUR)
-    adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
-    adv_usd = float(meta.get("adv_20d_usd", 0.0) or 0.0)
-    if adv_local > 0 and adv_local < 50_000.0 and adv_usd < 50_000.0:
-        reasons.append(f"ADV {adv_local:,.0f} < 50,000 EUR threshold")
+    adv_eur = get_adv_in_eur(meta, ticker, fx_rates)
+    if adv_eur < 50_000.0:
+        reasons.append(f"ADV {adv_eur:,.0f} EUR < 50,000 EUR threshold")
 
     passed = len(reasons) == 0
     return passed, reasons
@@ -272,8 +318,8 @@ def matches_us_microcap_growth(
     if growth_ok or is_prof_a:
         catalyst_ok = True
     elif nlp_strong:
-        # Prevent buying pure hype: require positive revenue AND (cash runway >= 12m OR FCF > 0)
-        revenue = hard_facts.get("revenue") or hard_facts.get("total_revenue") or meta.get("revenue", 0.0)
+        # Prevent buying pure hype: require positive revenue AND (cash runway >= 12m OR operating_cash_flow_ttm > 0)
+        revenue = hard_facts.get("total_revenue_current") or hard_facts.get("revenue") or hard_facts.get("total_revenue") or meta.get("revenue", 0.0)
         rev_pos = (revenue is not None and float(revenue) > 0)
 
         runway = hard_facts.get("cash_runway_months")
@@ -287,14 +333,14 @@ def matches_us_microcap_growth(
                 except Exception:
                     runway_12m = False
 
-        fcf = hard_facts.get("free_cash_flow") or hard_facts.get("fcf")
-        fcf_pos = (fcf is not None and float(fcf) > 0)
+        ocf = hard_facts.get("operating_cash_flow_ttm") or hard_facts.get("ocf") or hard_facts.get("free_cash_flow") or hard_facts.get("fcf")
+        ocf_pos = (ocf is not None and float(ocf) > 0)
 
-        if rev_pos and (runway_12m or fcf_pos):
+        if rev_pos and (runway_12m or ocf_pos):
             catalyst_ok = True
         else:
             catalyst_ok = False
-            reasons.append("NLP catalyst present but fails basic viability (requires revenue > 0 and runway >= 12m or FCF > 0)")
+            reasons.append("NLP catalyst present but fails basic viability (requires revenue > 0 and runway >= 12m or OCF > 0)")
     else:
         catalyst_ok = False
         reasons.append(f"No catalyst: YoY growth={rev_yoy}%, Profile A={is_prof_a}, NLP={nlp_verdict}")
@@ -337,41 +383,11 @@ def matches_nordic_microcap_catalyst(
         reasons.append(f"Market Cap {mcap_eur:,.0f} EUR >= 150M EUR (Belongs to Core Mid-Cap tier)")
 
     # 2. Mandatory EUR liquidity gate for all candidates (Profile A/B and Turnaround)
-    rates = fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
-    curr = str(meta.get("currency", "")).upper()
-    if not curr:
-        if t_clean.endswith(".ST") or ".ST" in t_clean or market == "SE":
-            curr = "SEK"
-        elif t_clean.endswith(".NO") or t_clean.endswith(".OL") or market == "NO":
-            curr = "NOK"
-        elif t_clean.endswith(".CO") or market == "DK":
-            curr = "DKK"
-        else:
-            curr = "EUR"
-
-    adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
-    if curr == "EUR":
-        adv_eur = adv_local
-    elif curr == "SEK":
-        r = rates.get("EURSEK", 11.30)
-        adv_eur = adv_local / r if r > 0 else adv_local
-    elif curr == "NOK":
-        r = rates.get("EURNOK", 11.50)
-        adv_eur = adv_local / r if r > 0 else adv_local
-    elif curr == "DKK":
-        r = rates.get("EURDKK", 7.46)
-        adv_eur = adv_local / r if r > 0 else adv_local
-    else:
-        adv_eur = adv_local
-
-    if adv_local <= 0 and meta.get("adv_20d_usd"):
-        r_usd = rates.get("EURUSD", 1.08)
-        adv_eur = float(meta["adv_20d_usd"]) / r_usd if r_usd > 0 else float(meta["adv_20d_usd"])
-
+    adv_eur = get_adv_in_eur(meta, ticker, fx_rates)
     if adv_eur < 20_000.0:
         reasons.append(f"ADV {adv_eur:,.0f} EUR < 20,000 EUR threshold")
 
-    # 3. Criteria: (A) Quality Micro-Cap (Profile A or Profile B) OR (B) Turnaround with runway >= 12m (or FCF/EBIT > 0)
+    # 3. Criteria: (A) Quality Micro-Cap (Profile A or Profile B) OR (B) Turnaround with runway >= 12m (or OCF/FCF > 0)
     is_prof_a = hard_facts.get("is_profile_a", False)
     is_prof_b = hard_facts.get("is_profile_b", False)
     is_turnaround = (nlp_verdict in ["WATCH_TURNAROUND", "STRONG BUY"] or meta.get("is_turnaround", False))
@@ -387,12 +403,12 @@ def matches_nordic_microcap_catalyst(
             except Exception:
                 runway_ok = False
     else:
-        # Missing cash runway: verify if Free Cash Flow > 0 or EBIT > 0
+        # Missing cash runway: verify if operating_cash_flow_ttm > 0 or free_cash_flow > 0
+        ocf = hard_facts.get("operating_cash_flow_ttm") or hard_facts.get("ocf")
         fcf = hard_facts.get("free_cash_flow") or hard_facts.get("fcf")
-        ebit = hard_facts.get("ebit") or hard_facts.get("operating_income") or hard_facts.get("operating_profit") or hard_facts.get("operating_cash_flow_ttm")
+        ocf_pos = (ocf is not None and float(ocf) > 0)
         fcf_pos = (fcf is not None and float(fcf) > 0)
-        ebit_pos = (ebit is not None and float(ebit) > 0)
-        runway_ok = (fcf_pos or ebit_pos)
+        runway_ok = (ocf_pos or fcf_pos)
 
     criteria_ok = False
     if is_prof_a or is_prof_b:

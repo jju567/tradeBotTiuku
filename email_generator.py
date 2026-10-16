@@ -262,6 +262,7 @@ def build_portfolio_summary(
     portfolio: Any,
     regime_data: Optional[Dict[str, Any]] = None,
     fx_rates: Optional[Dict[str, float]] = None,
+    prices_cache: Optional[Dict[str, float]] = None,
 ) -> EODPortfolioSummary:
     """Extracts regime status, available cash, non-HODL total equity, and HODL positions."""
     fx_rates = fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURDKK": 7.46, "EURNOK": 11.60}
@@ -290,11 +291,34 @@ def build_portfolio_summary(
         else:
             regular_positions.append(pos)
 
-    # Calculate non-HODL equity
+    # Calculate non-HODL equity using current live prices if available
     non_hodl_stock_eur = 0.0
     for pos in regular_positions:
         shares = float(pos.get("Shares", 0))
-        px = float(pos.get("Buy Price", 0.0))  # fallback to Buy Price if live price is missing
+        ticker = str(pos.get("Ticker", "")).upper()
+        px = None
+        for key in ("current_price", "Current Price", "last_price", "Last Price"):
+            val = pos.get(key)
+            if val is not None:
+                try:
+                    fval = float(val)
+                    if fval > 0:
+                        px = fval
+                        break
+                except Exception:
+                    pass
+        if px is None and prices_cache:
+            val = prices_cache.get(ticker) or prices_cache.get(ticker.upper())
+            if val is not None:
+                try:
+                    fval = float(val)
+                    if fval > 0:
+                        px = fval
+                except Exception:
+                    pass
+        if px is None:
+            px = float(pos.get("Buy Price", 0.0) or 0.0)
+
         curr = pos.get("Currency", "EUR")
         fx = 1.0
         if curr == "USD":
@@ -534,13 +558,19 @@ def generate_eod_action_list_email(
     regime_data: Optional[Dict[str, Any]] = None,
     fx_rates: Optional[Dict[str, float]] = None,
     limit_buffer_pct: float = 0.002,
+    prices_cache: Optional[Dict[str, float]] = None,
 ) -> Tuple[str, str, str]:
     """
     Main generator function for the EOD Action List email.
     Returns:
         (subject, plain_text, html_text)
     """
-    summary = build_portfolio_summary(portfolio=portfolio, regime_data=regime_data, fx_rates=fx_rates)
+    summary = build_portfolio_summary(
+        portfolio=portfolio,
+        regime_data=regime_data,
+        fx_rates=fx_rates,
+        prices_cache=prices_cache,
+    )
     buys, full_exits, partial_tps = build_eod_action_orders(
         portfolio=portfolio,
         run_trades=run_trades,
@@ -630,12 +660,15 @@ def generate_and_send_p13_eod_action_email(
     )
     total_actions = len(buys) + len(full_exits) + len(partial_tps)
 
+    px_cache = getattr(daemon.market_engine, "prices_cache", {}) if hasattr(daemon, "market_engine") else {}
+
     subject, text_body, html_body = generate_eod_action_list_email(
         portfolio=portfolio,
         run_trades=run_trades,
         regime_data=regime,
         fx_rates=fx,
         limit_buffer_pct=limit_buf,
+        prices_cache=px_cache,
     )
 
     # Always log text version for local inspection

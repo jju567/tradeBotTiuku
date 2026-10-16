@@ -177,7 +177,9 @@ def validate_candidate_ticker(
         mc_local_float = float(mc_local)
         mc_usd = mc_local_float * fx_to_usd
 
-        if mc_usd > max_cap_usd:
+        # Allow Nordic stocks up to 2,200,000,000 USD (~2,000M EUR) for Core Mid-Cap
+        effective_max_cap_usd = 2_200_000_000.0 if market in ("FI", "SE", "DK", "NO") else max_cap_usd
+        if mc_usd > effective_max_cap_usd:
             return None
 
         return {

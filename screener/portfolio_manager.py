@@ -131,7 +131,7 @@ def evaluate_position(
 
     # Time-Based Exit: Dead Money Timer (Held > dead_money_days and gain <= +5%)
     raw_buy_date = position.get("buy_date") or position.get("entry_date") or position.get("entrydate")
-    if raw_buy_date:
+    if raw_buy_date and dead_money_days is not None:
         try:
             if isinstance(raw_buy_date, datetime):
                 buy_dt = raw_buy_date.date()

@@ -1052,6 +1052,74 @@ def test_p13_rejects_dwarf_position_when_adv_insufficient(tmp_path):
     assert len(p.positions) == 0
 
 
+def test_p13_partial_take_profit_and_runner_rule(tmp_path):
+    """P13 triggers partial take-profit (+25% gain -> sells 50% shares) and initiates runner rule."""
+    cfg_dict = {
+        "description": "Live 10k € OST Hybrid",
+        "start_cash": 10000.0,
+        "sub_strategies": {
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 7000,
+                "slots": 3,
+                "slot_sizes": [2350, 2350, 2300],
+                "universe_filter": "Nordic_MidCap_Compounder",
+                "rules": [
+                    "Partial_TP: Sell 50% at +25.0%",
+                    "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% Trailing_Stop",
+                ],
+            },
+        },
+    }
+    cfg = PortfolioConfig.from_dict("P13_Live_Candidate", cfg_dict)
+    assert cfg.partial_take_profit is True
+    assert cfg.take_profit_threshold_pct == 0.25
+    assert cfg.partial_sell_fraction == 0.50
+
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 1000.0
+    p.positions = [
+        {
+            "Ticker": "CORE.HE",
+            "Shares": 10,
+            "Buy Price": 100.0,
+            "Buy Date": "2026-01-01",
+            "Currency": "EUR",
+            "Capital Invested": 1000.0,
+            "Sub_Strategy": "core_nordic_midcap_quality",
+            "peak_price": 100.0,
+        }
+    ]
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08}
+    daemon.market_engine.prices_cache = {"CORE.HE": 125.0}  # +25% gain
+    daemon.market_engine.news_radar_cache = {"CORE.HE": ("HOLD", "OK")}
+    daemon.market_engine.hard_facts_cache = {"CORE.HE": {"roe": 0.20, "ebit_margin": 0.15}}
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "OK")
+
+    run_trades = []
+    daemon.execute_phase1_exits(p, run_trades=run_trades)
+
+    # Partial TP must have occurred: 5 shares sold, 5 remaining
+    assert len(p.positions) == 1
+    pos = p.positions[0]
+    assert pos["Shares"] == 5
+    assert pos["partial_profit_taken"] is True
+    assert any(t["action"] == "PARTIAL_TP" for t in run_trades)
+
+    # Cash balance increased
+    assert p.cash_balance > 1000.0
+
+    # Runner Rule part A: Price drops below entry (100.0) -> Breakeven stop triggers SELL
+    daemon.market_engine.prices_cache["CORE.HE"] = 99.0
+    run_trades.clear()
+    daemon.execute_phase1_exits(p, run_trades=run_trades)
+    assert len(p.positions) == 0
+    assert any(t["action"] == "SELL" and "RUNNER_BREAKEVEN_STOP" in t["details"]["reason"] for t in run_trades)
+
+
+
 
 
 

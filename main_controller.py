@@ -68,7 +68,12 @@ from email_notifier import send_portfolio_alert, send_run_summary_email
 from screener.financial_metrics_engine import evaluate_profiles, get_hard_financials
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
 from screener.portfolio_manager import evaluate_position
-from screener.web_verifier import FATAL_RED_FLAG_PATTERNS, RED_FLAG_PATTERNS, WARN_PATTERNS
+from screener.web_verifier import (
+    FATAL_RED_FLAG_PATTERNS,
+    RED_FLAG_PATTERNS,
+    WARN_PATTERNS,
+    TURNAROUND_CATALYST_PATTERNS,
+)
 from screener.tiered_filters import (
     matches_universe_filter,
     get_market_cap_in_eur,
@@ -394,6 +399,16 @@ class PortfolioConfig:
         dd_alert = float(exec_constraints.get("portfolio_max_drawdown_alert_pct", data.get("portfolio_max_drawdown_alert_pct", -15.0)))
         ignore_hodl = bool(data.get("ignore_hodl_positions", False))
 
+        has_sub_strat_partial_tp = False
+        if isinstance(sub_strats, dict):
+            for s_info in sub_strats.values():
+                rules = s_info.get("rules", []) if isinstance(s_info, dict) else []
+                if any("Partial_TP" in str(r) for r in rules):
+                    has_sub_strat_partial_tp = True
+                    break
+
+        partial_tp = bool(data.get("partial_take_profit", False)) or has_sub_strat_partial_tp
+
         return cls(
             portfolio_id=pid,
             strategy=strat_val,
@@ -415,7 +430,7 @@ class PortfolioConfig:
             require_nlp_clean=bool(data.get("require_nlp_clean", True)),
             max_3d_runup_pct=float(data["max_3d_runup_pct"]) if data.get("max_3d_runup_pct") is not None else 0.40,
             max_rsi_14=float(data["max_rsi_14"]) if data.get("max_rsi_14") is not None else 80.0,
-            partial_take_profit=bool(data.get("partial_take_profit", False)),
+            partial_take_profit=partial_tp,
             take_profit_threshold_pct=float(data.get("take_profit_threshold_pct", 0.25)),
             partial_sell_fraction=float(data.get("partial_sell_fraction", 0.50)),
             partial_trailing_stop_pct=float(data.get("partial_trailing_stop_pct", 0.15)),
@@ -781,10 +796,21 @@ class MarketDataEngine:
     def get_ticker_hard_facts(self, ticker: str) -> Dict[str, Any]:
         """Returns hard financials from cache, or fetches on-demand."""
         if ticker in self.hard_facts_cache:
-            return self.hard_facts_cache[ticker]
+            hard_facts = self.hard_facts_cache[ticker]
+            if "is_profile_a" not in hard_facts:
+                prof_eval = evaluate_profiles(hard_facts)
+                hard_facts["is_profile_a"] = prof_eval.get("is_profile_a", False)
+                hard_facts["is_profile_b"] = prof_eval.get("is_profile_b", False)
+                hard_facts["profile_signal"] = prof_eval.get("signal", "REJECT")
+                self.eval_profiles_cache[ticker] = prof_eval
+            return hard_facts
         hard_facts = get_hard_financials(ticker)
+        prof_eval = evaluate_profiles(hard_facts)
+        hard_facts["is_profile_a"] = prof_eval.get("is_profile_a", False)
+        hard_facts["is_profile_b"] = prof_eval.get("is_profile_b", False)
+        hard_facts["profile_signal"] = prof_eval.get("signal", "REJECT")
         self.hard_facts_cache[ticker] = hard_facts
-        self.eval_profiles_cache[ticker] = evaluate_profiles(hard_facts)
+        self.eval_profiles_cache[ticker] = prof_eval
         return hard_facts
 
     def _fetch_live_price(self, ticker: str) -> Optional[float]:
@@ -884,6 +910,10 @@ class MarketDataEngine:
 
             warning_found = False
             warning_reason = ""
+            strong_buy_found = False
+            strong_buy_reason = ""
+            turnaround_found = False
+            turnaround_reason = ""
             valid_headline_count = 0
 
             for item in raw_news[:10]:
@@ -957,6 +987,26 @@ class MarketDataEngine:
                             if item_decision != "REJECT":
                                 item_decision = "WARN"
                                 item_reason = f"NLP Warning: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+                        elif item_decision not in ("REJECT", "WARN"):
+                            # Check positive catalysts (STRONG BUY / WATCH_TURNAROUND)
+                            v_details = nlp_res.get("verdict_details", {}) if isinstance(nlp_res, dict) else {}
+                            verdict = (
+                                (nlp_res.get("verdict") if isinstance(nlp_res, dict) else None)
+                                or v_details.get("verdict")
+                            )
+                            v_reason = v_details.get("reasoning", "")
+                            if verdict in ("STRONG BUY", "BUY_PROFILE_A"):
+                                item_decision = "STRONG BUY"
+                                item_reason = f"Strong NLP Catalyst: {v_reason or title or clean_headline}"
+                            elif verdict == "WATCH_TURNAROUND":
+                                item_decision = "WATCH_TURNAROUND"
+                                item_reason = f"Turnaround Catalyst: {v_reason or title or clean_headline}"
+                            else:
+                                for pat in TURNAROUND_CATALYST_PATTERNS:
+                                    if pat.lower() in full_text.lower():
+                                        item_decision = "WATCH_TURNAROUND"
+                                        item_reason = f"Turnaround catalyst '{pat}' detected in headline: {title or clean_headline}"
+                                        break
 
                     # Log ONCE to CSV
                     append_nlp_decision(ticker, clean_headline, item_decision, item_reason)
@@ -964,15 +1014,27 @@ class MarketDataEngine:
                     # Store in global cache
                     self.evaluated_news_cache[cache_key] = (item_decision, item_reason)
 
-                # Aggregate ticker status
+                # Aggregate ticker status: REJECT > WARN > STRONG BUY > WATCH_TURNAROUND > HOLD
                 if item_decision == "REJECT":
                     return "REJECT", item_reason
                 elif item_decision == "WARN":
                     warning_found = True
                     warning_reason = item_reason
+                elif item_decision == "STRONG BUY":
+                    if not strong_buy_found:
+                        strong_buy_found = True
+                        strong_buy_reason = item_reason
+                elif item_decision == "WATCH_TURNAROUND":
+                    if not turnaround_found:
+                        turnaround_found = True
+                        turnaround_reason = item_reason
 
             if warning_found:
                 return "WARN", warning_reason
+            if strong_buy_found:
+                return "STRONG BUY", strong_buy_reason
+            if turnaround_found:
+                return "WATCH_TURNAROUND", turnaround_reason
 
             if valid_headline_count == 0:
                 return "HOLD", "No new press releases"
@@ -1317,21 +1379,55 @@ class MasterLiveTradingDaemon:
                         elif news_verdict == "REJECT":
                             action = "SELL"
                             reason = f"QUARTERLY_FUNDAMENTAL_BREAKDOWN ({news_reason})"
+                        else:
+                            # Check fundamental deterioration from hard_facts
+                            roe = hard_facts.get("roe")
+                            roe_val = (roe * 100.0 if abs(roe) <= 2.0 else float(roe)) if roe is not None else None
+                            ebit_margin = hard_facts.get("ebit_margin") or hard_facts.get("operating_margin")
+                            ebit_val = (ebit_margin * 100.0 if abs(ebit_margin) <= 2.0 else float(ebit_margin)) if ebit_margin is not None else None
+                            nd_ebitda = hard_facts.get("net_debt_to_ebitda")
+                            if nd_ebitda is None:
+                                net_debt = hard_facts.get("net_debt")
+                                net_cash = hard_facts.get("net_cash")
+                                if net_debt is None and net_cash is not None:
+                                    net_debt = -net_cash
+                                ebitda = hard_facts.get("ebitda")
+                                if net_debt is not None and ebitda and ebitda > 0:
+                                    nd_ebitda = net_debt / ebitda
+
+                            breakdown_reasons = []
+                            if roe_val is not None and roe_val < 8.0:
+                                breakdown_reasons.append(f"ROE {roe_val:.1f}% < 8.0%")
+                            if ebit_val is not None and ebit_val < 5.0:
+                                breakdown_reasons.append(f"EBIT Margin {ebit_val:.1f}% < 5.0%")
+                            if nd_ebitda is not None and float(nd_ebitda) > 3.5:
+                                breakdown_reasons.append(f"Net Debt/EBITDA {float(nd_ebitda):.2f} > 3.5")
+
+                            if breakdown_reasons:
+                                action = "SELL"
+                                reason = f"QUARTERLY_FUNDAMENTAL_BREAKDOWN ({', '.join(breakdown_reasons)})"
+
                     elif sub_strat in ["satellite_us_microcap_growth", "satellite_nordic_microcap_catalyst"]:
-                        # Satellite: Stop-Loss -12.0% and Time-Stop: 45 trading days if PnL < +5.0%
+                        # Satellite: Stop-Loss -12.0% and Time-Stop: 45 trading days (or 63 calendar days) if PnL < +5.0%
                         if loss_from_buy >= 0.12:
                             action = "SELL"
                             reason = f"STOP_LOSS_SATELLITE (Loss -{loss_from_buy*100:.1f}% >= -12.0%)"
                         else:
                             try:
                                 b_date = datetime.strptime(str(buy_date)[:10], "%Y-%m-%d").date()
-                                holding_days = (today - b_date).days
+                                try:
+                                    import numpy as np
+                                    trading_days = int(np.busday_count(b_date, today))
+                                except Exception:
+                                    trading_days = int((today - b_date).days * 5 / 7)
+                                cal_days = (today - b_date).days
                             except Exception:
-                                holding_days = 0
+                                trading_days = 0
+                                cal_days = 0
                             pnl_pct = ((current_price - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
-                            if holding_days >= 45 and pnl_pct < 5.0:
+                            if (trading_days >= 45 or cal_days >= 63) and pnl_pct < 5.0:
                                 action = "SELL"
-                                reason = f"TIME_STOP_DECAY ({holding_days}d >= 45d, PnL {pnl_pct:+.1f}% < +5.0%)"
+                                reason = f"TIME_STOP_DECAY ({trading_days} trading days >= 45d, PnL {pnl_pct:+.1f}% < +5.0%)"
                     else:
                         pos_market = pos.get("market") or pos.get("Market")
                         region = get_ticker_region(ticker, pos_market)
@@ -1410,6 +1506,7 @@ class MasterLiveTradingDaemon:
                         "ticker": ticker,
                         "details": {
                             "exit_reason": reason,
+                            "reason": reason,
                             "shares": shares,
                             "sell_price": f"{current_price:.2f} {ticker_curr}",
                             "net_pnl": f"{net_pnl:+.2f} {ticker_curr}",
@@ -1600,8 +1697,8 @@ class MasterLiveTradingDaemon:
                 adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
                 max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
 
-                # Bug 2 fix: Reject dwarf positions if 5% ADV does not cover at least 80% of target slot
-                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.80):
+                # Bug 6 fix: Reject dwarf positions if 5% ADV does not cover at least 75% of target slot
+                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.75):
                     continue
 
                 if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
@@ -1613,14 +1710,13 @@ class MasterLiveTradingDaemon:
                     continue
 
                 # Step 1.3: Calculate candidate_score
-                mom_val = float(getattr(self.market_engine, "momentum_cache", {}).get(ticker, {}).get("day_change_pct", 0.0) or 0.0)
                 if "midcap" in u_filter.lower():
-                    # Core (Nordic_MidCap_Compounder): high ROE, high EBIT-%, low Net Debt / EBITDA, positive momentum
+                    # Core (Nordic_MidCap_Compounder): (roe_pct * 1.5) + (ebit_margin_pct * 1.5) - (net_debt_to_ebitda * 5.0)
                     roe = hard_facts.get("roe") or hard_facts.get("return_on_equity") or 0.0
-                    roe_val = roe * 100.0 if abs(roe) <= 2.0 else float(roe)
+                    roe_pct = roe * 100.0 if abs(roe) <= 2.0 else float(roe)
 
                     ebit_margin = hard_facts.get("ebit_margin") or hard_facts.get("operating_margin") or 0.0
-                    ebit_val = ebit_margin * 100.0 if abs(ebit_margin) <= 2.0 else float(ebit_margin)
+                    ebit_margin_pct = ebit_margin * 100.0 if abs(ebit_margin) <= 2.0 else float(ebit_margin)
 
                     net_debt = hard_facts.get("net_debt")
                     net_cash = hard_facts.get("net_cash")
@@ -1630,38 +1726,44 @@ class MasterLiveTradingDaemon:
                     if nd_ebitda is None and net_debt is not None:
                         ebitda = hard_facts.get("ebitda") or 0.0
                         nd_ebitda = (net_debt / ebitda) if ebitda > 0 else (0.0 if net_debt <= 0 else 3.0)
-                    nd_score = 15.0 if (nd_ebitda is None or nd_ebitda <= 0) else max(0.0, (2.5 - float(nd_ebitda)) * 6.0)
+                    nd_val = float(nd_ebitda) if nd_ebitda is not None else 0.0
 
-                    cand_score = (roe_val * 1.0) + (ebit_val * 0.8) + nd_score + (mom_val * 0.5)
+                    cand_score = (roe_pct * 1.5) + (ebit_margin_pct * 1.5) - (nd_val * 5.0)
 
                 elif "us_" in u_filter.lower():
-                    # Satellite 1 (US_MicroCap_Growth): YoY growth, is_profile_a bonus, nlp_verdict bonus
+                    # Satellite 1 (US_MicroCap_Growth): rev_yoy + (30.0 if is_profile_a) + (25.0 if nlp_verdict == "STRONG BUY")
                     rev_yoy = float(hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy") or 0.0)
-                    prof_a_bonus = 25.0 if hard_facts.get("is_profile_a", False) else 0.0
-                    nlp_bonus = 30.0 if news_verdict == "STRONG BUY" else (15.0 if news_verdict == "BUY_PROFILE_A" else 0.0)
-                    cand_score = rev_yoy + prof_a_bonus + nlp_bonus + (mom_val * 0.2)
+                    is_prof_a = bool(hard_facts.get("is_profile_a", False))
+                    cand_score = float(rev_yoy or 0.0) + (30.0 if is_prof_a else 0.0) + (25.0 if news_verdict == "STRONG BUY" else 0.0)
 
                 else:
-                    # Satellite 2 (Nordic_MicroCap_Catalyst): is_profile_a/b bonus, nlp_verdict bonus, volume/momentum
-                    prof_bonus = 30.0 if hard_facts.get("is_profile_a", False) else (15.0 if hard_facts.get("is_profile_b", False) else 0.0)
-                    nlp_bonus = 35.0 if news_verdict == "STRONG BUY" else (20.0 if news_verdict == "WATCH_TURNAROUND" else 0.0)
-                    rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
-                    fx_to_eur = 1.0
-                    if ticker_curr == "SEK":
-                        fx_to_eur = 1.0 / rates.get("EURSEK", 11.30)
-                    elif ticker_curr == "NOK":
-                        fx_to_eur = 1.0 / rates.get("EURNOK", 11.50)
-                    elif ticker_curr == "DKK":
-                        fx_to_eur = 1.0 / rates.get("EURDKK", 7.46)
-                    adv_bonus = min(15.0, (adv_local * fx_to_eur) / 10_000.0)
-                    cand_score = prof_bonus + nlp_bonus + mom_val + adv_bonus
+                    # Satellite 2 (Nordic_MicroCap_Catalyst): (35.0 if is_profile_a) + (25.0 if is_profile_b) + (30.0 if nlp in STRONG BUY/WATCH_TURNAROUND) + rev_yoy * 0.5
+                    rev_yoy = float(hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy") or 0.0)
+                    is_prof_a = bool(hard_facts.get("is_profile_a", False))
+                    is_prof_b = bool(hard_facts.get("is_profile_b", False))
+                    nlp_cat = (news_verdict in ["STRONG BUY", "WATCH_TURNAROUND"])
+                    cand_score = (35.0 if is_prof_a else 0.0) + (25.0 if is_prof_b else 0.0) + (30.0 if nlp_cat else 0.0) + (float(rev_yoy or 0.0) * 0.5)
+
+                rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+                fx_to_eur = 1.0
+                if ticker_curr == "SEK":
+                    fx_to_eur = 1.0 / rates.get("EURSEK", 11.30)
+                elif ticker_curr == "NOK":
+                    fx_to_eur = 1.0 / rates.get("EURNOK", 11.50)
+                elif ticker_curr == "DKK":
+                    fx_to_eur = 1.0 / rates.get("EURDKK", 7.46)
+                elif ticker_curr == "USD":
+                    fx_to_eur = 1.0 / rates.get("EURUSD", 1.08)
+                adv_eur = adv_local * fx_to_eur
 
                 valid_candidates.append({
                     "ticker": ticker,
+                    "score": cand_score,
+                    "candidate_score": cand_score,
+                    "adv_eur": adv_eur,
                     "meta": meta,
                     "hard_facts": hard_facts,
                     "cand_price": cand_price,
-                    "candidate_score": cand_score,
                     "ticker_curr": ticker_curr,
                     "fx_to_acc": fx_to_acc,
                     "fx_acc_to_local": fx_acc_to_local,
@@ -1669,8 +1771,8 @@ class MasterLiveTradingDaemon:
                     "max_adv_allowed": max_adv_allowed,
                 })
 
-            # Step 1.4: Sort valid_candidates descending by candidate_score; deterministic tie-breaker by ticker
-            valid_candidates.sort(key=lambda c: (-c["candidate_score"], c["ticker"]))
+            # Step 1.4: Sort valid_candidates descending by candidate_score (score) then adv_eur
+            valid_candidates.sort(key=lambda x: (x["score"], x["adv_eur"]), reverse=True)
 
             # Step 1.5: Fill available slots using top-ranked candidates
             for slot_idx in range(current_held, sub_slots):
@@ -1697,7 +1799,7 @@ class MasterLiveTradingDaemon:
                 target_allocation_local = eff_allocation_acc * fx_acc_to_local
                 min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
 
-                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.80):
+                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.75):
                     continue
 
                 if target_allocation_local > max_adv_allowed:
