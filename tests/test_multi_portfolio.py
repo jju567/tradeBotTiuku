@@ -896,7 +896,7 @@ def test_p13_sub_strategies_screening_execution(tmp_path):
             "market": "SE",
             "market_cap_eur": 60_000_000.0,
             "currency": "SEK",
-            "adv_20d_local": 50_000.0,
+            "adv_20d_local": 500_000.0,
             "current_price": 20.0,
         },
     }
@@ -937,6 +937,120 @@ def test_p13_sub_strategies_screening_execution(tmp_path):
     assert "core_nordic_midcap_quality" in sub_strats_bought
     assert "satellite_us_microcap_growth" in sub_strats_bought
     assert "satellite_nordic_microcap_catalyst" in sub_strats_bought
+
+
+def test_p13_candidate_ranking_higher_score_beats_alphabetical_order(tmp_path):
+    """Higher-scoring candidate alphabetically later (Z) must beat lower-scoring candidate alphabetically earlier (A)."""
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08}
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        sub_strategies={
+            "satellite_us_microcap_growth": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "US_MicroCap_Growth",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    # A_WEAK comes first alphabetically, but Z_STRONG has much higher score
+    daemon.market_engine.universe_metadata = {
+        "A_WEAK": {
+            "market": "US",
+            "market_cap_usd": 100_000_000.0,
+            "currency": "USD",
+            "adv_20d_local": 1_000_000.0,
+            "current_price": 10.0,
+            "exchange": "NASDAQ",
+        },
+        "Z_STRONG": {
+            "market": "US",
+            "market_cap_usd": 150_000_000.0,
+            "currency": "USD",
+            "adv_20d_local": 1_500_000.0,
+            "current_price": 15.0,
+            "exchange": "NASDAQ",
+        },
+    }
+    daemon.market_engine.prices_cache = {"A_WEAK": 10.0, "Z_STRONG": 15.0}
+    daemon.market_engine.hard_facts_cache = {
+        "A_WEAK": {
+            "exchange": "NASDAQ",
+            "dividend_yield": 0.0,
+            "revenue_growth_yoy_pct": 16.0,  # weak growth
+            "is_profile_a": False,
+        },
+        "Z_STRONG": {
+            "exchange": "NASDAQ",
+            "dividend_yield": 0.0,
+            "revenue_growth_yoy_pct": 60.0,  # explosive growth + profile A
+            "is_profile_a": True,
+        },
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("STRONG BUY" if t == "Z_STRONG" else "HOLD", "OK")
+
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 1
+    assert len(p.positions) == 1
+    # Z_STRONG must win the slot over A_WEAK despite alphabetical order!
+    assert p.positions[0]["Ticker"] == "Z_STRONG"
+
+
+def test_p13_rejects_dwarf_position_when_adv_insufficient(tmp_path):
+    """Rejects candidate when 5% ADV is less than 80% of the target slot allocation."""
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08}
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        sub_strategies={
+            "satellite_us_microcap_growth": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "US_MicroCap_Growth",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    # Target slot: 1500 EUR * 1.08 = 1620 USD. 80% is 1296 USD.
+    # If adv_20d_local is only 10,000 USD, 5% is only 500 USD (< 1296 USD) -> dwarf position!
+    daemon.market_engine.universe_metadata = {
+        "DWARF": {
+            "market": "US",
+            "market_cap_usd": 50_000_000.0,
+            "currency": "USD",
+            "adv_20d_local": 10_000.0,
+            "current_price": 5.0,
+            "exchange": "NASDAQ",
+        },
+    }
+    daemon.market_engine.prices_cache = {"DWARF": 5.0}
+    daemon.market_engine.hard_facts_cache = {
+        "DWARF": {
+            "exchange": "NASDAQ",
+            "dividend_yield": 0.0,
+            "revenue_growth_yoy_pct": 40.0,
+            "is_profile_a": True,
+        },
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "OK")
+
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 0
+    assert len(p.positions) == 0
+
 
 
 

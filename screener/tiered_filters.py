@@ -221,8 +221,8 @@ def matches_us_microcap_growth(
     Tier 2: US_MicroCap_Growth (Satellite 1)
     - Exchange: Strictly NASDAQ or NYSE (No OTC/Pink Sheets).
     - Market Cap: 30,000,000 USD <= market_cap <= 350,000,000 USD.
-    - Dividend: dividend_yield == 0.0 (Strict OST rule).
-    - Catalyst: Strong revenue/EPS growth (YoY > 15%) or high NLP earnings score.
+    - Dividend: dividend_yield == 0.0 (Strict OST rule). Also checks dividend_rate.
+    - Catalyst: Strong revenue/EPS growth (YoY > 15%) or Profile A or high NLP earnings score with viability.
     """
     reasons: List[str] = []
     t_clean = ticker.strip().upper()
@@ -247,19 +247,56 @@ def matches_us_microcap_growth(
     elif mcap_usd > 350_000_000.0:
         reasons.append(f"Market Cap {mcap_usd:,.0f} USD > 350M USD")
 
-    # 3. Dividend Yield == 0.0 (Strict OST rule)
+    # 3. Dividend Yield == 0.0 (Strict OST rule). Verify dividend is truly 0.
     div_yield = hard_facts.get("dividend_yield")
-    if div_yield is not None and float(div_yield) > 0.0001:
-        reasons.append(f"Dividend yield {float(div_yield)*100:.2f}% > 0.0% (Forbidden on OST)")
+    div_rate = hard_facts.get("dividend_rate") or meta.get("dividend_rate")
+    trailing_div_rate = hard_facts.get("trailing_annual_dividend_rate") or meta.get("trailing_annual_dividend_rate")
 
-    # 4. Catalyst: Strong revenue growth (>15%) or Profile A or high NLP score
+    has_dividend = False
+    if div_yield is not None and float(div_yield) > 0.0001:
+        has_dividend = True
+    elif div_rate is not None and float(div_rate) > 0.0001:
+        has_dividend = True
+    elif trailing_div_rate is not None and float(trailing_div_rate) > 0.0001:
+        has_dividend = True
+
+    if has_dividend:
+        reasons.append("Dividend yield detected > 0.0% (Forbidden on OST)")
+
+    # 4. Catalyst: Strong revenue growth (>15%) or Profile A or high NLP score with viability
     rev_yoy = hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy")
     is_prof_a = hard_facts.get("is_profile_a", False)
     nlp_strong = nlp_verdict in ["STRONG BUY", "BUY_PROFILE_A"]
-
     growth_ok = (rev_yoy is not None and float(rev_yoy) > 15.0)
-    catalyst_ok = growth_ok or is_prof_a or nlp_strong
-    if not catalyst_ok:
+
+    if growth_ok or is_prof_a:
+        catalyst_ok = True
+    elif nlp_strong:
+        # Prevent buying pure hype: require positive revenue AND (cash runway >= 12m OR FCF > 0)
+        revenue = hard_facts.get("revenue") or hard_facts.get("total_revenue") or meta.get("revenue", 0.0)
+        rev_pos = (revenue is not None and float(revenue) > 0)
+
+        runway = hard_facts.get("cash_runway_months")
+        runway_12m = False
+        if runway is not None:
+            if str(runway).lower() == "infinite":
+                runway_12m = True
+            else:
+                try:
+                    runway_12m = float(runway) >= 12.0
+                except Exception:
+                    runway_12m = False
+
+        fcf = hard_facts.get("free_cash_flow") or hard_facts.get("fcf")
+        fcf_pos = (fcf is not None and float(fcf) > 0)
+
+        if rev_pos and (runway_12m or fcf_pos):
+            catalyst_ok = True
+        else:
+            catalyst_ok = False
+            reasons.append("NLP catalyst present but fails basic viability (requires revenue > 0 and runway >= 12m or FCF > 0)")
+    else:
+        catalyst_ok = False
         reasons.append(f"No catalyst: YoY growth={rev_yoy}%, Profile A={is_prof_a}, NLP={nlp_verdict}")
 
     passed = len(reasons) == 0
@@ -276,8 +313,9 @@ def matches_nordic_microcap_catalyst(
     """
     Tier 3: Nordic_MicroCap_Catalyst (Satellite 2)
     - Market Cap: 15,000,000 EUR <= market_cap < 150,000,000 EUR (OMXH / OMXS / First North).
+    - Liquidity: adv_eur >= 20,000 EUR mandatory for all candidates.
     - Criteria: Either undervalued quality micro-cap (Profile A or Profile B)
-      OR WATCH_TURNAROUND with verified news/earnings NLP catalyst, cash runway >= 12 months, and volume confirmation.
+      OR WATCH_TURNAROUND with verified news/earnings NLP catalyst and cash runway >= 12 months (or FCF/EBIT > 0).
     """
     reasons: List[str] = []
     t_clean = ticker.strip().upper()
@@ -298,34 +336,74 @@ def matches_nordic_microcap_catalyst(
     elif mcap_eur >= 150_000_000.0:
         reasons.append(f"Market Cap {mcap_eur:,.0f} EUR >= 150M EUR (Belongs to Core Mid-Cap tier)")
 
-    # 2. Criteria: (A) Quality Micro-Cap (Profile A or Profile B) OR (B) Turnaround with runway >= 12m
+    # 2. Mandatory EUR liquidity gate for all candidates (Profile A/B and Turnaround)
+    rates = fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+    curr = str(meta.get("currency", "")).upper()
+    if not curr:
+        if t_clean.endswith(".ST") or ".ST" in t_clean or market == "SE":
+            curr = "SEK"
+        elif t_clean.endswith(".NO") or t_clean.endswith(".OL") or market == "NO":
+            curr = "NOK"
+        elif t_clean.endswith(".CO") or market == "DK":
+            curr = "DKK"
+        else:
+            curr = "EUR"
+
+    adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
+    if curr == "EUR":
+        adv_eur = adv_local
+    elif curr == "SEK":
+        r = rates.get("EURSEK", 11.30)
+        adv_eur = adv_local / r if r > 0 else adv_local
+    elif curr == "NOK":
+        r = rates.get("EURNOK", 11.50)
+        adv_eur = adv_local / r if r > 0 else adv_local
+    elif curr == "DKK":
+        r = rates.get("EURDKK", 7.46)
+        adv_eur = adv_local / r if r > 0 else adv_local
+    else:
+        adv_eur = adv_local
+
+    if adv_local <= 0 and meta.get("adv_20d_usd"):
+        r_usd = rates.get("EURUSD", 1.08)
+        adv_eur = float(meta["adv_20d_usd"]) / r_usd if r_usd > 0 else float(meta["adv_20d_usd"])
+
+    if adv_eur < 20_000.0:
+        reasons.append(f"ADV {adv_eur:,.0f} EUR < 20,000 EUR threshold")
+
+    # 3. Criteria: (A) Quality Micro-Cap (Profile A or Profile B) OR (B) Turnaround with runway >= 12m (or FCF/EBIT > 0)
     is_prof_a = hard_facts.get("is_profile_a", False)
     is_prof_b = hard_facts.get("is_profile_b", False)
     is_turnaround = (nlp_verdict in ["WATCH_TURNAROUND", "STRONG BUY"] or meta.get("is_turnaround", False))
 
     runway = hard_facts.get("cash_runway_months")
-    runway_ok = True
-    if runway is not None and str(runway).lower() != "infinite":
-        try:
-            runway_ok = float(runway) >= 12.0
-        except Exception:
-            runway_ok = False
-
-    adv = float(meta.get("adv_20d_local", 0.0) or 0.0)
-    vol_ok = (adv >= 20_000.0 or meta.get("volume", 0) >= 2000)
+    runway_ok = False
+    if runway is not None:
+        if str(runway).lower() == "infinite":
+            runway_ok = True
+        else:
+            try:
+                runway_ok = float(runway) >= 12.0
+            except Exception:
+                runway_ok = False
+    else:
+        # Missing cash runway: verify if Free Cash Flow > 0 or EBIT > 0
+        fcf = hard_facts.get("free_cash_flow") or hard_facts.get("fcf")
+        ebit = hard_facts.get("ebit") or hard_facts.get("operating_income") or hard_facts.get("operating_profit") or hard_facts.get("operating_cash_flow_ttm")
+        fcf_pos = (fcf is not None and float(fcf) > 0)
+        ebit_pos = (ebit is not None and float(ebit) > 0)
+        runway_ok = (fcf_pos or ebit_pos)
 
     criteria_ok = False
     if is_prof_a or is_prof_b:
         criteria_ok = True
-    elif is_turnaround and runway_ok and vol_ok:
+    elif is_turnaround and runway_ok:
         criteria_ok = True
     else:
         if not (is_prof_a or is_prof_b):
             reasons.append(f"Neither Profile A nor Profile B met (ProfA={is_prof_a}, ProfB={is_prof_b})")
         if is_turnaround and not runway_ok:
-            reasons.append(f"Turnaround candidate but cash runway {runway} < 12 months")
-        if is_turnaround and not vol_ok:
-            reasons.append(f"Turnaround candidate but volume/ADV too low ({adv:,.0f} EUR)")
+            reasons.append(f"Turnaround candidate but cash runway {runway} insufficient/missing without positive FCF/EBIT")
 
     passed = len(reasons) == 0 and criteria_ok
     return passed, reasons

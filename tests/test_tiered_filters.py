@@ -209,12 +209,12 @@ def test_nordic_microcap_catalyst_valid():
 
 
 def test_nordic_microcap_catalyst_turnaround_valid():
-    """Turnaround with verified NLP catalyst and runway >= 12m must pass."""
+    """Turnaround with verified NLP catalyst, runway >= 12m, and EUR ADV >= 20k must pass."""
     meta = {
         "market": "SE",
         "market_cap_eur": 45_000_000.0,
         "currency": "SEK",
-        "adv_20d_local": 30_000.0,
+        "adv_20d_local": 300_000.0,  # ~26,500 EUR >= 20k EUR
     }
     hard_facts = {
         "is_profile_a": False,
@@ -227,17 +227,79 @@ def test_nordic_microcap_catalyst_turnaround_valid():
     assert passed is True
 
 
+def test_nordic_microcap_catalyst_rejects_low_sek_liquidity():
+    """Stock on Stockholm exchange with 30,000 SEK ADV (~2,650 EUR) must be rejected."""
+    meta = {
+        "market": "SE",
+        "market_cap_eur": 45_000_000.0,
+        "currency": "SEK",
+        "adv_20d_local": 30_000.0,  # ~2,654 EUR < 20,000 EUR
+    }
+    hard_facts = {
+        "is_profile_b": True,
+        "cash_runway_months": "Infinite",
+    }
+    passed, reasons = matches_nordic_microcap_catalyst("SEKFAIL.ST", hard_facts, meta)
+    assert passed is False
+    assert any("< 20,000 EUR threshold" in r for r in reasons)
+
+
+def test_nordic_microcap_catalyst_rejects_missing_runway_negative_fcf():
+    """Turnaround candidate with cash_runway_months = None and FCF <= 0 must be rejected."""
+    meta = {
+        "market": "FI",
+        "market_cap_eur": 30_000_000.0,
+        "currency": "EUR",
+        "adv_20d_local": 50_000.0,
+    }
+    hard_facts = {
+        "is_profile_a": False,
+        "is_profile_b": False,
+        "cash_runway_months": None,
+        "free_cash_flow": -1_000_000.0,
+        "ebit": -500_000.0,
+    }
+    passed, reasons = matches_nordic_microcap_catalyst(
+        "CRISIS.HE", hard_facts, meta, nlp_verdict="WATCH_TURNAROUND"
+    )
+    assert passed is False
+    assert any("cash runway" in r and "insufficient/missing" in r for r in reasons)
+
+
+def test_us_microcap_growth_rejects_pure_hype_without_viability():
+    """US stock relying only on NLP verdict without revenue or runway/FCF must be rejected."""
+    meta = {
+        "market": "US",
+        "market_cap_usd": 100_000_000.0,
+        "exchange": "NASDAQ",
+    }
+    hard_facts = {
+        "exchange": "NASDAQ",
+        "dividend_yield": 0.0,
+        "revenue_growth_yoy_pct": -10.0,  # shrinking
+        "is_profile_a": False,
+        "revenue": 0.0,  # zero revenue
+        "cash_runway_months": 2.0,
+        "free_cash_flow": -5_000_000.0,
+    }
+    passed, reasons = matches_us_microcap_growth(
+        "HYPE", hard_facts, meta, nlp_verdict="STRONG BUY"
+    )
+    assert passed is False
+    assert any("basic viability" in r for r in reasons)
+
+
 def test_nordic_microcap_catalyst_rejects_bounds():
     """Must be between 15M EUR and 150M EUR."""
     # Too small (< 15M EUR)
-    meta_tiny = {"market": "FI", "market_cap_eur": 8_000_000.0}
+    meta_tiny = {"market": "FI", "market_cap_eur": 8_000_000.0, "currency": "EUR", "adv_20d_local": 50_000.0}
     hard_facts = {"is_profile_b": True}
     passed, reasons = matches_nordic_microcap_catalyst("TINY.HE", hard_facts, meta_tiny)
     assert passed is False
     assert any("< 15M EUR" in r for r in reasons)
 
     # Too big (>= 150M EUR) -> belongs to MidCap Core
-    meta_mid = {"market": "FI", "market_cap_eur": 200_000_000.0}
+    meta_mid = {"market": "FI", "market_cap_eur": 200_000_000.0, "currency": "EUR", "adv_20d_local": 50_000.0}
     passed, reasons = matches_nordic_microcap_catalyst("MID.HE", hard_facts, meta_mid)
     assert passed is False
     assert any(">= 150M EUR" in r for r in reasons)
@@ -245,7 +307,7 @@ def test_nordic_microcap_catalyst_rejects_bounds():
 
 def test_unified_router():
     """matches_universe_filter correctly dispatches to all three tiers."""
-    meta_core = {"market": "FI", "market_cap_eur": 400_000_000.0}
+    meta_core = {"market": "FI", "market_cap_eur": 400_000_000.0, "currency": "EUR", "adv_20d_local": 100_000.0}
     hf_core = {"roe": 0.18, "ebit_margin": 0.14, "free_cash_flow": 10_000_000.0, "net_debt_to_ebitda": 0.0}
     p_core, _ = matches_universe_filter("CORE.HE", "Nordic_MidCap_Compounder", hf_core, meta_core)
     assert p_core is True
@@ -255,7 +317,8 @@ def test_unified_router():
     p_us, _ = matches_universe_filter("USGROW", "US_MicroCap_Growth", hf_us, meta_us)
     assert p_us is True
 
-    meta_nordic = {"market": "SE", "market_cap_eur": 50_000_000.0}
+    meta_nordic = {"market": "SE", "market_cap_eur": 50_000_000.0, "currency": "SEK", "adv_20d_local": 300_000.0}
     hf_nordic = {"is_profile_b": True}
     p_nordic, _ = matches_universe_filter("NORD.ST", "Nordic_MicroCap_Catalyst", hf_nordic, meta_nordic)
     assert p_nordic is True
+

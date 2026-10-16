@@ -1494,193 +1494,284 @@ class MasterLiveTradingDaemon:
 
             logger.info(f"[{cfg.portfolio_id}] Screening for `{sub_name}` ({needed} slots open, filter: `{u_filter}`)...")
 
+            # Reference target allocation for sizing and ADV constraint evaluation
+            target_alloc_ref = float(slot_sizes[current_held] if current_held < len(slot_sizes) else slot_sizes[-1])
+            eff_allocation_acc = min(target_alloc_ref, available_cash)
+
+            # Step 1: Collect, validate, and score all eligible candidates for this sub-strategy
+            valid_candidates = []
+
+            for ticker, meta in self.market_engine.universe_metadata.items():
+                if ticker in held_tickers:
+                    continue
+
+                # Anti-whipsaw cooldown
+                if ticker in cooldown_tickers:
+                    days_since_exit = (today - cooldown_tickers[ticker]).days
+                    if days_since_exit < REENTRY_COOLDOWN_DAYS:
+                        continue
+
+                # Region pre-filter to bypass irrelevant stocks instantly
+                m_reg = str(meta.get("market", "")).strip().upper()
+                if "nordic" in u_filter.lower() and m_reg not in ("FI", "SE", "DK", "NO"):
+                    continue
+                if "us_" in u_filter.lower() and m_reg != "US":
+                    continue
+
+                # Market cap tier pre-filter to avoid expensive network calls for out-of-tier tickers
+                if u_filter == "Nordic_MidCap_Compounder":
+                    mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
+                    if mcap_eur > 0 and not (150_000_000.0 <= mcap_eur <= 2_000_000_000.0):
+                        continue
+                elif u_filter == "US_MicroCap_Growth":
+                    mcap_usd = get_market_cap_in_usd(meta, fx_rates=self.market_engine.fx_rates)
+                    if mcap_usd > 0 and not (30_000_000.0 <= mcap_usd <= 350_000_000.0):
+                        continue
+                elif u_filter == "Nordic_MicroCap_Catalyst":
+                    mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
+                    if mcap_eur > 0 and not (15_000_000.0 <= mcap_eur < 150_000_000.0):
+                        continue
+
+                # NLP Safety Guard
+                news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
+                if news_verdict == "REJECT":
+                    continue
+
+                if hasattr(self.market_engine, "get_ticker_hard_facts"):
+                    hard_facts = self.market_engine.get_ticker_hard_facts(ticker)
+                else:
+                    hard_facts = getattr(self.market_engine, "hard_facts_cache", {}).get(ticker, {})
+
+                # Tiered Filter Validation
+                passed, reasons = matches_universe_filter(
+                    ticker=ticker,
+                    filter_name=u_filter,
+                    hard_facts=hard_facts,
+                    meta=meta,
+                    nlp_verdict=news_verdict,
+                    fx_rates=self.market_engine.fx_rates,
+                )
+
+                if not passed:
+                    continue
+
+                # Fetch fresh live market price for the validated candidate
+                cand_price = None
+                if hasattr(self.market_engine, "_fetch_live_price"):
+                    try:
+                        live_px = self.market_engine._fetch_live_price(ticker)
+                        if isinstance(live_px, (int, float)) and not isinstance(live_px, bool) and live_px > 0:
+                            cand_price = float(live_px)
+                    except Exception:
+                        cand_price = None
+                if cand_price is None:
+                    cached_px = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
+                    if isinstance(cached_px, (int, float)) and not isinstance(cached_px, bool) and cached_px > 0:
+                        cand_price = float(cached_px)
+                if not cand_price or cand_price <= 0:
+                    continue
+                self.market_engine.prices_cache[ticker] = cand_price
+
+                # Exit criteria pre-validation (ensure entry does not immediately fail exit rules)
+                financials_payload = {
+                    "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
+                    "cash_runway_months": hard_facts.get("cash_runway_months"),
+                    "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
+                }
+                exit_act, _ = evaluate_position(
+                    position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
+                    current_price=cand_price,
+                    latest_news_judgment=news_verdict,
+                    latest_financials=financials_payload,
+                    dead_money_days=cfg.dead_money_days,
+                )
+                if exit_act == "SELL":
+                    continue
+
+                # Position sizing & liquidity checks
+                ticker_curr = meta.get("currency", get_ticker_currency(ticker))
+                fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
+                fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+                target_allocation_local = eff_allocation_acc * fx_acc_to_local
+                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+
+                # Max ADV allocation constraint (< 5% of ADV)
+                adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
+                max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
+
+                # Bug 2 fix: Reject dwarf positions if 5% ADV does not cover at least 80% of target slot
+                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.80):
+                    continue
+
+                if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
+                    continue
+
+                investable_cash_local = min(target_allocation_local, max_adv_allowed) - min_fee_local
+                shares_to_buy = math.floor(investable_cash_local / cand_price)
+                if shares_to_buy <= 0:
+                    continue
+
+                # Step 1.3: Calculate candidate_score
+                mom_val = float(getattr(self.market_engine, "momentum_cache", {}).get(ticker, {}).get("day_change_pct", 0.0) or 0.0)
+                if "midcap" in u_filter.lower():
+                    # Core (Nordic_MidCap_Compounder): high ROE, high EBIT-%, low Net Debt / EBITDA, positive momentum
+                    roe = hard_facts.get("roe") or hard_facts.get("return_on_equity") or 0.0
+                    roe_val = roe * 100.0 if abs(roe) <= 2.0 else float(roe)
+
+                    ebit_margin = hard_facts.get("ebit_margin") or hard_facts.get("operating_margin") or 0.0
+                    ebit_val = ebit_margin * 100.0 if abs(ebit_margin) <= 2.0 else float(ebit_margin)
+
+                    net_debt = hard_facts.get("net_debt")
+                    net_cash = hard_facts.get("net_cash")
+                    if net_debt is None and net_cash is not None:
+                        net_debt = -net_cash
+                    nd_ebitda = hard_facts.get("net_debt_to_ebitda")
+                    if nd_ebitda is None and net_debt is not None:
+                        ebitda = hard_facts.get("ebitda") or 0.0
+                        nd_ebitda = (net_debt / ebitda) if ebitda > 0 else (0.0 if net_debt <= 0 else 3.0)
+                    nd_score = 15.0 if (nd_ebitda is None or nd_ebitda <= 0) else max(0.0, (2.5 - float(nd_ebitda)) * 6.0)
+
+                    cand_score = (roe_val * 1.0) + (ebit_val * 0.8) + nd_score + (mom_val * 0.5)
+
+                elif "us_" in u_filter.lower():
+                    # Satellite 1 (US_MicroCap_Growth): YoY growth, is_profile_a bonus, nlp_verdict bonus
+                    rev_yoy = float(hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy") or 0.0)
+                    prof_a_bonus = 25.0 if hard_facts.get("is_profile_a", False) else 0.0
+                    nlp_bonus = 30.0 if news_verdict == "STRONG BUY" else (15.0 if news_verdict == "BUY_PROFILE_A" else 0.0)
+                    cand_score = rev_yoy + prof_a_bonus + nlp_bonus + (mom_val * 0.2)
+
+                else:
+                    # Satellite 2 (Nordic_MicroCap_Catalyst): is_profile_a/b bonus, nlp_verdict bonus, volume/momentum
+                    prof_bonus = 30.0 if hard_facts.get("is_profile_a", False) else (15.0 if hard_facts.get("is_profile_b", False) else 0.0)
+                    nlp_bonus = 35.0 if news_verdict == "STRONG BUY" else (20.0 if news_verdict == "WATCH_TURNAROUND" else 0.0)
+                    rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+                    fx_to_eur = 1.0
+                    if ticker_curr == "SEK":
+                        fx_to_eur = 1.0 / rates.get("EURSEK", 11.30)
+                    elif ticker_curr == "NOK":
+                        fx_to_eur = 1.0 / rates.get("EURNOK", 11.50)
+                    elif ticker_curr == "DKK":
+                        fx_to_eur = 1.0 / rates.get("EURDKK", 7.46)
+                    adv_bonus = min(15.0, (adv_local * fx_to_eur) / 10_000.0)
+                    cand_score = prof_bonus + nlp_bonus + mom_val + adv_bonus
+
+                valid_candidates.append({
+                    "ticker": ticker,
+                    "meta": meta,
+                    "hard_facts": hard_facts,
+                    "cand_price": cand_price,
+                    "candidate_score": cand_score,
+                    "ticker_curr": ticker_curr,
+                    "fx_to_acc": fx_to_acc,
+                    "fx_acc_to_local": fx_acc_to_local,
+                    "adv_local": adv_local,
+                    "max_adv_allowed": max_adv_allowed,
+                })
+
+            # Step 1.4: Sort valid_candidates descending by candidate_score; deterministic tie-breaker by ticker
+            valid_candidates.sort(key=lambda c: (-c["candidate_score"], c["ticker"]))
+
+            # Step 1.5: Fill available slots using top-ranked candidates
             for slot_idx in range(current_held, sub_slots):
                 if len(portfolio.positions) >= cfg.slots:
                     break
                 if available_cash < (MIN_BROKER_FEE + 10.0):
                     logger.info(f"[{cfg.portfolio_id}] Available cash exhausted ({available_cash:.2f}€). Halting buys.")
                     break
+                if not valid_candidates:
+                    logger.info(f"[{cfg.portfolio_id}] No eligible candidates found for slot {slot_idx+1} in `{sub_name}`.")
+                    break
 
                 target_alloc_acc = float(slot_sizes[slot_idx] if slot_idx < len(slot_sizes) else slot_sizes[-1])
                 eff_allocation_acc = min(target_alloc_acc, available_cash)
 
-                found_candidate = False
+                cand = valid_candidates.pop(0)
+                ticker = cand["ticker"]
+                cand_price = cand["cand_price"]
+                ticker_curr = cand["ticker_curr"]
+                fx_to_acc = cand["fx_to_acc"]
+                fx_acc_to_local = cand["fx_acc_to_local"]
+                max_adv_allowed = cand["max_adv_allowed"]
 
-                for ticker, meta in self.market_engine.universe_metadata.items():
-                    if ticker in held_tickers:
-                        continue
+                target_allocation_local = eff_allocation_acc * fx_acc_to_local
+                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
 
-                    # Anti-whipsaw cooldown
-                    if ticker in cooldown_tickers:
-                        days_since_exit = (today - cooldown_tickers[ticker]).days
-                        if days_since_exit < REENTRY_COOLDOWN_DAYS:
-                            continue
+                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.80):
+                    continue
 
-                    # Region pre-filter to bypass irrelevant stocks instantly
-                    m_reg = str(meta.get("market", "")).strip().upper()
-                    if "nordic" in u_filter.lower() and m_reg not in ("FI", "SE", "DK", "NO"):
-                        continue
-                    if "us_" in u_filter.lower() and m_reg != "US":
-                        continue
+                if target_allocation_local > max_adv_allowed:
+                    target_allocation_local = max_adv_allowed
 
-                    # Market cap tier pre-filter to avoid expensive network calls for out-of-tier tickers
-                    if u_filter == "Nordic_MidCap_Compounder":
-                        mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
-                        if mcap_eur > 0 and not (150_000_000.0 <= mcap_eur <= 2_000_000_000.0):
-                            continue
-                    elif u_filter == "US_MicroCap_Growth":
-                        mcap_usd = get_market_cap_in_usd(meta, fx_rates=self.market_engine.fx_rates)
-                        if mcap_usd > 0 and not (30_000_000.0 <= mcap_usd <= 350_000_000.0):
-                            continue
-                    elif u_filter == "Nordic_MicroCap_Catalyst":
-                        mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
-                        if mcap_eur > 0 and not (15_000_000.0 <= mcap_eur < 150_000_000.0):
-                            continue
+                if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
+                    continue
 
-                    # NLP Safety Guard
-                    news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
-                    if news_verdict == "REJECT":
-                        continue
+                investable_cash_local = target_allocation_local - min_fee_local
+                if investable_cash_local <= 0:
+                    continue
 
-                    if hasattr(self.market_engine, "get_ticker_hard_facts"):
-                        hard_facts = self.market_engine.get_ticker_hard_facts(ticker)
-                    else:
-                        hard_facts = getattr(self.market_engine, "hard_facts_cache", {}).get(ticker, {})
+                shares_to_buy = math.floor(investable_cash_local / cand_price)
+                if shares_to_buy <= 0:
+                    continue
 
-                    # Tiered Filter Validation
-                    passed, reasons = matches_universe_filter(
-                        ticker=ticker,
-                        filter_name=u_filter,
-                        hard_facts=hard_facts,
-                        meta=meta,
-                        nlp_verdict=news_verdict,
-                        fx_rates=self.market_engine.fx_rates,
-                    )
+                actual_gross_buy = shares_to_buy * cand_price
+                actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
+                total_cost_local = actual_gross_buy + actual_fee
+                total_cost_acc = total_cost_local * fx_to_acc
 
-                    if not passed:
-                        continue
+                if total_cost_acc > available_cash:
+                    continue
 
-                    # Fetch fresh live market price for the validated candidate
-                    cand_price = None
-                    if hasattr(self.market_engine, "_fetch_live_price"):
-                        try:
-                            live_px = self.market_engine._fetch_live_price(ticker)
-                            if isinstance(live_px, (int, float)) and not isinstance(live_px, bool) and live_px > 0:
-                                cand_price = float(live_px)
-                        except Exception:
-                            cand_price = None
-                    if cand_price is None:
-                        cached_px = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
-                        if isinstance(cached_px, (int, float)) and not isinstance(cached_px, bool) and cached_px > 0:
-                            cand_price = float(cached_px)
-                    if not cand_price or cand_price <= 0:
-                        continue
-                    self.market_engine.prices_cache[ticker] = cand_price
+                # Limit price calculation (Prev Close + 0.2%)
+                limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
+                target_limit = round(cand_price * (1.0 + limit_buf), 4)
 
-                    # Exit criteria pre-validation (ensure entry does not immediately fail exit rules)
-                    financials_payload = {
-                        "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
-                        "cash_runway_months": hard_facts.get("cash_runway_months"),
-                        "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
-                    }
-                    exit_act, _ = evaluate_position(
-                        position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
-                        current_price=cand_price,
-                        latest_news_judgment=news_verdict,
-                        latest_financials=financials_payload,
-                        dead_money_days=cfg.dead_money_days,
-                    )
-                    if exit_act == "SELL":
-                        continue
+                portfolio.cash_balance -= total_cost_acc
+                available_cash -= total_cost_acc
 
-                    # Position sizing
-                    ticker_curr = meta.get("currency", get_ticker_currency(ticker))
-                    fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
-                    fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+                new_pos = {
+                    "Ticker": ticker,
+                    "Buy Date": today.strftime("%Y-%m-%d"),
+                    "Buy Price": cand_price,
+                    "Shares": shares_to_buy,
+                    "Capital Invested": round(total_cost_local, 2),
+                    "Strategy": "Hybrid Core-Satellite",
+                    "Sub_Strategy": sub_name,
+                    "Universe_Filter": u_filter,
+                    "Currency": ticker_curr,
+                    "Peak Price": cand_price,
+                    "Order Type": "LIMIT",
+                    "Limit Price": target_limit,
+                    "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
+                }
+                portfolio.positions.append(new_pos)
+                positions_by_sub[sub_name].append(new_pos)
+                held_tickers.add(ticker)
+                new_buys += 1
 
-                    target_allocation_local = eff_allocation_acc * fx_acc_to_local
-                    min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+                logger.info(
+                    f"🎯 [{cfg.portfolio_id} BUY] [{sub_name}] {ticker} (Filter: {u_filter}, Score: {cand['candidate_score']:.1f}) | "
+                    f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
+                    f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
+                    f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
+                )
 
-                    # Max ADV allocation constraint (< 5% of ADV)
-                    adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
-                    max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
-                    if max_adv_allowed > 0 and target_allocation_local > max_adv_allowed:
-                        target_allocation_local = max_adv_allowed
-
-                    if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
-                        continue
-
-                    investable_cash_local = target_allocation_local - min_fee_local
-                    if investable_cash_local <= 0:
-                        continue
-
-                    shares_to_buy = math.floor(investable_cash_local / cand_price)
-                    if shares_to_buy <= 0:
-                        continue
-
-                    actual_gross_buy = shares_to_buy * cand_price
-                    actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
-                    total_cost_local = actual_gross_buy + actual_fee
-                    total_cost_acc = total_cost_local * fx_to_acc
-
-                    if total_cost_acc > available_cash:
-                        continue
-
-                    # Limit price calculation (Prev Close + 0.2%)
-                    limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
-                    target_limit = round(cand_price * (1.0 + limit_buf), 4)
-
-                    portfolio.cash_balance -= total_cost_acc
-                    available_cash -= total_cost_acc
-
-                    new_pos = {
-                        "Ticker": ticker,
-                        "Buy Date": today.strftime("%Y-%m-%d"),
-                        "Buy Price": cand_price,
-                        "Shares": shares_to_buy,
-                        "Capital Invested": round(total_cost_local, 2),
-                        "Strategy": "Hybrid Core-Satellite",
-                        "Sub_Strategy": sub_name,
-                        "Universe_Filter": u_filter,
-                        "Currency": ticker_curr,
-                        "Peak Price": cand_price,
-                        "Order Type": "LIMIT",
-                        "Limit Price": target_limit,
-                        "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
-                    }
-                    portfolio.positions.append(new_pos)
-                    positions_by_sub[sub_name].append(new_pos)
-                    held_tickers.add(ticker)
-                    new_buys += 1
-                    found_candidate = True
-
-                    logger.info(
-                        f"🎯 [{cfg.portfolio_id} BUY] [{sub_name}] {ticker} (Filter: {u_filter}) | "
-                        f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
-                        f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
-                        f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
-                    )
-
-                    if run_trades is not None:
-                        run_trades.append({
-                            "portfolio_id": cfg.portfolio_id,
-                            "action": "BUY",
-                            "ticker": ticker,
-                            "details": {
-                                "strategy": "Hybrid Core-Satellite",
-                                "sub_strategy": sub_name,
-                                "universe_filter": u_filter,
-                                "shares": shares_to_buy,
-                                "buy_price": f"{cand_price:.2f} {ticker_curr}",
-                                "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
-                                "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
-                            },
-                        })
-
-                    break  # Move to next slot!
-
-                if not found_candidate:
-                    logger.info(f"[{cfg.portfolio_id}] No eligible candidates found for slot {slot_idx+1} in `{sub_name}`.")
+                if run_trades is not None:
+                    run_trades.append({
+                        "portfolio_id": cfg.portfolio_id,
+                        "action": "BUY",
+                        "ticker": ticker,
+                        "details": {
+                            "strategy": "Hybrid Core-Satellite",
+                            "sub_strategy": sub_name,
+                            "universe_filter": u_filter,
+                            "candidate_score": round(cand["candidate_score"], 2),
+                            "shares": shares_to_buy,
+                            "buy_price": f"{cand_price:.2f} {ticker_curr}",
+                            "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
+                            "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                        },
+                    })
 
         if new_buys > 0:
             portfolio.save_state()
@@ -2151,8 +2242,8 @@ class MasterLiveTradingDaemon:
                 continue
 
             # Check Strategy profile
-            hard_facts = self.market_engine.get_ticker_hard_facts(ticker)
-            eval_res = self.market_engine.eval_profiles_cache.get(ticker, {})
+            hard_facts = self.market_engine.get_ticker_hard_facts(ticker) if hasattr(self.market_engine, "get_ticker_hard_facts") else getattr(self.market_engine, "hard_facts_cache", {}).get(ticker, {})
+            eval_res = getattr(self.market_engine, "eval_profiles_cache", {}).get(ticker, {})
 
             if cfg.strategy.lower() == "profile a":
                 if not eval_res.get("is_profile_a"):
