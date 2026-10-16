@@ -155,8 +155,39 @@ class TestWebSearchVerifier(unittest.TestCase):
         mock_fetch.return_value = ["Headlines for Nokia Oyj"]
         snippets = fetch_realtime_news("NOKIA.HE", "Nokia Oyj")
         self.assertEqual(snippets, ["Headlines for Nokia Oyj"])
-        mock_fetch.assert_called_once_with(ticker="NOKIA.HE", company_name="Nokia Oyj", market=None)
+        mock_fetch.assert_called_once_with(ticker="NOKIA.HE", company_name="Nokia Oyj", market=None, max_age_days=7)
+
+    @patch("screener.web_verifier.requests.get")
+    def test_fetch_google_news_rss_date_filtering(self, mock_get):
+        # Sample RSS XML with one fresh item and one stale item (from 6 months ago)
+        sample_rss = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+            <channel>
+                <item>
+                    <title>Fresh News Today</title>
+                    <description>Breaking update just today.</description>
+                    <pubDate>Fri, 16 Oct 2026 08:00:00 GMT</pubDate>
+                </item>
+                <item>
+                    <title>Old News Months Ago</title>
+                    <description>Faron announces share issue months ago.</description>
+                    <pubDate>Mon, 10 Feb 2026 10:00:00 GMT</pubDate>
+                </item>
+            </channel>
+        </rss>
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = sample_rss
+        mock_get.return_value = mock_response
+
+        # Test with max_age_days = 7: should only include the fresh item
+        snippets = self.verifier.fetch_google_news_rss("FARON", max_results=5, max_age_days=7)
+        self.assertEqual(len(snippets), 1)
+        self.assertIn("Fresh News Today", snippets[0])
+        self.assertNotIn("Old News Months Ago", snippets[0])
 
 if __name__ == "__main__":
     unittest.main()
+
 

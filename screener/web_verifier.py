@@ -3,6 +3,8 @@ import json
 import logging
 import urllib.parse
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import requests
 from bs4 import BeautifulSoup
 from typing import Dict, Any, List, Optional
@@ -159,13 +161,14 @@ def fetch_realtime_news(
     ticker: str, 
     company_name: str = "", 
     market: Optional[str] = None,
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    max_age_days: Optional[int] = 7
 ) -> List[str]:
     """
     Convenience wrapper to fetch real-time news across Nordic & US markets using WebSearchVerifier.
     """
     verifier = WebSearchVerifier(api_key=api_key)
-    return verifier.fetch_snippets(ticker=ticker, company_name=company_name, market=market)
+    return verifier.fetch_snippets(ticker=ticker, company_name=company_name, market=market, max_age_days=max_age_days)
 
 class WebSearchVerifier:
     """
@@ -193,13 +196,18 @@ class WebSearchVerifier:
         self, 
         query: str, 
         max_results: int = 8, 
-        market: str = "US"
+        market: str = "US",
+        max_age_days: Optional[int] = 7
     ) -> List[str]:
         """
         Fetches live news headlines and summaries via Google News RSS search feed,
-        with localized parameters based on market (FI, SE, US).
+        with localized parameters based on market (FI, SE, US) and pubDate filtering.
         """
-        encoded_query = urllib.parse.quote(query)
+        search_query = query
+        if max_age_days and "when:" not in query:
+            search_query = f"{query} when:{max_age_days}d"
+
+        encoded_query = urllib.parse.quote(search_query)
         
         # Market-specific localization parameters
         if market == "FI":
@@ -211,11 +219,29 @@ class WebSearchVerifier:
 
         url = f"https://news.google.com/rss/search?q={encoded_query}&{locale_params}"
         snippets = []
+        now = datetime.now(timezone.utc)
         try:
             resp = requests.get(url, headers=self.headers, timeout=8)
             if resp.status_code == 200:
                 root = ET.fromstring(resp.text)
-                for item in root.findall(".//item")[:max_results]:
+                for item in root.findall(".//item"):
+                    if len(snippets) >= max_results:
+                        break
+
+                    # Validate publication date if max_age_days is specified
+                    pub_date_elem = item.find("pubDate")
+                    if pub_date_elem is not None and pub_date_elem.text and max_age_days:
+                        try:
+                            pub_dt = parsedate_to_datetime(pub_date_elem.text)
+                            if pub_dt.tzinfo is None:
+                                pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                            age_days = (now - pub_dt).total_seconds() / 86400.0
+                            if age_days > max_age_days:
+                                # Stale news outside the desired recency window
+                                continue
+                        except Exception as e:
+                            logger.debug(f"Could not parse pubDate '{pub_date_elem.text}': {e}")
+
                     title = item.find("title")
                     desc = item.find("description")
                     title_text = title.text if title is not None and title.text else ""
@@ -258,11 +284,13 @@ class WebSearchVerifier:
         company_name: str = "", 
         market: Optional[str] = None,
         max_results: Optional[int] = None,
+        max_age_days: Optional[int] = 7,
     ) -> List[str]:
         """
         Market-aware multi-source search router:
         - Detects market (FI, SE, US).
         - Queries local financial channels (Cision FI/SE, MFN, GlobeNewswire) & localized Google News RSS.
+        - Filters out stale news older than max_age_days (default: 7 days).
         - Falls back to native language searches and alternative search engines if initial hits are sparse.
         """
         detected_mkt = detect_market(ticker, market)
@@ -274,12 +302,12 @@ class WebSearchVerifier:
         if detected_mkt == "FI":
             # 1. Local Finnish Google News query
             q_fi = f"{search_name} osake uutiset pörssi".strip()
-            snippets = self.fetch_google_news_rss(q_fi, max_results=6, market="FI")
+            snippets = self.fetch_google_news_rss(q_fi, max_results=6, market="FI", max_age_days=max_age_days)
             
             # 2. Finnish PR channels / regulatory / risk queries (Cision, Kauppalehti, GlobeNewswire)
             if len(snippets) < 3:
                 q_fi_pr = f"{search_name} osakeanti tulosvaroitus tilinpäätös tiedote".strip()
-                more = self.fetch_google_news_rss(q_fi_pr, max_results=4, market="FI")
+                more = self.fetch_google_news_rss(q_fi_pr, max_results=4, market="FI", max_age_days=max_age_days)
                 for m in more:
                     if m not in snippets:
                         snippets.append(m)
@@ -287,7 +315,7 @@ class WebSearchVerifier:
             # 3. Fallback to English global query if very few local snippets
             if len(snippets) < 2:
                 q_en = f"{clean_ticker} {company_name} stock news".strip()
-                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="US")
+                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="US", max_age_days=max_age_days)
                 for m in en_snippets:
                     if m not in snippets:
                         snippets.append(m)
@@ -295,12 +323,12 @@ class WebSearchVerifier:
         elif detected_mkt == "SE":
             # 1. Local Swedish Google News query
             q_se = f"{search_name} aktie nyheter börs".strip()
-            snippets = self.fetch_google_news_rss(q_se, max_results=6, market="SE")
+            snippets = self.fetch_google_news_rss(q_se, max_results=6, market="SE", max_age_days=max_age_days)
             
             # 2. Swedish PR channels / regulatory / risk queries (Cision SE, MFN, Placera)
             if len(snippets) < 3:
                 q_se_pr = f"{search_name} nyemission rapport pressmeddelande".strip()
-                more = self.fetch_google_news_rss(q_se_pr, max_results=4, market="SE")
+                more = self.fetch_google_news_rss(q_se_pr, max_results=4, market="SE", max_age_days=max_age_days)
                 for m in more:
                     if m not in snippets:
                         snippets.append(m)
@@ -308,7 +336,7 @@ class WebSearchVerifier:
             # 3. Fallback to English global query if very few local snippets
             if len(snippets) < 2:
                 q_en = f"{clean_ticker} {company_name} stock news".strip()
-                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="US")
+                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="US", max_age_days=max_age_days)
                 for m in en_snippets:
                     if m not in snippets:
                         snippets.append(m)
@@ -316,11 +344,11 @@ class WebSearchVerifier:
         else:
             # US / Global
             query1 = f"{ticker} {company_name} stock news".strip()
-            snippets = self.fetch_google_news_rss(query1, max_results=6, market="US")
+            snippets = self.fetch_google_news_rss(query1, max_results=6, market="US", max_age_days=max_age_days)
             
             if len(snippets) < 3:
                 query2 = f"{ticker} {company_name} reverse split dilution contract earnings".strip()
-                more = self.fetch_google_news_rss(query2, max_results=4, market="US")
+                more = self.fetch_google_news_rss(query2, max_results=4, market="US", max_age_days=max_age_days)
                 for m in more:
                     if m not in snippets:
                         snippets.append(m)
@@ -486,6 +514,7 @@ Respond ONLY with valid JSON in the following format:
         company_name: str = "", 
         market: Optional[str] = None,
         max_results: Optional[int] = None,
+        max_age_days: Optional[int] = 7,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """
@@ -493,7 +522,13 @@ Respond ONLY with valid JSON in the following format:
         Queries live news across Nordic & US markets and evaluates red flags & turnaround catalysts.
         """
         detected_mkt = detect_market(ticker, market)
-        snippets = self.fetch_snippets(ticker, company_name, market=detected_mkt, max_results=max_results)
+        snippets = self.fetch_snippets(
+            ticker, 
+            company_name, 
+            market=detected_mkt, 
+            max_results=max_results,
+            max_age_days=max_age_days
+        )
 
         if not snippets:
             return {

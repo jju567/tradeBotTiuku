@@ -86,6 +86,7 @@
 - **Vaihe 2: Markkinakohtainen Reaaliaikainen Uutis- ja Tiedotetarkistus (`screener/web_verifier.py`) & Pohjoismainen Valuuttatuki**:
   - **Automaattinen Markkinareititys & Valuuttamuunnokset**: Tunnistaa Suomen (`.HE`, EUR), Ruotsin (`.ST`, SEK), Tanskan (`.CO`, DKK), Norjan (`.OL`, NOK) sekä Yhdysvaltain (`US`, USD) osakkeet ja konvertoi kaikki reaaliaikaiset osto- ja myyntikurssit sekä PnL-laskennat automaattisesti salkun perusvaluuttaan (EUR).
   - **Lokalisoitu Google News RSS & Tiedotekanavat**: Hakee tuoreet uutiset markkina-alueen omilla parametreilla (`fi-FI`, `sv-SE`, `da-DK`, `no-NO`, `en-US`) ja kohdentaa hakulausekkeet pörssitiedotteisiin (Cision, MFN, GlobeNewswire).
+  - **Tiukka Aika- ja Tuoreussuodatus (`pubDate` & `max_age_days: 7`)**: Google News RSS -syötteen hakulausekkeet rajataan ajallisesti (`when:7d`) ja jokaisen uutisartikkelin julkaisuaika (`<pubDate>`) parsitaan RFC 2822 -muodosta aikaleimavertailulla. Kaikki yli 7 päivää vanhat uutiset (kuten kuukausien takaiset vanhat osakeannit tai splitit) suodatetaan tiukasti pois, jottei vanhentunut uutishistoria vääristä nykypäivän päätöksiä.
   - **Monikielinen Sanasto & Taivutusmuodot**: Tunnistaa pohjoismaiset riskit (*osakeanti, suunnattu anti, yrityssaneeraus, kontrollbalansräkning, företrädesemission, sammanläggning av aktier*) ja käännekatalyytit (*suurtilaus, merkittävä sopimus, yrityskauppa, kannattavuuskäänne, stororder, förvärv, positiv vinstvarning*).
   - **Monikielinen LLM-tuomari**: Tulkitsee monikieliset uutisotsikot suoraan kontekstissa ilman käännösvirheitä.
 
