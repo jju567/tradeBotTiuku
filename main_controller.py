@@ -688,24 +688,39 @@ class MarketDataEngine:
         self.evaluated_news_cache: Dict[Tuple[str, str], Tuple[str, str]] = {}
         self._load_evaluated_news_cache()
 
-    def _load_evaluated_news_cache(self, archive_path: Path = DEFAULT_NLP_ARCHIVE_CSV) -> None:
-        """Pre-populates the in-memory news evaluation cache from existing archive to ensure deduplication."""
+    def _load_evaluated_news_cache(self, archive_path: Path = DEFAULT_NLP_ARCHIVE_CSV, max_age_days: float = 14.0) -> None:
+        """Pre-populates the in-memory news evaluation cache from existing archive (filtering out stale >14d REJECTs)."""
         if not archive_path.exists():
             return
+        now_utc = datetime.now(timezone.utc)
         try:
             with open(archive_path, "r", encoding="utf-8", errors="ignore") as f:
                 reader = csv.reader(f)
                 header = next(reader, None)
                 for row in reader:
                     if len(row) >= 5:
+                        ts_str = row[0].strip()
                         ticker = row[1].strip().upper()
                         headline = " ".join(row[2].split())
                         decision = row[3].strip().upper()
                         reason = row[4].strip()
-                        if ticker and headline:
-                            self.evaluated_news_cache[(ticker, headline)] = (decision, reason)
+                        if not (ticker and headline):
+                            continue
+                        if decision == "REJECT" and ts_str:
+                            try:
+                                clean_ts = ts_str[:-1] + "+00:00" if ts_str.endswith("Z") else ts_str
+                                dt_val = datetime.fromisoformat(clean_ts)
+                                if dt_val.tzinfo is None:
+                                    dt_val = dt_val.replace(tzinfo=timezone.utc)
+                                age_days = (now_utc - dt_val).total_seconds() / 86400.0
+                                if age_days > max_age_days:
+                                    # Stale historical REJECT (>14d old): do not permanently blacklist ticker
+                                    continue
+                            except Exception:
+                                pass
+                        self.evaluated_news_cache[(ticker, headline)] = (decision, reason)
             if self.evaluated_news_cache:
-                logger.info(f"Loaded {len(self.evaluated_news_cache)} historical news evaluations into NLP cache.")
+                logger.info(f"Loaded {len(self.evaluated_news_cache)} active news evaluations into NLP cache.")
         except Exception as e:
             logger.debug(f"Could not pre-load NLP cache: {e}")
 
@@ -1068,15 +1083,27 @@ class MarketDataEngine:
             if v == "REJECT":
                 return v, r
 
-        # 3. Direct archive scan fallback
+        # 3. Direct archive scan fallback (only recent <= 14d REJECTs)
         archive_file = self.clean_universe_path.parent / "nlp_decisions_archive.csv"
         if archive_file.exists():
+            now_utc = datetime.now(timezone.utc)
             try:
                 with open(archive_file, "r", encoding="utf-8", errors="ignore") as f:
                     reader = csv.reader(f)
                     next(reader, None)
                     for row in reader:
                         if len(row) >= 5 and row[1].strip().upper() == ticker_clean and row[3].strip().upper() == "REJECT":
+                            ts_str = row[0].strip()
+                            if ts_str:
+                                try:
+                                    clean_ts = ts_str[:-1] + "+00:00" if ts_str.endswith("Z") else ts_str
+                                    dt_val = datetime.fromisoformat(clean_ts)
+                                    if dt_val.tzinfo is None:
+                                        dt_val = dt_val.replace(tzinfo=timezone.utc)
+                                    if (now_utc - dt_val).total_seconds() / 86400.0 > 14.0:
+                                        continue
+                                except Exception:
+                                    pass
                             return "REJECT", row[4].strip()
             except Exception:
                 pass
@@ -1178,6 +1205,7 @@ class MasterLiveTradingDaemon:
         """
         closed_count = 0
         retained_positions: List[Dict[str, Any]] = []
+        today = datetime.now(timezone.utc).date()
 
         # Check if portfolio uses consensus conviction exits
         conviction_map: Dict[str, int] = {}
@@ -1334,6 +1362,15 @@ class MasterLiveTradingDaemon:
                     is_conviction_exit = True
                     conviction_reason = f"CONVICTION_DROP (Score {current_score} < {thresh})"
 
+            sub_strat = pos.get("Sub_Strategy") or pos.get("sub_strategy")
+            is_p13_sub_strat = sub_strat in (
+                "core_nordic_midcap_quality",
+                "satellite_us_microcap_growth",
+                "satellite_nordic_microcap_catalyst",
+            )
+
+            # For P13 sub-strategies, do not let generic Profile B Layer 3 (revenue_growth_yoy < 0) or generic dead_money_days
+            # prematurely force-sell Core compounders or Turnaround satellites; P13 sub-strategies enforce their own tailored rules below.
             action, reason = evaluate_position(
                 position={
                     "buy_price": buy_price,
@@ -1344,9 +1381,13 @@ class MasterLiveTradingDaemon:
                 },
                 current_price=current_price,
                 latest_news_judgment=news_verdict,
-                latest_financials=financials_payload,
-                dead_money_days=None if pos.get("partial_profit_taken") else portfolio.config.dead_money_days,
+                latest_financials=None if is_p13_sub_strat else financials_payload,
+                dead_money_days=None if (pos.get("partial_profit_taken") or is_p13_sub_strat) else portfolio.config.dead_money_days,
             )
+
+            if is_p13_sub_strat and reason == "LLM_NEWS_WARN_CONFIRMED":
+                action = "HOLD"
+                reason = "HOLD"
 
             if is_conviction_exit:
                 action = "SELL"
@@ -1368,7 +1409,6 @@ class MasterLiveTradingDaemon:
                             action = "SELL"
                             reason = f"PARTIAL_RUNNER_TRAILING_STOP (Peak {cur_peak:.2f} -> {current_price:.2f}, -{drawdown_from_peak*100:.1f}% >= -{portfolio.config.partial_trailing_stop_pct*100:.1f}%)"
                 elif action != "SELL":
-                    sub_strat = pos.get("Sub_Strategy") or pos.get("sub_strategy")
                     loss_from_buy = (buy_price - current_price) / buy_price if buy_price > 0 else 0.0
 
                     if sub_strat == "core_nordic_midcap_quality":
@@ -1412,6 +1452,9 @@ class MasterLiveTradingDaemon:
                         if loss_from_buy >= 0.12:
                             action = "SELL"
                             reason = f"STOP_LOSS_SATELLITE (Loss -{loss_from_buy*100:.1f}% >= -12.0%)"
+                        elif news_verdict == "REJECT":
+                            action = "SELL"
+                            reason = f"LLM_NEWS_REJECT ({news_reason})"
                         else:
                             try:
                                 b_date = datetime.strptime(str(buy_date)[:10], "%Y-%m-%d").date()
@@ -1421,7 +1464,8 @@ class MasterLiveTradingDaemon:
                                 except Exception:
                                     trading_days = int((today - b_date).days * 5 / 7)
                                 cal_days = (today - b_date).days
-                            except Exception:
+                            except Exception as e_dt:
+                                logger.debug(f"Could not parse buy_date {buy_date} for {ticker}: {e_dt}")
                                 trading_days = 0
                                 cal_days = 0
                             pnl_pct = ((current_price - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
@@ -1589,10 +1633,17 @@ class MasterLiveTradingDaemon:
             u_filter = str(sub_cfg.get("universe_filter", ""))
             slot_sizes = sub_cfg.get("slot_sizes") or [sub_cfg.get("slot_size") or (float(sub_cfg.get("allocated_capital", 1500)) / sub_slots)]
 
-            logger.info(f"[{cfg.portfolio_id}] Screening for `{sub_name}` ({needed} slots open, filter: `{u_filter}`)...")
-
             # Reference target allocation for sizing and ADV constraint evaluation
             target_alloc_ref = float(slot_sizes[current_held] if current_held < len(slot_sizes) else slot_sizes[-1])
+            if available_cash < (target_alloc_ref * 0.75):
+                logger.info(
+                    f"[{cfg.portfolio_id}] Available cash ({available_cash:.2f}€) < 75% of target slot ({target_alloc_ref:.2f}€) "
+                    f"for `{sub_name}`. Skipping sub-strategy to prevent dwarf position."
+                )
+                continue
+
+            logger.info(f"[{cfg.portfolio_id}] Screening for `{sub_name}` ({needed} slots open, filter: `{u_filter}`)...")
+
             eff_allocation_acc = min(target_alloc_ref, available_cash)
 
             # Step 1: Collect, validate, and score all eligible candidates for this sub-strategy
@@ -1669,18 +1720,13 @@ class MasterLiveTradingDaemon:
                     continue
                 self.market_engine.prices_cache[ticker] = cand_price
 
-                # Exit criteria pre-validation (ensure entry does not immediately fail exit rules)
-                financials_payload = {
-                    "revenue_growth_yoy": hard_facts.get("revenue_growth_yoy_pct"),
-                    "cash_runway_months": hard_facts.get("cash_runway_months"),
-                    "operating_cash_flow": hard_facts.get("operating_cash_flow_ttm"),
-                }
+                # Exit criteria pre-validation (only check Layer 1/2 safety, as matches_universe_filter already validated sub-strategy fundamentals)
                 exit_act, _ = evaluate_position(
                     position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
                     current_price=cand_price,
                     latest_news_judgment=news_verdict,
-                    latest_financials=financials_payload,
-                    dead_money_days=cfg.dead_money_days,
+                    latest_financials=None,
+                    dead_money_days=None,
                 )
                 if exit_act == "SELL":
                     continue
@@ -1690,15 +1736,16 @@ class MasterLiveTradingDaemon:
                 fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
                 fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
 
+                full_slot_local = target_alloc_ref * fx_acc_to_local
                 target_allocation_local = eff_allocation_acc * fx_acc_to_local
                 min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
 
-                # Max ADV allocation constraint (< 5% of ADV)
+                # Max ADV allocation constraint
                 adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
                 max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
 
-                # Bug 6 fix: Reject dwarf positions if 5% ADV does not cover at least 75% of target slot
-                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.75):
+                # Bug 6 fix: Reject dwarf positions if ADV cap does not cover at least 75% of full target slot
+                if max_adv_allowed <= 0 or max_adv_allowed < (full_slot_local * 0.75):
                     continue
 
                 if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
@@ -1786,6 +1833,13 @@ class MasterLiveTradingDaemon:
                     break
 
                 target_alloc_acc = float(slot_sizes[slot_idx] if slot_idx < len(slot_sizes) else slot_sizes[-1])
+                if available_cash < (target_alloc_acc * 0.75):
+                    logger.info(
+                        f"[{cfg.portfolio_id}] Remaining cash ({available_cash:.2f}€) < 75% of target slot {slot_idx+1} ({target_alloc_acc:.2f}€) "
+                        f"in `{sub_name}`. Halting slot fills for `{sub_name}` to prevent dwarf position."
+                    )
+                    break
+
                 eff_allocation_acc = min(target_alloc_acc, available_cash)
 
                 cand = valid_candidates.pop(0)
@@ -1796,10 +1850,11 @@ class MasterLiveTradingDaemon:
                 fx_acc_to_local = cand["fx_acc_to_local"]
                 max_adv_allowed = cand["max_adv_allowed"]
 
+                full_slot_local = target_alloc_acc * fx_acc_to_local
                 target_allocation_local = eff_allocation_acc * fx_acc_to_local
                 min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
 
-                if max_adv_allowed <= 0 or max_adv_allowed < (target_allocation_local * 0.75):
+                if max_adv_allowed <= 0 or max_adv_allowed < (full_slot_local * 0.75):
                     continue
 
                 if target_allocation_local > max_adv_allowed:
@@ -2137,6 +2192,11 @@ class MasterLiveTradingDaemon:
                 if cfg.regions and market and market not in cfg.regions:
                     continue
 
+                # Micro-cap ceiling guard (shared universe may include Nordic Mid-Caps up to 2,000M EUR for P13)
+                mcap_usd = float(meta.get("market_cap_usd", 0.0) or 0.0)
+                if mcap_usd > 350_000_000.0:
+                    continue
+
                 # Anti-whipsaw cooldown
                 if ticker in cooldown_tickers:
                     days_since_exit = (today - cooldown_tickers[ticker]).days
@@ -2329,6 +2389,11 @@ class MasterLiveTradingDaemon:
             # Check geographic region filter
             market = meta.get("market", "")
             if cfg.regions and market not in cfg.regions:
+                continue
+
+            # Micro-cap ceiling guard (shared universe may include Nordic Mid-Caps up to 2,000M EUR for P13)
+            mcap_usd = float(meta.get("market_cap_usd", 0.0) or 0.0)
+            if mcap_usd > 350_000_000.0:
                 continue
 
             # Anti-Whipsaw Cooldown

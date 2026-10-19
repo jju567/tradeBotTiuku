@@ -1119,10 +1119,139 @@ def test_p13_partial_take_profit_and_runner_rule(tmp_path):
     assert any(t["action"] == "SELL" and "RUNNER_BREAKEVEN_STOP" in t["details"]["reason"] for t in run_trades)
 
 
+def test_p13_satellite_45d_time_stop_and_turnaround_immunity(tmp_path):
+    """
+    Verifies:
+    1. Satellite position held >= 45 trading days with PnL < +5% triggers TIME_STOP_DECAY.
+    2. Core/Turnaround positions with negative YoY revenue growth are NOT prematurely sold by generic Profile B Layer 3.
+    """
+    from datetime import datetime, timezone
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        slots=5,
+        start_cash=10000.0,
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.positions = [
+        {
+            "Ticker": "STAGNANT.ST",
+            "Shares": 100,
+            "Buy Price": 10.0,
+            "Buy Date": "2026-06-01",  # > 45 trading days ago
+            "Currency": "SEK",
+            "Capital Invested": 1000.0,
+            "Sub_Strategy": "satellite_nordic_microcap_catalyst",
+            "Peak Price": 10.2,
+        },
+        {
+            "Ticker": "TURNAROUND.HE",
+            "Shares": 100,
+            "Buy Price": 10.0,
+            "Buy Date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),  # Bought today
+            "Currency": "EUR",
+            "Capital Invested": 1000.0,
+            "Sub_Strategy": "satellite_nordic_microcap_catalyst",
+            "Peak Price": 10.0,
+        },
+    ]
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.prices_cache = {
+        "STAGNANT.ST": 10.20,     # +2.0% (< +5.0% after >45 trading days -> must exit)
+        "TURNAROUND.HE": 10.10,   # +1.0%, fresh buy, negative YoY revenue -> must HOLD
+    }
+    daemon.market_engine.news_radar_cache = {
+        "STAGNANT.ST": ("HOLD", "OK"),
+        "TURNAROUND.HE": ("WATCH_TURNAROUND", "Major new order"),
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "STAGNANT.ST": {"revenue_growth_yoy_pct": 10.0, "cash_runway_months": 24.0, "operating_cash_flow_ttm": 100000.0},
+        "TURNAROUND.HE": {"revenue_growth_yoy_pct": -15.0, "cash_runway_months": 18.0, "operating_cash_flow_ttm": 50000.0},
+    }
+
+    run_trades = []
+    closed = daemon.execute_phase1_exits(p, run_trades=run_trades)
+    assert closed == 1
+    assert len(p.positions) == 1
+    assert p.positions[0]["Ticker"] == "TURNAROUND.HE"
+    assert any(t["ticker"] == "STAGNANT.ST" and "TIME_STOP_DECAY" in t["details"]["reason"] for t in run_trades)
 
 
+def test_p13_prevents_low_cash_dwarf_position(tmp_path):
+    """Verifies that P13 skips a 2,350 EUR Core slot if available cash is only 400 EUR (< 75% of target slot)."""
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        slots=5,
+        start_cash=10000.0,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 7000,
+                "slots": 3,
+                "slot_sizes": [2350, 2350, 2300],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            }
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 400.0  # Only 400 EUR left, way below 75% of 2,350 EUR (1,762.50 EUR)
+    p.positions = []
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.market_regime = {"regime": "BULL", "last_price": 120.0, "sma_50": 110.0}
+    daemon.market_engine.universe_metadata = {
+        "HARVIA.HE": {
+            "market": "FI",
+            "currency": "EUR",
+            "market_cap_local": 600_000_000.0,
+            "market_cap_usd": 650_000_000.0,
+            "adv_20d_local": 500_000.0,
+            "adv_20d_usd": 540_000.0,
+            "current_price": 40.0,
+        }
+    }
+    daemon.market_engine.prices_cache = {"HARVIA.HE": 40.0}
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: {
+        "roe": 0.25,
+        "ebit_margin": 0.20,
+        "free_cash_flow": 30_000_000.0,
+        "net_debt_to_ebitda": 1.0,
+    }
+
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 0
+    assert len(p.positions) == 0
 
 
+def test_nlp_archive_ignores_stale_reject_over_14_days(tmp_path):
+    """Verifies that a 60-day-old REJECT in nlp_decisions_archive.csv does not permanently blacklist a ticker."""
+    from main_controller import append_nlp_decision
 
+    archive_file = tmp_path / "nlp_decisions_archive.csv"
+    universe_file = tmp_path / "clean_microcap_universe.csv"
+    universe_file.write_text("ticker,market\nFARON.HE,FI\n", encoding="utf-8")
 
+    # Write a stale REJECT from 2025 (over 14 days old)
+    append_nlp_decision(
+        ticker="FARON.HE",
+        headline="Faron announces share issue",
+        llm_decision="REJECT",
+        reasoning="Old share issue",
+        archive_path=archive_file,
+        timestamp="2025-01-10T10:00:00+00:00",
+    )
 
+    engine = MarketDataEngine(clean_universe_path=universe_file)
+    engine.evaluated_news_cache.clear()
+    engine._load_evaluated_news_cache(archive_path=archive_file, max_age_days=14.0)
+    engine.news_radar_cache["FARON.HE"] = ("HOLD", "No recent negative news")
+
+    verdict, _ = engine.get_ticker_nlp_status("FARON.HE")
+    assert verdict == "HOLD"

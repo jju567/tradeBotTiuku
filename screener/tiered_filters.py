@@ -293,10 +293,11 @@ def matches_us_microcap_growth(
     elif mcap_usd > 350_000_000.0:
         reasons.append(f"Market Cap {mcap_usd:,.0f} USD > 350M USD")
 
-    # 3. Dividend Yield == 0.0 (Strict OST rule). Verify dividend is truly 0.
+    # 3. Dividend Yield == 0.0 (Strict OST rule). Verify dividend is truly 0 across yield, rate, and cash flow.
     div_yield = hard_facts.get("dividend_yield")
     div_rate = hard_facts.get("dividend_rate") or meta.get("dividend_rate")
     trailing_div_rate = hard_facts.get("trailing_annual_dividend_rate") or meta.get("trailing_annual_dividend_rate")
+    cash_div_paid = hard_facts.get("cash_dividends_paid") or meta.get("cash_dividends_paid")
 
     has_dividend = False
     if div_yield is not None and float(div_yield) > 0.0001:
@@ -304,6 +305,8 @@ def matches_us_microcap_growth(
     elif div_rate is not None and float(div_rate) > 0.0001:
         has_dividend = True
     elif trailing_div_rate is not None and float(trailing_div_rate) > 0.0001:
+        has_dividend = True
+    elif cash_div_paid is not None and float(cash_div_paid) < -1000.0:
         has_dividend = True
 
     if has_dividend:

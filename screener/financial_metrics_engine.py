@@ -137,6 +137,9 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "ebitda": None,
         "net_debt_to_ebitda": None,
         "dividend_yield": None,
+        "dividend_rate": None,
+        "trailing_annual_dividend_rate": None,
+        "cash_dividends_paid": None,
         "exchange": None,
         "market_cap": None,
         "latest_statement_date": None,
@@ -144,7 +147,7 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "data_source": "yfinance",
         "data_quality": {
             "ocf_source": None,   # "ttm_quarterly" | "latest_annual" | None
-            "debt_source": None,  # "total_debt_field" | "lt_plus_current" | None
+            "debt_source": None,  # "total_debt_field" | "lt_plus_current" | "zero_debt_inferred" | None
             "is_fresh": True,     # True if statement age <= 120 days
         },
         "errors": [],
@@ -177,15 +180,31 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                 result["data_quality"]["debt_source"] = "total_debt_field"
 
         if debt is None:
-            lt_q = _extract_metric_from_df(bs_q, _LT_DEBT_KEYS) or 0.0
-            cur_q = _extract_metric_from_df(bs_q, _CUR_DEBT_KEYS) or 0.0
-            lt_a = _extract_metric_from_df(bs_a, _LT_DEBT_KEYS) or 0.0
-            cur_a = _extract_metric_from_df(bs_a, _CUR_DEBT_KEYS) or 0.0
+            lt_q = _extract_metric_from_df(bs_q, _LT_DEBT_KEYS)
+            cur_q = _extract_metric_from_df(bs_q, _CUR_DEBT_KEYS)
+            lt_a = _extract_metric_from_df(bs_a, _LT_DEBT_KEYS)
+            cur_a = _extract_metric_from_df(bs_a, _CUR_DEBT_KEYS)
             
-            calc_debt = max(lt_q + cur_q, lt_a + cur_a)
+            calc_debt = max((lt_q or 0.0) + (cur_q or 0.0), (lt_a or 0.0) + (cur_a or 0.0))
             if calc_debt > 0:
                 debt = calc_debt
                 result["data_quality"]["debt_source"] = "lt_plus_current"
+            elif any(v is not None for v in (lt_q, cur_q, lt_a, cur_a)):
+                debt = 0.0
+                result["data_quality"]["debt_source"] = "lt_plus_current"
+            else:
+                # If a valid balance sheet exists with equity/assets and cash, and no debt rows exist, company is debt-free
+                _bs_check_keys = [
+                    "Total Assets", "TotalAssets", "Stockholders Equity",
+                    "StockholdersEquity", "Total Stockholder Equity", "Common Stock Equity",
+                ]
+                has_bs_structure = (
+                    _extract_metric_from_df(bs_q, _bs_check_keys) is not None
+                    or _extract_metric_from_df(bs_a, _bs_check_keys) is not None
+                )
+                if cash is not None and has_bs_structure:
+                    debt = 0.0
+                    result["data_quality"]["debt_source"] = "zero_debt_inferred"
 
         result["cash_and_equivalents"] = cash
         result["total_debt"] = debt
@@ -347,6 +366,11 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
 
             # EBITDA & Net Debt to EBITDA
             ebitda = info.get("ebitda")
+            if ebitda is None:
+                _ebitda_keys = ["EBITDA", "Normalized EBITDA", "NormalizedEBITDA", "EBIT", "Operating Income", "OperatingIncome"]
+                ebitda = _extract_metric_from_df(inc_a, _ebitda_keys)
+                if ebitda is None:
+                    ebitda = _extract_metric_from_df(inc_q, _ebitda_keys)
             result["ebitda"] = float(ebitda) if ebitda is not None else None
             
             nd_ebitda = None
@@ -358,11 +382,32 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                     nd_ebitda = round(net_d / ebitda, 2)
             result["net_debt_to_ebitda"] = nd_ebitda
 
-            # Dividend Yield
+            # Dividend Yield, Dividend Rate & Cash Dividends Paid (Strict OST verification)
             div_y = info.get("dividendYield")
             if div_y is None:
                 div_y = info.get("trailingAnnualDividendYield")
-            result["dividend_yield"] = float(div_y) if div_y is not None else 0.0
+            div_r = info.get("dividendRate")
+            trail_div_r = info.get("trailingAnnualDividendRate")
+            _div_cf_keys = ["Cash Dividends Paid", "Common Stock Dividend Paid", "CashDividendsPaid", "Payment Of Dividends"]
+            div_paid = _extract_metric_from_df(cf_a, _div_cf_keys)
+            if div_paid is None:
+                div_paid = _extract_metric_from_df(cf_q, _div_cf_keys)
+
+            result["dividend_rate"] = float(div_r) if div_r is not None else None
+            result["trailing_annual_dividend_rate"] = float(trail_div_r) if trail_div_r is not None else None
+            result["cash_dividends_paid"] = float(div_paid) if div_paid is not None else None
+
+            if div_y is not None:
+                result["dividend_yield"] = float(div_y)
+            elif (
+                (div_r is not None and float(div_r) > 0.0)
+                or (trail_div_r is not None and float(trail_div_r) > 0.0)
+                or (div_paid is not None and float(div_paid) < -1000.0)
+            ):
+                # Non-zero dividend detected via rate or cashflow statement even though dividendYield was None
+                result["dividend_yield"] = 0.01
+            else:
+                result["dividend_yield"] = 0.0
 
             # Exchange
             exch = info.get("exchange")

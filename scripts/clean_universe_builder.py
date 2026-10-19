@@ -38,17 +38,19 @@ logger = logging.getLogger("universe_builder")
 
 
 DEFAULT_RAW_TICKERS = [
-    # 🇫🇮 Finnish Equities (OMX Helsinki & First North)
+    # 🇫🇮 Finnish Equities (OMX Helsinki & First North - Micro-Cap & Mid-Cap Compounders)
     "KAMUX.HE", "ROBIT.HE", "FARON.HE", "REMEDY.HE", "SSH1V.HE", "FODELIA.HE",
     "ANORA.HE", "HONBS.HE", "SOLTEQ.HE", "EEZY.HE", "ASPO.HE", "PUUILO.HE",
     "MUSTI.HE", "QTCOM.HE", "HARVIA.HE", "KEMIRA.HE", "NOKIA.HE", "TIETO.HE",
     "BIOHIT.HE", "DETEC.HE", "ENERS.HE", "LEADD.HE", "NXTMS.HE", "OPTOM.HE",
     "PUMU.HE", "RAUTE.HE", "TALEN.HE", "VIAFIN.HE", "WULFF.HE", "AALLON.HE",
     "BOREO.HE", "DIGIA.HE", "DOVRE.HE", "ENENTO.HE", "EXEL.HE", "INCAP.HE",
-    "KREATE.HE", "MARIME.HE", "NOOHO.HE", "NURM.HE", "PIHLIS.HE", "QPR1V.HE",
-    "RELAS.HE", "SCANFL.HE", "SIILI.HE", "SITOWS.HE", "SUOM1V.HE", "TAAL.HE",
+    "KREATE.HE", "MARIME.HE", "MEKKO.HE", "NOOHO.HE", "NOHO.HE", "NURM.HE", "PIHLIS.HE", "QPR1V.HE",
+    "RELAS.HE", "RELAIS.HE", "SCANFL.HE", "SIILI.HE", "SITOWS.HE", "SUOM1V.HE", "TAAL.HE", "TAALA.HE",
     "TAMTR.HE", "TECN1V.HE", "VERK.HE", "VINCIT.HE", "WETTER.HE", "WITH.HE",
-    # 🇸🇪 Swedish Equities (Spotlight, First North Stockholm, OMX Stockholm)
+    "REV1V.HE", "VAIAS.HE", "OLVAS.HE", "PON1V.HE", "GOFORE.HE", "TOKMAN.HE",
+    "CAPMAN.HE", "EQV1V.HE", "AKTIA.HE", "ALMA.HE", "ATRIA.HE", "FSECURE.HE", "ORNBV.HE",
+    # 🇸🇪 Swedish Equities (Spotlight, First North Stockholm, OMX Stockholm - Micro & Mid-Cap)
     "SENS.ST", "PEXA-B.ST", "LUC.ST", "B3.ST", "EVO.ST", "SBB-B.ST", "SINCH.ST",
     "ACAST.ST", "ANOT.ST", "BETS-B.ST", "CINT.ST", "CTEK.ST", "EO.ST", "GIGS.ST",
     "HEXI.ST", "KDEV.ST", "MAG.ST", "MANG.ST", "NOTE.ST", "OVZON.ST", "PCELL.ST",
@@ -61,6 +63,7 @@ DEFAULT_RAW_TICKERS = [
     "NCAB.ST", "NEDER.ST", "NIL-B.ST", "OEM-B.ST", "ORES.ST", "POOL-B.ST",
     "PROB.ST", "RAIL.ST", "SCST.ST", "SEZI.ST", "SIVE.ST", "THQ.ST",
     "TRAD.ST", "TROAX.ST", "VBG-B.ST", "VOLO.ST", "XANO-B.ST",
+    "INWI.ST", "BUFAB.ST", "HMS.ST", "RVRC.ST", "MIPS.ST", "CEVI.ST", "FNOX.ST",
     # 🇺🇸 US Equities (Micro-Caps & Control Large-Caps)
     "ATOM", "STEM", "WATT", "MVIS", "VUZI", "OSS", "REKR", "BBAI",
     "AEYE", "AKTS", "AMST", "ARBE", "AUST", "BTM", "CLPS", "CPIX", "CREX",
@@ -306,10 +309,11 @@ class MicroCapUniverseBuilder:
                 "adv_20d_usd": round(adv_20d_usd, 2) if adv_20d_usd is not None else None,
             }
 
-            # Filter 1: Market Cap limit
-            if mcap_usd > self.max_market_cap_usd:
-                logger.info(f"[{idx}/{len(self.raw_tickers)}] ❌ {ticker}: ${mcap_usd/1e6:.1f}M USD -> EXCLUDED (> $300M)")
-                record["exclusion_reason"] = f"EXCEEDS_300M (${mcap_usd/1e6:.1f}M)"
+            # Filter 1: Market Cap limit (allow Nordic up to $2.2B USD / ~2,000M EUR for P13 Mid-Cap Core)
+            effective_max_cap = max(self.max_market_cap_usd, 2_200_000_000.0) if market in ("FI", "SE") else self.max_market_cap_usd
+            if mcap_usd > effective_max_cap:
+                logger.info(f"[{idx}/{len(self.raw_tickers)}] ❌ {ticker}: ${mcap_usd/1e6:.1f}M USD -> EXCLUDED (> ${effective_max_cap/1e6:.0f}M)")
+                record["exclusion_reason"] = f"EXCEEDS_MAX_CAP (${mcap_usd/1e6:.1f}M)"
                 excluded_records.append(record)
                 continue
 
