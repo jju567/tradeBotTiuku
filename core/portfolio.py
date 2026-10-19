@@ -75,7 +75,7 @@ class PortfolioManager:
         logger.info(f"Set total_equity_override to {total_equity:,.2f} EUR")
 
 
-    def set_holding(self, symbol: str, quantity: int, avg_price: float, target_weight: Optional[float] = None):
+    def set_holding(self, symbol: str, quantity: int, avg_price: float, target_weight: Optional[float] = None, hodl: bool = False):
         """Adds or updates a stock holding in the portfolio while preserving existing metadata (such as hodl, name)."""
         symbol = symbol.upper()
         if "holdings" not in self.portfolio_state:
@@ -91,11 +91,13 @@ class PortfolioManager:
             effective_target_weight = target_weight if target_weight is not None else existing.get("target_weight", 0.10)
             updated.update({
                 "quantity": int(quantity),
-                "avg_price": round(avg_price, 2),
+                "avg_price": round(avg_price, 4),
                 "target_weight": round(float(effective_target_weight), 4),
             })
+            if hodl:
+                updated["hodl"] = True
             self.portfolio_state["holdings"][symbol] = updated
-            logger.info(f"Updated holding {symbol}: {quantity} pcs @ {avg_price:.2f} EUR (target weight: {updated['target_weight']*100:.1f}%)")
+            logger.info(f"Updated holding {symbol}: {quantity} pcs @ {avg_price:.4f} EUR (target weight: {updated['target_weight']*100:.1f}%, hodl={updated.get('hodl', False)})")
 
         self.save_state()
 

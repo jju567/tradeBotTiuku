@@ -1255,3 +1255,63 @@ def test_nlp_archive_ignores_stale_reject_over_14_days(tmp_path):
 
     verdict, _ = engine.get_ticker_nlp_status("FARON.HE")
     assert verdict == "HOLD"
+
+
+def test_set_holding_hodl_does_not_consume_active_slots(tmp_path):
+    """Verifies that adding FARON.HE via set_holding(..., hodl=True) preserves all active trading slots."""
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        slots=1,
+        ignore_hodl_positions=True,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 2350,
+                "slots": 1,
+                "slot_sizes": [2350],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            }
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    pos = p.set_holding("FARON.HE", 2700, 0.40, hodl=True)
+    assert pos is not None
+    assert pos["Ticker"] == "FARON.HE"
+    assert pos["Shares"] == 2700
+    assert pos["Buy Price"] == 0.40
+    assert pos["hodl"] is True
+    assert len(p.positions) == 1
+    assert len(p.active_positions()) == 0
+    assert p.cash_balance == 10000.0
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.market_regime = {"regime": "BULL", "last_price": 120.0, "sma_50": 110.0}
+    daemon.market_engine.universe_metadata = {
+        "HARVIA.HE": {
+            "market": "FI",
+            "currency": "EUR",
+            "market_cap_local": 600_000_000.0,
+            "market_cap_usd": 650_000_000.0,
+            "adv_20d_local": 500_000.0,
+            "adv_20d_usd": 540_000.0,
+            "current_price": 40.0,
+        }
+    }
+    daemon.market_engine.prices_cache = {"HARVIA.HE": 40.0, "FARON.HE": 0.40}
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: {
+        "roe": 0.25,
+        "ebit_margin": 0.20,
+        "free_cash_flow": 30_000_000.0,
+        "net_debt_to_ebitda": 1.0,
+    }
+
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 1
+    assert len(p.positions) == 2
+    assert len(p.active_positions()) == 1
+    assert {x["Ticker"] for x in p.positions} == {"FARON.HE", "HARVIA.HE"}
+

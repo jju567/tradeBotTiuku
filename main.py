@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--show-portfolio", action="store_true", help="Display current local portfolio holdings")
     parser.add_argument("--set-cash", type=float, metavar="EUR", help="Set current cash balance in EUR")
     parser.add_argument("--set-holding", nargs=3, metavar=("SYMBOL", "QTY", "AVG_PRICE"), help="Add or update a stock holding (e.g. NESTE.HE 100 25.40)")
+    parser.add_argument("--hodl", action="store_true", help="Mark the holding set via --set-holding as an isolated HODL position")
     parser.add_argument("--import-csv", type=str, metavar="FILEPATH", help="Import portfolio holdings from a Nordnet CSV/tab export file")
     parser.add_argument("--set-equity", type=float, metavar="EUR", help="Set known total equity from Nordnet (overrides yfinance-computed total for weights)")
 
@@ -63,10 +64,11 @@ def main():
     if args.set_holding is not None:
         sym, qty_str, price_str = args.set_holding
         try:
-            qty = int(qty_str)
+            qty = int(float(qty_str))
             price = float(price_str)
-            portfolio_mgr.set_holding(sym, qty, price)
-            print(f"✅ Holding {sym.upper()} updated: {qty} pcs @ {price:.2f} EUR")
+            portfolio_mgr.set_holding(sym, qty, price, hodl=bool(args.hodl))
+            hodl_tag = " [🔒 HODL=True]" if args.hodl else ""
+            print(f"✅ Holding {sym.upper()} updated: {qty} pcs @ {price:.4f} EUR{hodl_tag}")
         except ValueError as e:
             print(f"❌ Invalid argument format for --set-holding: {e}")
         return

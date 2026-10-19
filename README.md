@@ -299,6 +299,12 @@ python main_controller.py --loop --interval-hours 24
 # Nollaa kaikki 12 salkkua aloitustilaan (10,000 €):
 python main_controller.py --reset-portfolios
 
+# Aseta tai päivitä yksittäinen omistus P13_Live_Candidate -salkkuun (esim. eristetty HODL-positio, joka ei kuluta kauppapaikkoja):
+python main_controller.py --set-holding FARON.HE 2700 0.40 --hodl
+
+# Aseta P13_Live_Candidate -salkun vapaa käteissaldo (EUR) ja tarkista salkun tila:
+python main_controller.py --set-cash 10000 --show-portfolio
+
 # Single-Stock Time Machine: Testaa Layer 2 -uutistutka historiallisilla tiedotteilla:
 python single_stock_news_backtest.py --ticker SEZI.ST --buy-date 2026-02-16
 

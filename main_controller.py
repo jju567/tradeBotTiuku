@@ -542,6 +542,80 @@ class PortfolioInstance:
         return normalized
 
 
+    def is_hodl_position(self, pos: Dict[str, Any]) -> bool:
+        """Returns True if the position is marked as an isolated HODL position."""
+        if bool(pos.get("hodl", False)):
+            return True
+        if self.config.ignore_hodl_positions:
+            t_sym = str(pos.get("Ticker") or pos.get("ticker", "")).strip().upper()
+            if t_sym in ["FARON.HE", "FARON"] or pos.get("note") == "Lottolappu":
+                return True
+        return False
+
+    def active_positions(self) -> List[Dict[str, Any]]:
+        """Returns non-HODL positions that count toward active strategy trading slots."""
+        return [p for p in self.positions if not self.is_hodl_position(p)]
+
+    def set_holding(self, symbol: str, shares: int, buy_price: float, hodl: bool = False) -> Optional[Dict[str, Any]]:
+        """Adds, updates, or removes (if shares <= 0) a stock holding in this portfolio and saves state."""
+        sym_upper = str(symbol).strip().upper()
+        shares_int = int(shares)
+        price_f = float(buy_price)
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        if shares_int <= 0:
+            self.positions = [
+                p for p in self.positions
+                if str(p.get("Ticker") or p.get("ticker", "")).strip().upper() != sym_upper
+            ]
+            self.save_state()
+            return None
+
+        curr = get_ticker_currency(sym_upper)
+        cap_inv = round(shares_int * price_f, 2)
+
+        updated_pos: Optional[Dict[str, Any]] = None
+        for p in self.positions:
+            if str(p.get("Ticker") or p.get("ticker", "")).strip().upper() == sym_upper:
+                p["Ticker"] = sym_upper
+                p["Shares"] = shares_int
+                p["Buy Price"] = price_f
+                p["Capital Invested"] = cap_inv
+                p["Currency"] = p.get("Currency") or curr
+                if not p.get("Buy Date"):
+                    p["Buy Date"] = today_str
+                if hodl:
+                    p["hodl"] = True
+                    p["Strategy"] = "HODL"
+                    p["Sub_Strategy"] = "hodl_isolated"
+                updated_pos = p
+                break
+
+        if updated_pos is None:
+            new_pos: Dict[str, Any] = {
+                "Ticker": sym_upper,
+                "Buy Date": today_str,
+                "Buy Price": price_f,
+                "Shares": shares_int,
+                "Capital Invested": cap_inv,
+                "Strategy": "HODL" if hodl else self.config.strategy,
+                "Currency": curr,
+                "Peak Price": price_f,
+            }
+            if hodl:
+                new_pos["hodl"] = True
+                new_pos["Sub_Strategy"] = "hodl_isolated"
+            self.positions.append(new_pos)
+            updated_pos = new_pos
+
+        self.save_state()
+        return updated_pos
+
+    def set_cash(self, cash_eur: float) -> None:
+        """Sets current cash balance and saves state atomically."""
+        self.cash_balance = float(cash_eur)
+        self.save_state()
+
     def save_state(self) -> None:
         """Saves current state to JSON file atomically."""
         self.updated_at = datetime.now(timezone.utc).isoformat()
@@ -638,10 +712,11 @@ class PortfolioInstance:
             except Exception:
                 pass
 
-        # Guard: If portfolio has open positions but valuation returned 0.0 (API/feed glitch), skip snapshot
-        if self.positions and stock_value_eur <= 0.0:
+        # Guard: If portfolio has active (non-HODL) positions but valuation returned 0.0 (API/feed glitch), skip snapshot
+        active_pos = self.active_positions()
+        if active_pos and stock_value_eur <= 0.0:
             logger.warning(
-                f"[{self.config.portfolio_id}] Skipping snapshot: {len(self.positions)} positions exist but stock_value_eur is 0.0"
+                f"[{self.config.portfolio_id}] Skipping snapshot: {len(active_pos)} active positions exist but stock_value_eur is 0.0"
             )
             return
 
@@ -1587,9 +1662,11 @@ class MasterLiveTradingDaemon:
 
         new_buys = 0
 
-        # Map each existing position to its sub-strategy
+        # Map each existing active (non-HODL) position to its sub-strategy
         positions_by_sub: Dict[str, List[Dict[str, Any]]] = {k: [] for k in cfg.sub_strategies.keys()}
         for pos in portfolio.positions:
+            if portfolio.is_hodl_position(pos):
+                continue
             s_name = pos.get("Sub_Strategy") or pos.get("sub_strategy")
             if s_name and s_name in positions_by_sub:
                 positions_by_sub[s_name].append(pos)
@@ -1619,7 +1696,7 @@ class MasterLiveTradingDaemon:
 
         # Iterate through each sub_strategy in order
         for sub_name, sub_cfg in cfg.sub_strategies.items():
-            if len(portfolio.positions) >= cfg.slots:
+            if len(portfolio.active_positions()) >= cfg.slots:
                 break
 
             sub_slots = int(sub_cfg.get("slots", 1))
@@ -1823,7 +1900,7 @@ class MasterLiveTradingDaemon:
 
             # Step 1.5: Fill available slots using top-ranked candidates
             for slot_idx in range(current_held, sub_slots):
-                if len(portfolio.positions) >= cfg.slots:
+                if len(portfolio.active_positions()) >= cfg.slots:
                     break
                 if available_cash < (MIN_BROKER_FEE + 10.0):
                     logger.info(f"[{cfg.portfolio_id}] Available cash exhausted ({available_cash:.2f}€). Halting buys.")
@@ -1941,7 +2018,7 @@ class MasterLiveTradingDaemon:
         Returns count of new positions opened.
         """
         cfg = portfolio.config
-        open_count = len(portfolio.positions)
+        open_count = len(portfolio.active_positions())
         if open_count >= cfg.slots:
             if open_count > cfg.slots:
                 logger.info(
@@ -2557,9 +2634,11 @@ class MasterLiveTradingDaemon:
         return new_buys
 
     def calculate_stock_value_eur(self, portfolio: PortfolioInstance) -> float:
-        """Calculates total market value of portfolio open positions converted to EUR."""
+        """Calculates total market value of portfolio active (non-HODL) open positions converted to EUR."""
         total_eur = 0.0
         for p in portfolio.positions:
+            if portfolio.is_hodl_position(p):
+                continue
             t = p["Ticker"]
             shares = float(p.get("Shares", 0))
             px = self.market_engine.prices_cache.get(t, float(p.get("Buy Price", 0.0)))
@@ -3169,6 +3248,10 @@ def main() -> None:
     parser.add_argument("--portfolio", type=str, default=None, help="Optionally run or test a single portfolio by ID")
     parser.add_argument("--sync-universe", action="store_true", help="Force an immediate dynamic universe scan for new listings from Nordnet")
     parser.add_argument("--tax-profile", type=str, choices=["AOT", "OY", "OST"], default=None, help="Tax structure ('AOT' for taxable account, 'OY' for corporate account, 'OST' for Finnish Equity Savings Account)")
+    parser.add_argument("--set-holding", nargs=3, metavar=("SYMBOL", "QTY", "AVG_PRICE"), help="Add, update, or remove (QTY=0) a stock holding in target portfolio (default: P13_Live_Candidate)")
+    parser.add_argument("--hodl", action="store_true", help="Mark the holding set via --set-holding as an isolated HODL position (never sold by bot, does not consume trading slots)")
+    parser.add_argument("--set-cash", type=float, metavar="EUR", help="Set current cash balance in EUR for target portfolio (default: P13_Live_Candidate)")
+    parser.add_argument("--show-portfolio", action="store_true", help="Display current holdings and cash balance for target portfolio (default: P13_Live_Candidate)")
 
     args = parser.parse_args()
 
@@ -3185,6 +3268,64 @@ def main() -> None:
             logger.error(f"Portfolio '{args.portfolio}' not found in configuration.")
             return
         daemon.portfolios = selected
+
+    # Handle manual portfolio state management flags (--set-holding, --set-cash, --show-portfolio)
+    cli_state_action = False
+    target_pid = args.portfolio or "P13_Live_Candidate"
+    target_p = next((p for p in daemon.portfolios if p.config.portfolio_id.lower() == target_pid.lower()), None)
+
+    if args.set_cash is not None:
+        if not target_p:
+            logger.error(f"Target portfolio '{target_pid}' not found.")
+            return
+        target_p.set_cash(args.set_cash)
+        print(f"✅ [{target_p.config.portfolio_id}] Cash balance updated to {target_p.cash_balance:,.2f} {target_p.currency} ({target_p.state_file.name})")
+        cli_state_action = True
+
+    if args.set_holding is not None:
+        if not target_p:
+            logger.error(f"Target portfolio '{target_pid}' not found.")
+            return
+        sym, qty_str, price_str = args.set_holding
+        try:
+            qty = int(float(qty_str))
+            price = float(price_str)
+            pos = target_p.set_holding(sym, qty, price, hodl=bool(args.hodl))
+            if pos is None:
+                print(f"🗑️ [{target_p.config.portfolio_id}] Holding {sym.upper()} removed ({target_p.state_file.name})")
+            else:
+                hodl_tag = " [🔒 HODL=True - Isolated from bot exits & trading slots]" if pos.get("hodl") else ""
+                print(
+                    f"✅ [{target_p.config.portfolio_id}] Holding {pos['Ticker']} updated: "
+                    f"{pos['Shares']} pcs @ {pos['Buy Price']:.4f} {pos['Currency']} "
+                    f"(Invested: {pos['Capital Invested']:,.2f} {pos['Currency']}){hodl_tag}"
+                )
+        except ValueError as e:
+            logger.error(f"Invalid argument format for --set-holding: {e}")
+            return
+        cli_state_action = True
+
+    if args.show_portfolio:
+        if not target_p:
+            logger.error(f"Target portfolio '{target_pid}' not found.")
+            return
+        print(f"\n=== {target_p.config.portfolio_id} ({target_p.state_file.name}) ===")
+        print(f"Cash Balance:     {target_p.cash_balance:,.2f} {target_p.currency}")
+        print(f"Active Slots:     {len(target_p.active_positions())} / {target_p.config.slots}")
+        print("Positions:")
+        if not target_p.positions:
+            print("  (empty)")
+        for p in target_p.positions:
+            h_str = " [🔒 HODL]" if target_p.is_hodl_position(p) else f" [{p.get('Sub_Strategy') or p.get('Strategy', '')}]"
+            print(
+                f"  - {p.get('Ticker')}: {int(float(p.get('Shares', 0)))} pcs @ {float(p.get('Buy Price', 0.0)):.4f} {p.get('Currency', 'EUR')} "
+                f"(Invested: {float(p.get('Capital Invested', 0.0)):,.2f} {p.get('Currency', 'EUR')}){h_str}"
+            )
+        print("=" * 60 + "\n")
+        cli_state_action = True
+
+    if cli_state_action and not (args.run_once or args.schedule or args.loop or args.reset_portfolios):
+        return
 
     if args.reset_portfolios:
         for p in daemon.portfolios:
