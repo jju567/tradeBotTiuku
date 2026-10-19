@@ -503,6 +503,10 @@ class PortfolioInstance:
                         self.positions = [self._normalize_position(p) for p in data.get("positions", [])]
                         self.created_at = data.get("created_at", self.created_at)
                         self.updated_at = data.get("updated_at", self.updated_at)
+                        try:
+                            self._loaded_mtime = self.state_file.stat().st_mtime
+                        except Exception:
+                            self._loaded_mtime = 0.0
                         return
                 except Exception as e:
                     last_err = e
@@ -511,6 +515,19 @@ class PortfolioInstance:
             logger.warning(f"[{self.config.portfolio_id}] Could not load {self.state_file.name}: {last_err}. Initializing.")
 
         self.save_state()
+
+    def reload_if_changed_on_disk(self) -> None:
+        """Reloads state from disk if the state file was modified externally (e.g. via CLI --set-holding) since last load/save."""
+        if not self.state_file.exists():
+            return
+        try:
+            current_mtime = self.state_file.stat().st_mtime
+            last_mtime = getattr(self, "_loaded_mtime", 0.0) or 0.0
+            if current_mtime > last_mtime + 1e-6:
+                logger.info(f"[{self.config.portfolio_id}] Detected external state update on disk ({self.state_file.name}); reloading before cycle execution.")
+                self.load_state()
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_position(pos: Dict[str, Any]) -> Dict[str, Any]:
@@ -523,12 +540,18 @@ class PortfolioInstance:
                     return lower[c]
             return None
 
+        buy_px = float(_get("buy_price", "buy price") or pos.get("Buy Price", 0.0))
+        sh = float(_get("shares") or pos.get("Shares", 0.0))
+        cap_inv = float(_get("capital_invested", "capital invested") or pos.get("Capital Invested", 0.0))
+        if cap_inv <= 0.0 and buy_px > 0.0 and sh > 0.0:
+            cap_inv = round(buy_px * sh, 2)
+
         normalized = {
             "Ticker":           _get("ticker") or pos.get("Ticker", ""),
             "Buy Date":         _get("buy_date", "buy date") or pos.get("Buy Date", ""),
-            "Buy Price":        float(_get("buy_price", "buy price") or pos.get("Buy Price", 0.0)),
-            "Shares":           float(_get("shares") or pos.get("Shares", 0.0)),
-            "Capital Invested": float(_get("capital_invested", "capital invested") or pos.get("Capital Invested", 0.0)),
+            "Buy Price":        buy_px,
+            "Shares":           sh,
+            "Capital Invested": cap_inv,
             "Strategy":         _get("strategy") or pos.get("Strategy", "Profile B"),
             "Currency":         _get("currency") or pos.get("Currency", "EUR"),
         }
@@ -630,6 +653,10 @@ class PortfolioInstance:
         }
         try:
             _atomic_write_json(self.state_file, payload, ensure_ascii=False)
+            try:
+                self._loaded_mtime = self.state_file.stat().st_mtime
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"[{self.config.portfolio_id}] Failed to save state to {self.state_file}: {e}")
 
@@ -2656,6 +2683,7 @@ class MasterLiveTradingDaemon:
         # Step 0: Gather union of held tickers and pre-fetch shared market data strictly ONCE
         all_held: Set[str] = set()
         for p in self.portfolios:
+            p.reload_if_changed_on_disk()
             for pos in p.positions:
                 all_held.add(pos["Ticker"])
 
@@ -2670,6 +2698,7 @@ class MasterLiveTradingDaemon:
 
         logger.info(f"Executing Phase A: Base Signal Portfolios ({len(base_portfolios)} portfolios: P1–P10)")
         for p in base_portfolios:
+            p.reload_if_changed_on_disk()
             closed = self.execute_phase1_exits(p, run_trades=run_trades)
             opened = self.execute_phase2_screening(p, run_trades=run_trades)
             stock_val_eur = self.calculate_stock_value_eur(p)
@@ -2692,6 +2721,7 @@ class MasterLiveTradingDaemon:
         if meta_portfolios:
             logger.info(f"Executing Phase B: Meta-Portfolios ({len(meta_portfolios)} portfolios: P11_Meta_Consensus)")
         for p in meta_portfolios:
+            p.reload_if_changed_on_disk()
             closed = self.execute_phase1_exits(p, run_trades=run_trades)
             opened = self.execute_phase2_screening(p, run_trades=run_trades)
             stock_val_eur = self.calculate_stock_value_eur(p)

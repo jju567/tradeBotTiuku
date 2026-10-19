@@ -1677,21 +1677,23 @@ def render_dashboard_views(active_menu: str):
                         else:
                             curr_curr = "USD"
 
-                    if r.get("currency") != curr_curr or float(r.get("buy_price", 0.0) or 0.0) <= 0.0:
+                    orig_bp = float(
+                        pd.to_numeric(
+                            r.get("entryprice", r.get("entry_price", r.get("buy price", r.get("buy_price", 0.0)))),
+                            errors="coerce",
+                        )
+                        or 0.0
+                    )
+                    if r.get("currency") != curr_curr or orig_bp <= 0.0:
                         needs_healing = True
 
-                    healed_rows_to_save.append({
-                        "ticker": t_sym,
-                        "market": "FI" if t_sym.endswith(".HE") else ("SE" if t_sym.endswith(".ST") else "US"),
-                        "buy_date": buy_date,
-                        "buy_price": round(buy_price, 4),
-                        "current_price": round(curr_price, 4),
-                        "highest_price_seen": round(max(buy_price, curr_price, float(r.get("highest_price_seen", 0.0) or 0.0)), 4),
-                        "catastrophic_stop": round(buy_price * 0.50, 4),
-                        "shares": shares,
-                        "currency": curr_curr,
-                        "last_evaluated_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                    })
+                    is_hodl = bool(r.get("hodl", False)) or (
+                        selected_portfolio == "P13_Live_Candidate" and t_sym in ("FARON.HE", "FARON")
+                    )
+                    if is_hodl:
+                        strategy = "🔒 HODL (Eristetty)"
+                    elif r.get("sub_strategy"):
+                        strategy = str(r.get("sub_strategy"))
 
                     # FX conversion to EUR
                     if curr_curr == "EUR":
@@ -1713,8 +1715,9 @@ def render_dashboard_views(active_menu: str):
                     market_val_eur = pos_mkt_val * fx_to_eur
                     pnl_abs_eur = pos_pnl_abs * fx_to_eur
 
-                    total_invested += invested_eur
-                    total_market_val += market_val_eur
+                    if not is_hodl:
+                        total_invested += invested_eur
+                        total_market_val += market_val_eur
 
                     enriched_rows.append({
                         "ticker": t_sym,
@@ -1738,22 +1741,7 @@ def render_dashboard_views(active_menu: str):
 
                 df_enriched = pd.DataFrame(enriched_rows)
 
-                # Persist healed positions to disk if repairs were made
-                if needs_healing and healed_rows_to_save:
-                    if port_state_file.exists():
-                        try:
-                            with open(port_state_file, "r", encoding="utf-8") as f_acc:
-                                acc_save = json.load(f_acc)
-                            acc_save["positions"] = healed_rows_to_save
-                            _atomic_write_json(port_state_file, acc_save, ensure_ascii=False)
-                        except Exception:
-                            pass
-                    try:
-                        pd.DataFrame(healed_rows_to_save).to_csv(OPEN_POSITIONS_CSV, index=False)
-                    except Exception:
-                        pass
-
-                # Portfolio KPI calculations (Normalized to EUR)
+                # Portfolio KPI calculations (Normalized to EUR, excluding isolated HODL positions)
                 unrealized_pnl = total_market_val - total_invested
                 unrealized_pnl_pct = (unrealized_pnl / total_invested * 100.0) if total_invested > 0 else 0.0
                 total_equity = free_cash + total_market_val
@@ -1767,7 +1755,7 @@ def render_dashboard_views(active_menu: str):
                     stock_value=total_market_val,
                     starting_balance=starting_capital,
                     history_file=active_equity_file,
-                    has_positions=True,
+                    has_positions=(total_market_val > 0.0),
                 )
 
                 win_count = sum(1 for row in enriched_rows if row["pnl_pct"] > 0)
