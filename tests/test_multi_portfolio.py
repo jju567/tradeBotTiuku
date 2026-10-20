@@ -1438,4 +1438,190 @@ def test_p13_staggered_entry_constraints(tmp_path):
     assert len(p.active_positions()) == 3
 
 
+def test_p13_shadow_trading_audit_logs_and_next_day_execution_audit(tmp_path):
+    """
+    Tests all 3 Shadow Trading Audit requirements for P13_Live_Candidate:
+    1. Point-in-time entry metadata (`Candidate_Score`, `Entry_Hard_Facts`, `Entry_FX_Rate`,
+       `Estimated_FX_Fee_EUR`, `Execution_Verified: False`) on newly opened positions.
+    2. Daily X-Ray JSONL log (`data/portfolios/p13_shadow_audit_log.jsonl`) with `timestamp`, `regime`,
+       `portfolio_snapshot`, `candidates_ranking` (Top 5 per sub-strategy + selection status),
+       and `open_positions_health`.
+    3. Next-Day Limit Fill Audit (`data/portfolios/p13_execution_audit.csv`) verifying both
+       `FILLED` (`Low <= Limit_Price` -> `min(Open, Limit_Price)`) and
+       `UNFILLED_GAP_UP` (`Low > Limit_Price`).
+    """
+    import csv
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.00, "EURSEK": 10.0, "EURNOK": 10.0, "EURDKK": 7.46}
+    daemon.market_engine.news_radar_cache = {}
+    daemon.market_engine.operational_metrics = {}
+    daemon.market_engine.market_regime = {
+        "regime": "BULL",
+        "last_price": 120.5,
+        "sma_50": 115.0,
+    }
+    daemon.market_engine._fetch_live_price = lambda t: daemon.market_engine.prices_cache.get(t)
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        description="Test P13 Shadow Audit",
+        strategy="Hybrid Core-Satellite",
+        dead_money_days=63,
+        min_adv=20000,
+        slots=5,
+        regions=["FI", "SE", "US"],
+        start_cash=10000.0,
+        max_new_buys_per_cycle=2,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 4000,
+                "slots": 2,
+                "slot_sizes": [2000, 2000],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+            "satellite_us_microcap_growth": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "US_MicroCap_Growth",
+            },
+            "satellite_nordic_microcap_catalyst": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "Nordic_MicroCap_Catalyst",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    daemon.market_engine.universe_metadata = {
+        "CORE_FI.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 250_000.0, "current_price": 20.0},
+        "CORE_SE.ST": {"market": "SE", "market_cap_eur": 350_000_000.0, "currency": "SEK", "adv_20d_local": 3_000_000.0, "current_price": 100.0},
+        "US_GROWTH": {
+            "market": "US",
+            "exchange": "NMS",
+            "market_cap_usd": 80_000_000.0,
+            "currency": "USD",
+            "adv_20d_local": 300_000.0,
+            "current_price": 10.0,
+            "dividend_yield": 0.0,
+        },
+    }
+    daemon.market_engine.prices_cache = {
+        "CORE_FI.HE": 20.0,
+        "CORE_SE.ST": 100.0,
+        "US_GROWTH": 10.0,
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "CORE_FI.HE": {
+            "roe": 0.20,
+            "ebit_margin": 0.16,
+            "free_cash_flow": 15_000_000.0,
+            "net_debt_to_ebitda": 1.0,
+            "revenue_growth_yoy_pct": 12.5,
+            "cash_runway_months": 36.0,
+        },
+        "CORE_SE.ST": {
+            "roe": 0.25,
+            "ebit_margin": 0.20,
+            "free_cash_flow": 25_000_000.0,
+            "net_debt_to_ebitda": 0.5,
+            "revenue_growth_yoy_pct": 18.0,
+            "cash_runway_months": 48.0,
+        },
+        "US_GROWTH": {
+            "revenue": 25_000_000.0,
+            "revenue_growth_yoy_pct": 35.0,
+            "cash_runway_months": 24.0,
+            "operating_cash_flow_ttm": 3_000_000.0,
+            "is_profile_a": True,
+            "dividend_yield": 0.0,
+        },
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("STRONG BUY" if t == "US_GROWTH" else "HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache[t]
+
+    # 1. Execute Phase 2 screening (max_new_buys_per_cycle=2 -> buys CORE_SE.ST and CORE_FI.HE)
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 2
+
+    pos_se = next(pos for pos in p.active_positions() if pos["Ticker"] == "CORE_SE.ST")
+    pos_fi = next(pos for pos in p.active_positions() if pos["Ticker"] == "CORE_FI.HE")
+
+    # Requirement 1: Verify Point-in-Time metadata on positions
+    assert pos_se["Candidate_Score"] == 65.0  # 25*1.5 + 20*1.5 - 0.5*5 = 65.0
+    assert pos_se["Execution_Verified"] is False
+    assert pos_se["Entry_FX_Rate"] == 0.1  # SEK -> EUR (1 / 10.0)
+    assert pos_se["Estimated_FX_Fee_EUR"] > 0.0  # 0.25% FX fee on non-EUR (SEK) stock
+    assert pos_fi["Estimated_FX_Fee_EUR"] == 0.0  # EUR stock has 0.0 FX fee
+
+    hf_se = pos_se["Entry_Hard_Facts"]
+    for req_key in ("roe", "ebit_margin", "net_debt_to_ebitda", "rev_yoy", "cash_runway", "adv_eur", "nlp_verdict"):
+        assert req_key in hf_se
+    assert hf_se["roe"] == 25.0
+    assert hf_se["ebit_margin"] == 20.0
+    assert hf_se["net_debt_to_ebitda"] == 0.5
+
+    # 2. Requirement 2: Record Daily X-Ray Log (`p13_shadow_audit_log.jsonl`)
+    entry = daemon.record_p13_shadow_audit_log(p)
+    assert p.shadow_audit_log_file.exists()
+    lines = p.shadow_audit_log_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    logged = json.loads(lines[0])
+    assert "timestamp" in logged
+    assert logged["regime"]["iwc_price"] == 120.5
+    assert logged["regime"]["sma_50"] == 115.0
+    assert logged["regime"]["is_choppy_or_bear"] is False
+    assert "cash_balance" in logged["portfolio_snapshot"]
+    assert "non_hodl_stock_value_eur" in logged["portfolio_snapshot"]
+    assert "total_p13_equity_eur" in logged["portfolio_snapshot"]
+    assert "core_nordic_midcap_quality" in logged["candidates_ranking"]
+    assert "satellite_us_microcap_growth" in logged["candidates_ranking"]
+    assert len(logged["open_positions_health"]) == 2
+    health_item = logged["open_positions_health"][0]
+    for h_key in ("ticker", "current_price", "pnl_pct", "drawdown_from_peak_pct", "distance_to_stop_pct", "distance_to_partial_tp_pct", "trading_days_held", "nlp_status"):
+        assert h_key in health_item
+
+    # 3. Requirement 3: Next-Day Limit Fill Audit (`p13_execution_audit.csv`)
+    # Simulate that both positions were bought yesterday (T = yesterday)
+    yesterday_str = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y-%m-%d")
+    pos_se["Buy Date"] = yesterday_str  # Paper=100.0, Limit=100.2
+    pos_fi["Buy Date"] = yesterday_str  # Paper=20.0, Limit=20.04
+
+    # CORE_SE.ST opens at 99.80, Low 99.50 <= Limit 100.2 -> FILLED at min(99.80, 100.2) = 99.80
+    # CORE_FI.HE gaps up to Open 20.50, Low 20.30 > Limit 20.04 -> UNFILLED_GAP_UP (+2.5% gap vs paper)
+    daemon.market_engine.next_day_ohlc_cache = {
+        "CORE_SE.ST": {"Open": 99.80, "Low": 99.50, "High": 101.50, "Close": 101.00},
+        "CORE_FI.HE": {"Open": 20.50, "Low": 20.30, "High": 21.00, "Close": 20.80},
+    }
+
+    audited_n = daemon.audit_p13_next_day_executions(p)
+    assert audited_n == 2
+    assert pos_se["Execution_Verified"] is True
+    assert pos_fi["Execution_Verified"] is True
+    assert p.execution_audit_csv_file.exists()
+
+    with open(p.execution_audit_csv_file, "r", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    row_se = next(r for r in rows if r["Ticker"] == "CORE_SE.ST")
+    row_fi = next(r for r in rows if r["Ticker"] == "CORE_FI.HE")
+
+    assert row_se["Would_Have_Filled"] == "FILLED"
+    assert float(row_se["Realistic_Fill_Price"]) == 99.80
+    assert float(row_se["Slippage_vs_Paper_Pct"]) == pytest.approx(-0.20)
+    assert float(row_se["FX_Fee_EUR"]) > 0.0
+
+    assert row_fi["Would_Have_Filled"] == "UNFILLED_GAP_UP"
+    assert row_fi["Realistic_Fill_Price"] == ""
+    assert float(row_fi["Slippage_vs_Paper_Pct"]) == pytest.approx(2.50)
+
+
+
 

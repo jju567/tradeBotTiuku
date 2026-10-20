@@ -481,11 +481,16 @@ class PortfolioInstance:
         self.state_file = self.portfolio_dir / f"portfolio_{config.portfolio_id}_state.json"
         self.history_file = self.portfolio_dir / f"portfolio_{config.portfolio_id}_history.csv"
         self.equity_file = self.portfolio_dir / f"portfolio_{config.portfolio_id}_history.json"
+        self.shadow_audit_log_file = self.portfolio_dir / "p13_shadow_audit_log.jsonl"
+        self.execution_audit_csv_file = self.portfolio_dir / "p13_execution_audit.csv"
 
         self.cash_balance = float(config.start_cash)
         self.starting_balance = float(config.start_cash)
         self.currency = "EUR"
         self.positions: List[Dict[str, Any]] = []
+        self.pending_execution_audits: List[Dict[str, Any]] = []
+        self.last_candidates_ranking: Dict[str, Any] = {}
+        self.last_screening_block_reason: Optional[str] = None
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.updated_at = self.created_at
 
@@ -516,6 +521,7 @@ class PortfolioInstance:
                         self.starting_balance = float(data.get("starting_balance", self.config.start_cash))
                         self.currency = data.get("currency", "EUR")
                         self.positions = [self._normalize_position(p) for p in data.get("positions", [])]
+                        self.pending_execution_audits = list(data.get("pending_execution_audits", []))
                         self.created_at = data.get("created_at", self.created_at)
                         self.updated_at = data.get("updated_at", self.updated_at)
                         try:
@@ -657,7 +663,7 @@ class PortfolioInstance:
     def save_state(self) -> None:
         """Saves current state to JSON file atomically."""
         self.updated_at = datetime.now(timezone.utc).isoformat()
-        payload = {
+        payload: Dict[str, Any] = {
             "portfolio_id": self.config.portfolio_id,
             "starting_balance": self.starting_balance,
             "cash_balance": round(self.cash_balance, 2),
@@ -666,6 +672,8 @@ class PortfolioInstance:
             "updated_at": self.updated_at,
             "positions": self.positions,
         }
+        if self.pending_execution_audits:
+            payload["pending_execution_audits"] = self.pending_execution_audits
         try:
             _atomic_write_json(self.state_file, payload, ensure_ascii=False)
             try:
@@ -680,6 +688,9 @@ class PortfolioInstance:
         self.cash_balance = self.config.start_cash
         self.starting_balance = self.config.start_cash
         self.positions = []
+        self.pending_execution_audits = []
+        self.last_candidates_ranking = {}
+        self.last_screening_block_reason = None
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.save_state()
         if self.history_file.exists():
@@ -1442,6 +1453,23 @@ class MasterLiveTradingDaemon:
                         }
                         portfolio.append_trade(trade_record)
 
+                        if portfolio.config.sub_strategies or portfolio.config.portfolio_id == "P13_Live_Candidate":
+                            limit_buf = getattr(portfolio.config, "limit_buffer_pct", 0.002) or 0.002
+                            sell_limit_px = round(current_price * (1.0 - limit_buf), 4)
+                            est_fx_fee_eur = round(gross_sale_value * fx_to_acc * 0.0025, 2) if str(ticker_curr).upper() != "EUR" else 0.0
+                            broker_fee_eur = round(transaction_fee * fx_to_acc, 2)
+                            portfolio.pending_execution_audits.append({
+                                "Date": today.strftime("%Y-%m-%d"),
+                                "Ticker": ticker,
+                                "Sub_Strategy": pos.get("Sub_Strategy") or pos.get("sub_strategy") or "HODL",
+                                "Action": "PARTIAL_TP",
+                                "Paper_Price": round(current_price, 4),
+                                "Limit_Price": sell_limit_px,
+                                "FX_Fee_EUR": est_fx_fee_eur,
+                                "Broker_Fee_EUR": broker_fee_eur,
+                                "Execution_Verified": False,
+                            })
+
                         logger.info(
                             f"💰 [{portfolio.config.portfolio_id} PARTIAL TP] {ticker} | "
                             f"Sold {shares_to_sell}/{shares} shares @ {current_price:.2f} {ticker_curr} (+{gain_from_buy*100:.1f}%) | "
@@ -1690,6 +1718,23 @@ class MasterLiveTradingDaemon:
                 portfolio.append_trade(trade_record)
                 closed_count += 1
 
+                if portfolio.config.sub_strategies or portfolio.config.portfolio_id == "P13_Live_Candidate":
+                    limit_buf = getattr(portfolio.config, "limit_buffer_pct", 0.002) or 0.002
+                    sell_limit_px = round(current_price * (1.0 - limit_buf), 4)
+                    est_fx_fee_eur = round(gross_sale_value * fx_to_acc * 0.0025, 2) if str(ticker_curr).upper() != "EUR" else 0.0
+                    broker_fee_eur = round(transaction_fee * fx_to_acc, 2)
+                    portfolio.pending_execution_audits.append({
+                        "Date": today.strftime("%Y-%m-%d"),
+                        "Ticker": ticker,
+                        "Sub_Strategy": pos.get("Sub_Strategy") or pos.get("sub_strategy") or "HODL",
+                        "Action": "SELL",
+                        "Paper_Price": round(current_price, 4),
+                        "Limit_Price": sell_limit_px,
+                        "FX_Fee_EUR": est_fx_fee_eur,
+                        "Broker_Fee_EUR": broker_fee_eur,
+                        "Execution_Verified": False,
+                    })
+
                 logger.info(
                     f"🚨 [{portfolio.config.portfolio_id} SELL] {ticker} | Exit: {reason} | "
                     f"Shares: {shares} @ {current_price:.2f} {ticker_curr} | PnL: {net_pnl:+.2f} {ticker_curr}"
@@ -1777,6 +1822,211 @@ class MasterLiveTradingDaemon:
 
         return max(0, allowed)
 
+    def _collect_sub_strategy_candidates(
+        self,
+        portfolio: PortfolioInstance,
+        sub_name: str,
+        sub_cfg: Dict[str, Any],
+        held_tickers: Set[str],
+        cooldown_tickers: Dict[str, Any],
+        today: date,
+        target_alloc_ref: float,
+        eff_allocation_acc: float,
+    ) -> List[Dict[str, Any]]:
+        """
+        Collects, validates, and scores all passing universe candidates for a sub-strategy.
+        Returns candidates sorted descending by (candidate_score, adv_eur).
+        """
+        u_filter = str(sub_cfg.get("universe_filter", ""))
+        valid_candidates: List[Dict[str, Any]] = []
+        sizing_alloc_acc = eff_allocation_acc if eff_allocation_acc >= (MIN_BROKER_FEE + 10.0) else target_alloc_ref
+
+        for ticker, meta in self.market_engine.universe_metadata.items():
+            if ticker in held_tickers:
+                continue
+
+            # Anti-whipsaw cooldown
+            if ticker in cooldown_tickers:
+                days_since_exit = (today - cooldown_tickers[ticker]).days
+                if days_since_exit < REENTRY_COOLDOWN_DAYS:
+                    continue
+
+            # Region pre-filter to bypass irrelevant stocks instantly
+            m_reg = str(meta.get("market", "")).strip().upper()
+            if "nordic" in u_filter.lower() and m_reg not in ("FI", "SE", "DK", "NO"):
+                continue
+            if "us_" in u_filter.lower() and m_reg != "US":
+                continue
+
+            # Market cap tier pre-filter to avoid expensive network calls for out-of-tier tickers
+            if u_filter == "Nordic_MidCap_Compounder":
+                mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
+                if mcap_eur > 0 and not (150_000_000.0 <= mcap_eur <= 2_000_000_000.0):
+                    continue
+            elif u_filter == "US_MicroCap_Growth":
+                mcap_usd = get_market_cap_in_usd(meta, fx_rates=self.market_engine.fx_rates)
+                if mcap_usd > 0 and not (30_000_000.0 <= mcap_usd <= 350_000_000.0):
+                    continue
+            elif u_filter == "Nordic_MicroCap_Catalyst":
+                mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
+                if mcap_eur > 0 and not (15_000_000.0 <= mcap_eur < 150_000_000.0):
+                    continue
+
+            # NLP Safety Guard
+            news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
+            if news_verdict == "REJECT":
+                continue
+
+            if hasattr(self.market_engine, "get_ticker_hard_facts"):
+                hard_facts = self.market_engine.get_ticker_hard_facts(ticker)
+            else:
+                hard_facts = getattr(self.market_engine, "hard_facts_cache", {}).get(ticker, {})
+
+            # Tiered Filter Validation
+            passed, reasons = matches_universe_filter(
+                ticker=ticker,
+                filter_name=u_filter,
+                hard_facts=hard_facts,
+                meta=meta,
+                nlp_verdict=news_verdict,
+                fx_rates=self.market_engine.fx_rates,
+            )
+
+            if not passed:
+                continue
+
+            # Fetch fresh live market price for the validated candidate
+            cand_price = None
+            if hasattr(self.market_engine, "_fetch_live_price"):
+                try:
+                    live_px = self.market_engine._fetch_live_price(ticker)
+                    if isinstance(live_px, (int, float)) and not isinstance(live_px, bool) and live_px > 0:
+                        cand_price = float(live_px)
+                except Exception:
+                    cand_price = None
+            if cand_price is None:
+                cached_px = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
+                if isinstance(cached_px, (int, float)) and not isinstance(cached_px, bool) and cached_px > 0:
+                    cand_price = float(cached_px)
+            if not cand_price or cand_price <= 0:
+                continue
+            self.market_engine.prices_cache[ticker] = cand_price
+
+            # Exit criteria pre-validation (only check Layer 1/2 safety, as matches_universe_filter already validated sub-strategy fundamentals)
+            exit_act, _ = evaluate_position(
+                position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
+                current_price=cand_price,
+                latest_news_judgment=news_verdict,
+                latest_financials=None,
+                dead_money_days=None,
+            )
+            if exit_act == "SELL":
+                continue
+
+            # Position sizing & liquidity checks
+            ticker_curr = meta.get("currency", get_ticker_currency(ticker))
+            fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
+            fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+            full_slot_local = target_alloc_ref * fx_acc_to_local
+            target_allocation_local = sizing_alloc_acc * fx_acc_to_local
+            min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+
+            # Max ADV allocation constraint
+            adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
+            max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
+
+            # Bug 6 fix: Reject dwarf positions if ADV cap does not cover at least 75% of full target slot
+            if max_adv_allowed <= 0 or max_adv_allowed < (full_slot_local * 0.75):
+                continue
+
+            if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
+                continue
+
+            investable_cash_local = min(target_allocation_local, max_adv_allowed) - min_fee_local
+            shares_to_buy = math.floor(investable_cash_local / cand_price)
+            if shares_to_buy <= 0:
+                continue
+
+            # Extract normalized hard facts for Point-in-Time audit metadata & scoring
+            roe_raw = hard_facts.get("roe") if hard_facts.get("roe") is not None else hard_facts.get("return_on_equity")
+            roe_pct = (float(roe_raw) * 100.0 if abs(float(roe_raw)) <= 2.0 else float(roe_raw)) if roe_raw is not None else None
+
+            ebit_raw = hard_facts.get("ebit_margin") if hard_facts.get("ebit_margin") is not None else hard_facts.get("operating_margin")
+            ebit_margin_pct = (float(ebit_raw) * 100.0 if abs(float(ebit_raw)) <= 2.0 else float(ebit_raw)) if ebit_raw is not None else None
+
+            net_debt = hard_facts.get("net_debt")
+            net_cash = hard_facts.get("net_cash")
+            if net_debt is None and net_cash is not None:
+                net_debt = -net_cash
+            nd_ebitda = hard_facts.get("net_debt_to_ebitda")
+            if nd_ebitda is None and net_debt is not None:
+                ebitda = hard_facts.get("ebitda") or 0.0
+                nd_ebitda = (net_debt / ebitda) if ebitda > 0 else (0.0 if net_debt <= 0 else 3.0)
+            nd_val = float(nd_ebitda) if nd_ebitda is not None else None
+
+            rev_yoy_raw = hard_facts.get("revenue_growth_yoy_pct") if hard_facts.get("revenue_growth_yoy_pct") is not None else hard_facts.get("revenue_yoy")
+            rev_yoy_val = float(rev_yoy_raw) if rev_yoy_raw is not None else None
+
+            cash_runway_raw = hard_facts.get("cash_runway_months")
+            cash_runway_val = round(float(cash_runway_raw), 2) if isinstance(cash_runway_raw, (int, float)) and not isinstance(cash_runway_raw, bool) else cash_runway_raw
+
+            # Step 1.3: Calculate candidate_score
+            if "midcap" in u_filter.lower():
+                # Core (Nordic_MidCap_Compounder): (roe_pct * 1.5) + (ebit_margin_pct * 1.5) - (net_debt_to_ebitda * 5.0)
+                cand_score = ((roe_pct or 0.0) * 1.5) + ((ebit_margin_pct or 0.0) * 1.5) - ((nd_val or 0.0) * 5.0)
+            elif "us_" in u_filter.lower():
+                # Satellite 1 (US_MicroCap_Growth): rev_yoy + (30.0 if is_profile_a) + (25.0 if nlp_verdict == "STRONG BUY")
+                is_prof_a = bool(hard_facts.get("is_profile_a", False))
+                cand_score = float(rev_yoy_val or 0.0) + (30.0 if is_prof_a else 0.0) + (25.0 if news_verdict == "STRONG BUY" else 0.0)
+            else:
+                # Satellite 2 (Nordic_MicroCap_Catalyst): (35.0 if is_profile_a) + (25.0 if is_profile_b) + (30.0 if nlp in STRONG BUY/WATCH_TURNAROUND) + rev_yoy * 0.5
+                is_prof_a = bool(hard_facts.get("is_profile_a", False))
+                is_prof_b = bool(hard_facts.get("is_profile_b", False))
+                nlp_cat = (news_verdict in ["STRONG BUY", "WATCH_TURNAROUND"])
+                cand_score = (35.0 if is_prof_a else 0.0) + (25.0 if is_prof_b else 0.0) + (30.0 if nlp_cat else 0.0) + (float(rev_yoy_val or 0.0) * 0.5)
+
+            rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+            fx_to_eur = 1.0
+            if ticker_curr == "SEK":
+                fx_to_eur = 1.0 / rates.get("EURSEK", 11.30)
+            elif ticker_curr == "NOK":
+                fx_to_eur = 1.0 / rates.get("EURNOK", 11.50)
+            elif ticker_curr == "DKK":
+                fx_to_eur = 1.0 / rates.get("EURDKK", 7.46)
+            elif ticker_curr == "USD":
+                fx_to_eur = 1.0 / rates.get("EURUSD", 1.08)
+            adv_eur = adv_local * fx_to_eur
+
+            entry_hard_facts = {
+                "roe": round(roe_pct, 2) if roe_pct is not None else None,
+                "ebit_margin": round(ebit_margin_pct, 2) if ebit_margin_pct is not None else None,
+                "net_debt_to_ebitda": round(nd_val, 2) if nd_val is not None else None,
+                "rev_yoy": round(rev_yoy_val, 2) if rev_yoy_val is not None else None,
+                "cash_runway": cash_runway_val,
+                "adv_eur": round(adv_eur, 2),
+                "nlp_verdict": news_verdict,
+            }
+
+            valid_candidates.append({
+                "ticker": ticker,
+                "score": cand_score,
+                "candidate_score": cand_score,
+                "adv_eur": adv_eur,
+                "meta": meta,
+                "hard_facts": hard_facts,
+                "entry_hard_facts": entry_hard_facts,
+                "cand_price": cand_price,
+                "ticker_curr": ticker_curr,
+                "fx_to_acc": fx_to_acc,
+                "fx_acc_to_local": fx_acc_to_local,
+                "adv_local": adv_local,
+                "max_adv_allowed": max_adv_allowed,
+            })
+
+        valid_candidates.sort(key=lambda x: (x["score"], x["adv_eur"]), reverse=True)
+        return valid_candidates
+
     def execute_phase2_sub_strategies_screening(
         self,
         portfolio: PortfolioInstance,
@@ -1801,10 +2051,9 @@ class MasterLiveTradingDaemon:
 
         if max_buys_allowed is None:
             max_buys_allowed = self._get_allowed_new_buys_this_cycle(portfolio, today)
-        if max_buys_allowed <= 0:
-            return 0
 
         new_buys = 0
+        portfolio.last_candidates_ranking = {}
 
         # Map each existing active (non-HODL) position to its sub-strategy
         positions_by_sub: Dict[str, List[Dict[str, Any]]] = {k: [] for k in cfg.sub_strategies.keys()}
@@ -1840,328 +2089,217 @@ class MasterLiveTradingDaemon:
 
         # Iterate through each sub_strategy in order
         for sub_name, sub_cfg in cfg.sub_strategies.items():
-            if len(portfolio.active_positions()) >= cfg.slots:
-                break
-            if new_buys >= max_buys_allowed:
-                logger.info(
-                    f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard: reached cycle buy limit ({new_buys}/{max_buys_allowed} new position(s)). "
-                    f"Deferring remaining open slots to subsequent cycles."
-                )
-                break
-
             sub_slots = int(sub_cfg.get("slots", 1))
             current_held = len(positions_by_sub.get(sub_name, []))
             needed = sub_slots - current_held
-
-            if needed <= 0:
-                logger.info(f"[{cfg.portfolio_id}] Sub-strategy `{sub_name}` slots full ({current_held}/{sub_slots}). Skipping.")
-                continue
-
             u_filter = str(sub_cfg.get("universe_filter", ""))
             slot_sizes = sub_cfg.get("slot_sizes") or [sub_cfg.get("slot_size") or (float(sub_cfg.get("allocated_capital", 1500)) / sub_slots)]
-
-            # Reference target allocation for sizing and ADV constraint evaluation
             target_alloc_ref = float(slot_sizes[current_held] if current_held < len(slot_sizes) else slot_sizes[-1])
-            if available_cash < (target_alloc_ref * 0.75):
+            eff_allocation_acc = min(target_alloc_ref, max(0.0, available_cash))
+
+            # Collect and score candidates for audit & ranking even if slots/cash/staggered guard block buying
+            valid_candidates = self._collect_sub_strategy_candidates(
+                portfolio=portfolio,
+                sub_name=sub_name,
+                sub_cfg=sub_cfg,
+                held_tickers=held_tickers,
+                cooldown_tickers=cooldown_tickers,
+                today=today,
+                target_alloc_ref=target_alloc_ref,
+                eff_allocation_acc=eff_allocation_acc,
+            )
+            top_5_snapshot = list(valid_candidates[:5])
+            selected_in_sub: List[str] = []
+            sub_block_reason: Optional[str] = portfolio.last_screening_block_reason
+
+            if sub_block_reason:
+                pass
+            elif len(portfolio.active_positions()) >= cfg.slots:
+                sub_block_reason = "PORTFOLIO_SLOTS_FULL"
+            elif needed <= 0:
+                logger.info(f"[{cfg.portfolio_id}] Sub-strategy `{sub_name}` slots full ({current_held}/{sub_slots}). Skipping.")
+                sub_block_reason = "SUB_STRATEGY_SLOTS_FULL"
+            elif max_buys_allowed <= 0 or new_buys >= max_buys_allowed:
+                logger.info(
+                    f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard: reached cycle buy limit ({new_buys}/{max_buys_allowed} new position(s)). "
+                    f"Deferring remaining open slots in `{sub_name}` to subsequent cycles."
+                )
+                sub_block_reason = "STAGGERED_ENTRY_GUARD"
+            elif available_cash < (target_alloc_ref * 0.75):
                 logger.info(
                     f"[{cfg.portfolio_id}] Available cash ({available_cash:.2f}€) < 75% of target slot ({target_alloc_ref:.2f}€) "
                     f"for `{sub_name}`. Skipping sub-strategy to prevent dwarf position."
                 )
-                continue
+                sub_block_reason = "INSUFFICIENT_CASH"
+            else:
+                logger.info(f"[{cfg.portfolio_id}] Screening for `{sub_name}` ({needed} slots open, filter: `{u_filter}`)...")
 
-            logger.info(f"[{cfg.portfolio_id}] Screening for `{sub_name}` ({needed} slots open, filter: `{u_filter}`)...")
+                # Step 1.5: Fill available slots using top-ranked candidates
+                for slot_idx in range(current_held, sub_slots):
+                    if len(portfolio.active_positions()) >= cfg.slots:
+                        if not selected_in_sub:
+                            sub_block_reason = "PORTFOLIO_SLOTS_FULL"
+                        break
+                    if new_buys >= max_buys_allowed:
+                        logger.info(
+                            f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard: reached cycle buy limit ({new_buys}/{max_buys_allowed} new position(s)). "
+                            f"Deferring remaining open slots in `{sub_name}` to subsequent cycles."
+                        )
+                        if not selected_in_sub:
+                            sub_block_reason = "STAGGERED_ENTRY_GUARD"
+                        break
+                    if available_cash < (MIN_BROKER_FEE + 10.0):
+                        logger.info(f"[{cfg.portfolio_id}] Available cash exhausted ({available_cash:.2f}€). Halting buys.")
+                        if not selected_in_sub:
+                            sub_block_reason = "INSUFFICIENT_CASH"
+                        break
+                    if not valid_candidates:
+                        logger.info(f"[{cfg.portfolio_id}] No eligible candidates found for slot {slot_idx+1} in `{sub_name}`.")
+                        if not selected_in_sub:
+                            sub_block_reason = "NO_ELIGIBLE_CANDIDATES"
+                        break
 
-            eff_allocation_acc = min(target_alloc_ref, available_cash)
+                    target_alloc_acc = float(slot_sizes[slot_idx] if slot_idx < len(slot_sizes) else slot_sizes[-1])
+                    if available_cash < (target_alloc_acc * 0.75):
+                        logger.info(
+                            f"[{cfg.portfolio_id}] Remaining cash ({available_cash:.2f}€) < 75% of target slot {slot_idx+1} ({target_alloc_acc:.2f}€) "
+                            f"in `{sub_name}`. Halting slot fills for `{sub_name}` to prevent dwarf position."
+                        )
+                        if not selected_in_sub:
+                            sub_block_reason = "INSUFFICIENT_CASH"
+                        break
 
-            # Step 1: Collect, validate, and score all eligible candidates for this sub-strategy
-            valid_candidates = []
+                    eff_allocation_acc = min(target_alloc_acc, available_cash)
 
-            for ticker, meta in self.market_engine.universe_metadata.items():
-                if ticker in held_tickers:
-                    continue
+                    cand = valid_candidates.pop(0)
+                    ticker = cand["ticker"]
+                    cand_price = cand["cand_price"]
+                    ticker_curr = cand["ticker_curr"]
+                    fx_to_acc = cand["fx_to_acc"]
+                    fx_acc_to_local = cand["fx_acc_to_local"]
+                    max_adv_allowed = cand["max_adv_allowed"]
 
-                # Anti-whipsaw cooldown
-                if ticker in cooldown_tickers:
-                    days_since_exit = (today - cooldown_tickers[ticker]).days
-                    if days_since_exit < REENTRY_COOLDOWN_DAYS:
+                    full_slot_local = target_alloc_acc * fx_acc_to_local
+                    target_allocation_local = eff_allocation_acc * fx_acc_to_local
+                    min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
+
+                    if max_adv_allowed <= 0 or max_adv_allowed < (full_slot_local * 0.75):
                         continue
 
-                # Region pre-filter to bypass irrelevant stocks instantly
-                m_reg = str(meta.get("market", "")).strip().upper()
-                if "nordic" in u_filter.lower() and m_reg not in ("FI", "SE", "DK", "NO"):
-                    continue
-                if "us_" in u_filter.lower() and m_reg != "US":
-                    continue
+                    if target_allocation_local > max_adv_allowed:
+                        target_allocation_local = max_adv_allowed
 
-                # Market cap tier pre-filter to avoid expensive network calls for out-of-tier tickers
-                if u_filter == "Nordic_MidCap_Compounder":
-                    mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
-                    if mcap_eur > 0 and not (150_000_000.0 <= mcap_eur <= 2_000_000_000.0):
-                        continue
-                elif u_filter == "US_MicroCap_Growth":
-                    mcap_usd = get_market_cap_in_usd(meta, fx_rates=self.market_engine.fx_rates)
-                    if mcap_usd > 0 and not (30_000_000.0 <= mcap_usd <= 350_000_000.0):
-                        continue
-                elif u_filter == "Nordic_MicroCap_Catalyst":
-                    mcap_eur = get_market_cap_in_eur(meta, fx_rates=self.market_engine.fx_rates)
-                    if mcap_eur > 0 and not (15_000_000.0 <= mcap_eur < 150_000_000.0):
+                    if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
                         continue
 
-                # NLP Safety Guard
-                news_verdict, news_reason = self.market_engine.get_ticker_nlp_status(ticker)
-                if news_verdict == "REJECT":
-                    continue
+                    investable_cash_local = target_allocation_local - min_fee_local
+                    if investable_cash_local <= 0:
+                        continue
 
-                if hasattr(self.market_engine, "get_ticker_hard_facts"):
-                    hard_facts = self.market_engine.get_ticker_hard_facts(ticker)
+                    shares_to_buy = math.floor(investable_cash_local / cand_price)
+                    if shares_to_buy <= 0:
+                        continue
+
+                    actual_gross_buy = shares_to_buy * cand_price
+                    actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
+                    total_cost_local = actual_gross_buy + actual_fee
+                    total_cost_acc = total_cost_local * fx_to_acc
+
+                    if total_cost_acc > available_cash:
+                        continue
+
+                    # Limit price calculation (Prev Close + 0.2%)
+                    limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
+                    target_limit = round(cand_price * (1.0 + limit_buf), 4)
+                    est_fx_fee_eur = round(actual_gross_buy * fx_to_acc * 0.0025, 2) if str(ticker_curr).upper() != "EUR" else 0.0
+                    broker_fee_eur = round(actual_fee * fx_to_acc, 2)
+
+                    portfolio.cash_balance -= total_cost_acc
+                    available_cash -= total_cost_acc
+
+                    new_pos = {
+                        "Ticker": ticker,
+                        "Buy Date": today.strftime("%Y-%m-%d"),
+                        "Buy Price": cand_price,
+                        "Shares": shares_to_buy,
+                        "Capital Invested": round(total_cost_local, 2),
+                        "Strategy": "Hybrid Core-Satellite",
+                        "Sub_Strategy": sub_name,
+                        "Universe_Filter": u_filter,
+                        "Currency": ticker_curr,
+                        "Peak Price": cand_price,
+                        "Order Type": "LIMIT",
+                        "Limit Price": target_limit,
+                        "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
+                        "Candidate_Score": round(cand["candidate_score"], 2),
+                        "Entry_Hard_Facts": cand["entry_hard_facts"],
+                        "Entry_FX_Rate": round(fx_to_acc, 6),
+                        "Estimated_FX_Fee_EUR": est_fx_fee_eur,
+                        "Broker_Fee_EUR": broker_fee_eur,
+                        "Execution_Verified": False,
+                    }
+                    portfolio.positions.append(new_pos)
+                    positions_by_sub[sub_name].append(new_pos)
+                    held_tickers.add(ticker)
+                    selected_in_sub.append(ticker)
+                    new_buys += 1
+
+                    logger.info(
+                        f"🎯 [{cfg.portfolio_id} BUY] [{sub_name}] {ticker} (Filter: {u_filter}, Score: {cand['candidate_score']:.1f}) | "
+                        f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
+                        f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
+                        f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
+                    )
+
+                    if run_trades is not None:
+                        run_trades.append({
+                            "portfolio_id": cfg.portfolio_id,
+                            "action": "BUY",
+                            "ticker": ticker,
+                            "details": {
+                                "strategy": "Hybrid Core-Satellite",
+                                "sub_strategy": sub_name,
+                                "universe_filter": u_filter,
+                                "candidate_score": round(cand["candidate_score"], 2),
+                                "shares": shares_to_buy,
+                                "buy_price": f"{cand_price:.2f} {ticker_curr}",
+                                "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
+                                "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                            },
+                        })
+
+            # Record Top 5 candidates ranking for this sub-strategy
+            top5_records = []
+            for rank_idx, c_item in enumerate(top_5_snapshot, start=1):
+                c_ticker = c_item["ticker"]
+                is_sel = c_ticker in selected_in_sub
+                if is_sel:
+                    sel_status = "SELECTED_BUY"
+                elif sub_block_reason:
+                    sel_status = sub_block_reason
+                elif selected_in_sub:
+                    sel_status = "RUNNER_UP_SLOT_FILLED_OR_STAGGERED_LIMIT"
                 else:
-                    hard_facts = getattr(self.market_engine, "hard_facts_cache", {}).get(ticker, {})
-
-                # Tiered Filter Validation
-                passed, reasons = matches_universe_filter(
-                    ticker=ticker,
-                    filter_name=u_filter,
-                    hard_facts=hard_facts,
-                    meta=meta,
-                    nlp_verdict=news_verdict,
-                    fx_rates=self.market_engine.fx_rates,
-                )
-
-                if not passed:
-                    continue
-
-                # Fetch fresh live market price for the validated candidate
-                cand_price = None
-                if hasattr(self.market_engine, "_fetch_live_price"):
-                    try:
-                        live_px = self.market_engine._fetch_live_price(ticker)
-                        if isinstance(live_px, (int, float)) and not isinstance(live_px, bool) and live_px > 0:
-                            cand_price = float(live_px)
-                    except Exception:
-                        cand_price = None
-                if cand_price is None:
-                    cached_px = self.market_engine.prices_cache.get(ticker, meta.get("current_price", 0.0))
-                    if isinstance(cached_px, (int, float)) and not isinstance(cached_px, bool) and cached_px > 0:
-                        cand_price = float(cached_px)
-                if not cand_price or cand_price <= 0:
-                    continue
-                self.market_engine.prices_cache[ticker] = cand_price
-
-                # Exit criteria pre-validation (only check Layer 1/2 safety, as matches_universe_filter already validated sub-strategy fundamentals)
-                exit_act, _ = evaluate_position(
-                    position={"buy_price": cand_price, "ticker": ticker, "buy_date": today.strftime("%Y-%m-%d")},
-                    current_price=cand_price,
-                    latest_news_judgment=news_verdict,
-                    latest_financials=None,
-                    dead_money_days=None,
-                )
-                if exit_act == "SELL":
-                    continue
-
-                # Position sizing & liquidity checks
-                ticker_curr = meta.get("currency", get_ticker_currency(ticker))
-                fx_to_acc = get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates)
-                fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
-
-                full_slot_local = target_alloc_ref * fx_acc_to_local
-                target_allocation_local = eff_allocation_acc * fx_acc_to_local
-                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
-
-                # Max ADV allocation constraint
-                adv_local = float(meta.get("adv_20d_local", 0.0) or 0.0)
-                max_adv_allowed = adv_local * MAX_ADV_ALLOCATION_PCT if adv_local > 0 else 0.0
-
-                # Bug 6 fix: Reject dwarf positions if ADV cap does not cover at least 75% of full target slot
-                if max_adv_allowed <= 0 or max_adv_allowed < (full_slot_local * 0.75):
-                    continue
-
-                if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
-                    continue
-
-                investable_cash_local = min(target_allocation_local, max_adv_allowed) - min_fee_local
-                shares_to_buy = math.floor(investable_cash_local / cand_price)
-                if shares_to_buy <= 0:
-                    continue
-
-                # Step 1.3: Calculate candidate_score
-                if "midcap" in u_filter.lower():
-                    # Core (Nordic_MidCap_Compounder): (roe_pct * 1.5) + (ebit_margin_pct * 1.5) - (net_debt_to_ebitda * 5.0)
-                    roe = hard_facts.get("roe") or hard_facts.get("return_on_equity") or 0.0
-                    roe_pct = roe * 100.0 if abs(roe) <= 2.0 else float(roe)
-
-                    ebit_margin = hard_facts.get("ebit_margin") or hard_facts.get("operating_margin") or 0.0
-                    ebit_margin_pct = ebit_margin * 100.0 if abs(ebit_margin) <= 2.0 else float(ebit_margin)
-
-                    net_debt = hard_facts.get("net_debt")
-                    net_cash = hard_facts.get("net_cash")
-                    if net_debt is None and net_cash is not None:
-                        net_debt = -net_cash
-                    nd_ebitda = hard_facts.get("net_debt_to_ebitda")
-                    if nd_ebitda is None and net_debt is not None:
-                        ebitda = hard_facts.get("ebitda") or 0.0
-                        nd_ebitda = (net_debt / ebitda) if ebitda > 0 else (0.0 if net_debt <= 0 else 3.0)
-                    nd_val = float(nd_ebitda) if nd_ebitda is not None else 0.0
-
-                    cand_score = (roe_pct * 1.5) + (ebit_margin_pct * 1.5) - (nd_val * 5.0)
-
-                elif "us_" in u_filter.lower():
-                    # Satellite 1 (US_MicroCap_Growth): rev_yoy + (30.0 if is_profile_a) + (25.0 if nlp_verdict == "STRONG BUY")
-                    rev_yoy = float(hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy") or 0.0)
-                    is_prof_a = bool(hard_facts.get("is_profile_a", False))
-                    cand_score = float(rev_yoy or 0.0) + (30.0 if is_prof_a else 0.0) + (25.0 if news_verdict == "STRONG BUY" else 0.0)
-
-                else:
-                    # Satellite 2 (Nordic_MicroCap_Catalyst): (35.0 if is_profile_a) + (25.0 if is_profile_b) + (30.0 if nlp in STRONG BUY/WATCH_TURNAROUND) + rev_yoy * 0.5
-                    rev_yoy = float(hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy") or 0.0)
-                    is_prof_a = bool(hard_facts.get("is_profile_a", False))
-                    is_prof_b = bool(hard_facts.get("is_profile_b", False))
-                    nlp_cat = (news_verdict in ["STRONG BUY", "WATCH_TURNAROUND"])
-                    cand_score = (35.0 if is_prof_a else 0.0) + (25.0 if is_prof_b else 0.0) + (30.0 if nlp_cat else 0.0) + (float(rev_yoy or 0.0) * 0.5)
-
-                rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
-                fx_to_eur = 1.0
-                if ticker_curr == "SEK":
-                    fx_to_eur = 1.0 / rates.get("EURSEK", 11.30)
-                elif ticker_curr == "NOK":
-                    fx_to_eur = 1.0 / rates.get("EURNOK", 11.50)
-                elif ticker_curr == "DKK":
-                    fx_to_eur = 1.0 / rates.get("EURDKK", 7.46)
-                elif ticker_curr == "USD":
-                    fx_to_eur = 1.0 / rates.get("EURUSD", 1.08)
-                adv_eur = adv_local * fx_to_eur
-
-                valid_candidates.append({
-                    "ticker": ticker,
-                    "score": cand_score,
-                    "candidate_score": cand_score,
-                    "adv_eur": adv_eur,
-                    "meta": meta,
-                    "hard_facts": hard_facts,
-                    "cand_price": cand_price,
-                    "ticker_curr": ticker_curr,
-                    "fx_to_acc": fx_to_acc,
-                    "fx_acc_to_local": fx_acc_to_local,
-                    "adv_local": adv_local,
-                    "max_adv_allowed": max_adv_allowed,
+                    sel_status = "NOT_SELECTED"
+                top5_records.append({
+                    "rank": rank_idx,
+                    "ticker": c_ticker,
+                    "candidate_score": round(c_item["candidate_score"], 2),
+                    "price": round(c_item["cand_price"], 4),
+                    "currency": c_item["ticker_curr"],
+                    "hard_facts": c_item["entry_hard_facts"],
+                    "selected": is_sel,
+                    "selection_status": sel_status,
                 })
 
-            # Step 1.4: Sort valid_candidates descending by candidate_score (score) then adv_eur
-            valid_candidates.sort(key=lambda x: (x["score"], x["adv_eur"]), reverse=True)
-
-            # Step 1.5: Fill available slots using top-ranked candidates
-            for slot_idx in range(current_held, sub_slots):
-                if len(portfolio.active_positions()) >= cfg.slots:
-                    break
-                if new_buys >= max_buys_allowed:
-                    logger.info(
-                        f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard: reached cycle buy limit ({new_buys}/{max_buys_allowed} new position(s)). "
-                        f"Deferring remaining open slots in `{sub_name}` to subsequent cycles."
-                    )
-                    break
-                if available_cash < (MIN_BROKER_FEE + 10.0):
-                    logger.info(f"[{cfg.portfolio_id}] Available cash exhausted ({available_cash:.2f}€). Halting buys.")
-                    break
-                if not valid_candidates:
-                    logger.info(f"[{cfg.portfolio_id}] No eligible candidates found for slot {slot_idx+1} in `{sub_name}`.")
-                    break
-
-                target_alloc_acc = float(slot_sizes[slot_idx] if slot_idx < len(slot_sizes) else slot_sizes[-1])
-                if available_cash < (target_alloc_acc * 0.75):
-                    logger.info(
-                        f"[{cfg.portfolio_id}] Remaining cash ({available_cash:.2f}€) < 75% of target slot {slot_idx+1} ({target_alloc_acc:.2f}€) "
-                        f"in `{sub_name}`. Halting slot fills for `{sub_name}` to prevent dwarf position."
-                    )
-                    break
-
-                eff_allocation_acc = min(target_alloc_acc, available_cash)
-
-                cand = valid_candidates.pop(0)
-                ticker = cand["ticker"]
-                cand_price = cand["cand_price"]
-                ticker_curr = cand["ticker_curr"]
-                fx_to_acc = cand["fx_to_acc"]
-                fx_acc_to_local = cand["fx_acc_to_local"]
-                max_adv_allowed = cand["max_adv_allowed"]
-
-                full_slot_local = target_alloc_acc * fx_acc_to_local
-                target_allocation_local = eff_allocation_acc * fx_acc_to_local
-                min_fee_local = MIN_BROKER_FEE * fx_acc_to_local
-
-                if max_adv_allowed <= 0 or max_adv_allowed < (full_slot_local * 0.75):
-                    continue
-
-                if target_allocation_local > max_adv_allowed:
-                    target_allocation_local = max_adv_allowed
-
-                if target_allocation_local < (min_fee_local + (10.0 * fx_acc_to_local)):
-                    continue
-
-                investable_cash_local = target_allocation_local - min_fee_local
-                if investable_cash_local <= 0:
-                    continue
-
-                shares_to_buy = math.floor(investable_cash_local / cand_price)
-                if shares_to_buy <= 0:
-                    continue
-
-                actual_gross_buy = shares_to_buy * cand_price
-                actual_fee = calculate_transaction_fee(actual_gross_buy, min_fee=min_fee_local)
-                total_cost_local = actual_gross_buy + actual_fee
-                total_cost_acc = total_cost_local * fx_to_acc
-
-                if total_cost_acc > available_cash:
-                    continue
-
-                # Limit price calculation (Prev Close + 0.2%)
-                limit_buf = getattr(cfg, "limit_buffer_pct", 0.002) or 0.002
-                target_limit = round(cand_price * (1.0 + limit_buf), 4)
-
-                portfolio.cash_balance -= total_cost_acc
-                available_cash -= total_cost_acc
-
-                new_pos = {
-                    "Ticker": ticker,
-                    "Buy Date": today.strftime("%Y-%m-%d"),
-                    "Buy Price": cand_price,
-                    "Shares": shares_to_buy,
-                    "Capital Invested": round(total_cost_local, 2),
-                    "Strategy": "Hybrid Core-Satellite",
-                    "Sub_Strategy": sub_name,
-                    "Universe_Filter": u_filter,
-                    "Currency": ticker_curr,
-                    "Peak Price": cand_price,
-                    "Order Type": "LIMIT",
-                    "Limit Price": target_limit,
-                    "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
-                }
-                portfolio.positions.append(new_pos)
-                positions_by_sub[sub_name].append(new_pos)
-                held_tickers.add(ticker)
-                new_buys += 1
-
-                logger.info(
-                    f"🎯 [{cfg.portfolio_id} BUY] [{sub_name}] {ticker} (Filter: {u_filter}, Score: {cand['candidate_score']:.1f}) | "
-                    f"Bought {shares_to_buy} shares @ {cand_price:.2f} {ticker_curr} | "
-                    f"Cost: {total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency}) | "
-                    f"Remaining Cash: {portfolio.cash_balance:,.2f} {portfolio.currency}"
-                )
-
-                if run_trades is not None:
-                    run_trades.append({
-                        "portfolio_id": cfg.portfolio_id,
-                        "action": "BUY",
-                        "ticker": ticker,
-                        "details": {
-                            "strategy": "Hybrid Core-Satellite",
-                            "sub_strategy": sub_name,
-                            "universe_filter": u_filter,
-                            "candidate_score": round(cand["candidate_score"], 2),
-                            "shares": shares_to_buy,
-                            "buy_price": f"{cand_price:.2f} {ticker_curr}",
-                            "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
-                            "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
-                        },
-                    })
+            portfolio.last_candidates_ranking[sub_name] = {
+                "universe_filter": u_filter,
+                "slots_held": len(positions_by_sub.get(sub_name, [])),
+                "slots_total": sub_slots,
+                "selected_tickers": selected_in_sub,
+                "status": "SELECTED_BUY" if selected_in_sub else (sub_block_reason or ("NO_ELIGIBLE_CANDIDATES" if not top5_records else "SKIPPED")),
+                "top_5_candidates": top5_records,
+            }
 
         if new_buys > 0:
             portfolio.save_state()
@@ -2174,16 +2312,8 @@ class MasterLiveTradingDaemon:
         Returns count of new positions opened.
         """
         cfg = portfolio.config
-        open_count = len(portfolio.active_positions())
-        if open_count >= cfg.slots:
-            if open_count > cfg.slots:
-                logger.info(
-                    f"[{cfg.portfolio_id}] ⏳ Transition limit active: open positions ({open_count}) exceed new target slots ({cfg.slots}). "
-                    f"Gracefully retaining existing {open_count} positions with active SELL stops; no new BUY orders permitted until count naturally drops below {cfg.slots}."
-                )
-            else:
-                logger.info(f"[{cfg.portfolio_id}] Max slots full ({open_count}/{cfg.slots}). Skipping new buys.")
-            return 0
+        portfolio.last_screening_block_reason = None
+        portfolio.last_candidates_ranking = {}
 
         # Market Regime Cash Buffer (Task 3: Enforce max 60% investment / min 40% cash in CHOPPY/BEAR market)
         regime_data = getattr(self.market_engine, "market_regime", {}) or {}
@@ -2197,19 +2327,6 @@ class MasterLiveTradingDaemon:
         if is_choppy_or_bear:
             buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
             min_required_cash = cfg.start_cash * buffer_pct  # e.g. 4,000 EUR for 10,000 EUR start cash
-            if portfolio.cash_balance < min_required_cash:
-                logger.info(
-                    f"[{cfg.portfolio_id}] 🛡️ Market Regime Filter ACTIVE (Regime: {regime_str or 'CHOPPY'}, IWC < SMA50={is_below_sma50}). "
-                    f"Current cash ({portfolio.cash_balance:,.2f} EUR) < required cash reserve ({min_required_cash:,.2f} EUR / {buffer_pct*100:.0f}%). "
-                    f"Halting new BUY orders to enforce max {100-buffer_pct*100:.0f}% investment limit."
-                )
-                return 0
-
-        target_allocation_acc = cfg.slot_size if (cfg.slot_size and cfg.slot_size > 0) else (cfg.start_cash / cfg.slots)
-        available_cash = portfolio.cash_balance - min_required_cash
-        if available_cash < (MIN_BROKER_FEE + 10.0):
-            logger.info(f"[{cfg.portfolio_id}] Available investable cash above regime buffer depleted ({available_cash:.2f}€). Skipping new buys.")
-            return 0
 
         held_tickers = {p["Ticker"] for p in portfolio.positions}
         today = datetime.now(timezone.utc).date()
@@ -2227,9 +2344,79 @@ class MasterLiveTradingDaemon:
                 except Exception:
                     pass
 
+        open_count = len(portfolio.active_positions())
+        if open_count >= cfg.slots:
+            if open_count > cfg.slots:
+                logger.info(
+                    f"[{cfg.portfolio_id}] ⏳ Transition limit active: open positions ({open_count}) exceed new target slots ({cfg.slots}). "
+                    f"Gracefully retaining existing {open_count} positions with active SELL stops; no new BUY orders permitted until count naturally drops below {cfg.slots}."
+                )
+            else:
+                logger.info(f"[{cfg.portfolio_id}] Max slots full ({open_count}/{cfg.slots}). Skipping new buys.")
+            portfolio.last_screening_block_reason = "PORTFOLIO_SLOTS_FULL"
+            if cfg.sub_strategies:
+                self.execute_phase2_sub_strategies_screening(
+                    portfolio=portfolio,
+                    run_trades=run_trades,
+                    available_cash=0.0,
+                    held_tickers=held_tickers,
+                    cooldown_tickers=cooldown_tickers,
+                    today=today,
+                    max_buys_allowed=0,
+                )
+            return 0
+
+        if is_choppy_or_bear and portfolio.cash_balance < min_required_cash:
+            buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
+            logger.info(
+                f"[{cfg.portfolio_id}] 🛡️ Market Regime Filter ACTIVE (Regime: {regime_str or 'CHOPPY'}, IWC < SMA50={is_below_sma50}). "
+                f"Current cash ({portfolio.cash_balance:,.2f} EUR) < required cash reserve ({min_required_cash:,.2f} EUR / {buffer_pct*100:.0f}%). "
+                f"Halting new BUY orders to enforce max {100-buffer_pct*100:.0f}% investment limit."
+            )
+            portfolio.last_screening_block_reason = "BLOCKED_BY_REGIME_CASH_BUFFER"
+            if cfg.sub_strategies:
+                self.execute_phase2_sub_strategies_screening(
+                    portfolio=portfolio,
+                    run_trades=run_trades,
+                    available_cash=0.0,
+                    held_tickers=held_tickers,
+                    cooldown_tickers=cooldown_tickers,
+                    today=today,
+                    max_buys_allowed=0,
+                )
+            return 0
+
+        target_allocation_acc = cfg.slot_size if (cfg.slot_size and cfg.slot_size > 0) else (cfg.start_cash / cfg.slots)
+        available_cash = portfolio.cash_balance - min_required_cash
+        if available_cash < (MIN_BROKER_FEE + 10.0):
+            logger.info(f"[{cfg.portfolio_id}] Available investable cash above regime buffer depleted ({available_cash:.2f}€). Skipping new buys.")
+            portfolio.last_screening_block_reason = "INSUFFICIENT_CASH"
+            if cfg.sub_strategies:
+                self.execute_phase2_sub_strategies_screening(
+                    portfolio=portfolio,
+                    run_trades=run_trades,
+                    available_cash=available_cash,
+                    held_tickers=held_tickers,
+                    cooldown_tickers=cooldown_tickers,
+                    today=today,
+                    max_buys_allowed=0,
+                )
+            return 0
+
         new_buys = 0
         max_buys_allowed = self._get_allowed_new_buys_this_cycle(portfolio, today)
         if max_buys_allowed <= 0:
+            portfolio.last_screening_block_reason = "STAGGERED_ENTRY_GUARD"
+            if cfg.sub_strategies:
+                self.execute_phase2_sub_strategies_screening(
+                    portfolio=portfolio,
+                    run_trades=run_trades,
+                    available_cash=available_cash,
+                    held_tickers=held_tickers,
+                    cooldown_tickers=cooldown_tickers,
+                    today=today,
+                    max_buys_allowed=0,
+                )
             return 0
 
         # Dedicated execution branch for composite portfolios with sub_strategies (e.g. P13_Live_Candidate)
@@ -2807,6 +2994,353 @@ class MasterLiveTradingDaemon:
             total_eur += shares * px * fx_to_eur
         return total_eur
 
+    def _fetch_next_day_ohlc(self, ticker: str, order_date_str: str) -> Optional[Dict[str, float]]:
+        """
+        Fetches the OHLC bar (Open, Low, High, Close) for the trading session immediately following `order_date_str`.
+        Checks `self.market_engine.next_day_ohlc_cache` first (for deterministic testing), then queries `yfinance`.
+        """
+        ohlc_cache = getattr(self.market_engine, "next_day_ohlc_cache", None)
+        if isinstance(ohlc_cache, dict):
+            cached = ohlc_cache.get(ticker) or ohlc_cache.get((ticker, order_date_str))
+            if isinstance(cached, dict) and all(k in cached for k in ("Open", "Low", "High", "Close")):
+                return {
+                    "Open": float(cached["Open"]),
+                    "Low": float(cached["Low"]),
+                    "High": float(cached["High"]),
+                    "Close": float(cached["Close"]),
+                }
+
+        try:
+            order_dt = datetime.strptime(str(order_date_str)[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+        try:
+            hist = yf.Ticker(ticker).history(period="15d", auto_adjust=False)
+            if hist is None or hist.empty:
+                return None
+            for idx, row in hist.iterrows():
+                try:
+                    bar_date = idx.date() if hasattr(idx, "date") else datetime.strptime(str(idx)[:10], "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if bar_date > order_dt:
+                    o_px = float(row.get("Open", 0.0) or 0.0)
+                    l_px = float(row.get("Low", 0.0) or 0.0)
+                    h_px = float(row.get("High", 0.0) or 0.0)
+                    c_px = float(row.get("Close", 0.0) or 0.0)
+                    if o_px > 0 and l_px > 0 and h_px > 0 and c_px > 0:
+                        return {
+                            "Open": o_px,
+                            "Low": l_px,
+                            "High": h_px,
+                            "Close": c_px,
+                        }
+        except Exception as e:
+            logger.debug(f"[{ticker}] Could not fetch next-day OHLC after {order_date_str}: {e}")
+        return None
+
+    def audit_p13_next_day_executions(self, portfolio: PortfolioInstance, today: Optional[date] = None) -> int:
+        """
+        Next-Day Limit Fill Audit (`data/portfolios/p13_execution_audit.csv`).
+        Evaluates unverified P13 BUY / SELL / PARTIAL_TP limit orders placed on a prior date (T)
+        against Day T+1 market Open, Low, High, and Close prices.
+        """
+        if today is None:
+            today = datetime.now(timezone.utc).date()
+        today_str = today.strftime("%Y-%m-%d")
+
+        csv_path = portfolio.execution_audit_csv_file
+        header = [
+            "Date", "Ticker", "Sub_Strategy", "Action", "Paper_Price", "Limit_Price",
+            "NextDay_Open", "NextDay_Low", "NextDay_High", "NextDay_Close",
+            "Would_Have_Filled", "Realistic_Fill_Price", "Slippage_vs_Paper_Pct",
+            "FX_Fee_EUR", "Broker_Fee_EUR",
+        ]
+        if not csv_path.exists():
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+
+        audited_count = 0
+        rows_to_append: List[List[Any]] = []
+        state_dirty = False
+        limit_buf = getattr(portfolio.config, "limit_buffer_pct", 0.002) or 0.002
+
+        # 1. Audit open positions with Execution_Verified == False
+        for pos in portfolio.positions:
+            if portfolio.is_hodl_position(pos):
+                continue
+            if pos.get("Execution_Verified", True) is not False:
+                continue
+
+            order_date_str = str(pos.get("Buy Date") or pos.get("buy_date") or "").strip()[:10]
+            if not order_date_str or order_date_str >= today_str:
+                continue
+
+            ticker = str(pos.get("Ticker") or pos.get("ticker") or "").strip()
+            ohlc = self._fetch_next_day_ohlc(ticker, order_date_str)
+            if not ohlc:
+                continue
+
+            paper_price = float(pos.get("Buy Price") or pos.get("buy_price") or 0.0)
+            limit_price = float(pos.get("Limit Price") or round(paper_price * (1.0 + limit_buf), 4))
+            next_open = ohlc["Open"]
+            next_low = ohlc["Low"]
+            next_high = ohlc["High"]
+            next_close = ohlc["Close"]
+
+            if next_low <= limit_price:
+                would_have_filled = "FILLED"
+                realistic_fill_val = round(min(next_open, limit_price), 4)
+                realistic_fill_str: Any = realistic_fill_val
+                slippage_pct = round(((realistic_fill_val - paper_price) / paper_price) * 100.0, 4) if paper_price > 0 else 0.0
+            else:
+                would_have_filled = "UNFILLED_GAP_UP"
+                realistic_fill_str = ""
+                slippage_pct = round(((next_open - paper_price) / paper_price) * 100.0, 4) if paper_price > 0 else 0.0
+
+            shares = int(float(pos.get("Shares") or pos.get("shares") or 0))
+            ticker_curr = str(pos.get("Currency") or get_ticker_currency(ticker))
+            fx_to_acc = float(pos.get("Entry_FX_Rate") or get_fx_to_account(ticker_curr, portfolio.currency, self.market_engine.fx_rates))
+            fx_acc_to_local = 1.0 / fx_to_acc if fx_to_acc > 0 else 1.0
+
+            fx_fee_eur = pos.get("Estimated_FX_Fee_EUR")
+            if fx_fee_eur is None:
+                fx_fee_eur = round((shares * paper_price) * fx_to_acc * 0.0025, 2) if ticker_curr.upper() != "EUR" else 0.0
+
+            broker_fee_eur = pos.get("Broker_Fee_EUR")
+            if broker_fee_eur is None:
+                fee_local = calculate_transaction_fee(shares * paper_price, min_fee=MIN_BROKER_FEE * fx_acc_to_local)
+                broker_fee_eur = round(fee_local * fx_to_acc, 2)
+
+            sub_strat = str(pos.get("Sub_Strategy") or pos.get("sub_strategy") or "Hybrid Core-Satellite")
+
+            rows_to_append.append([
+                order_date_str,
+                ticker,
+                sub_strat,
+                "BUY",
+                round(paper_price, 4),
+                round(limit_price, 4),
+                round(next_open, 4),
+                round(next_low, 4),
+                round(next_high, 4),
+                round(next_close, 4),
+                would_have_filled,
+                realistic_fill_str,
+                slippage_pct,
+                round(float(fx_fee_eur), 2),
+                round(float(broker_fee_eur), 2),
+            ])
+
+            pos["Execution_Verified"] = True
+            pos["Would_Have_Filled"] = would_have_filled
+            pos["Realistic_Fill_Price"] = realistic_fill_str if realistic_fill_str != "" else None
+            pos["Slippage_vs_Paper_Pct"] = slippage_pct
+            state_dirty = True
+            audited_count += 1
+
+        # 2. Audit pending SELL / PARTIAL_TP executions
+        remaining_pending: List[Dict[str, Any]] = []
+        for aud in portfolio.pending_execution_audits:
+            if aud.get("Execution_Verified", False) is True:
+                state_dirty = True
+                continue
+            order_date_str = str(aud.get("Date") or "").strip()[:10]
+            if not order_date_str or order_date_str >= today_str:
+                remaining_pending.append(aud)
+                continue
+
+            ticker = str(aud.get("Ticker") or "").strip()
+            ohlc = self._fetch_next_day_ohlc(ticker, order_date_str)
+            if not ohlc:
+                remaining_pending.append(aud)
+                continue
+
+            action_str = str(aud.get("Action") or "SELL").upper()
+            paper_price = float(aud.get("Paper_Price") or 0.0)
+            limit_price = float(aud.get("Limit_Price") or round(paper_price * (1.0 - limit_buf), 4))
+            next_open = ohlc["Open"]
+            next_low = ohlc["Low"]
+            next_high = ohlc["High"]
+            next_close = ohlc["Close"]
+
+            if action_str == "BUY":
+                if next_low <= limit_price:
+                    would_have_filled = "FILLED"
+                    realistic_fill_val = round(min(next_open, limit_price), 4)
+                    realistic_fill_str = realistic_fill_val
+                    slippage_pct = round(((realistic_fill_val - paper_price) / paper_price) * 100.0, 4) if paper_price > 0 else 0.0
+                else:
+                    would_have_filled = "UNFILLED_GAP_UP"
+                    realistic_fill_str = ""
+                    slippage_pct = round(((next_open - paper_price) / paper_price) * 100.0, 4) if paper_price > 0 else 0.0
+            else:
+                if next_high >= limit_price:
+                    would_have_filled = "FILLED"
+                    realistic_fill_val = round(max(next_open, limit_price), 4)
+                    realistic_fill_str = realistic_fill_val
+                    slippage_pct = round(((realistic_fill_val - paper_price) / paper_price) * 100.0, 4) if paper_price > 0 else 0.0
+                else:
+                    would_have_filled = "UNFILLED_GAP_DOWN"
+                    realistic_fill_str = ""
+                    slippage_pct = round(((next_open - paper_price) / paper_price) * 100.0, 4) if paper_price > 0 else 0.0
+
+            rows_to_append.append([
+                order_date_str,
+                ticker,
+                str(aud.get("Sub_Strategy") or "Hybrid Core-Satellite"),
+                action_str,
+                round(paper_price, 4),
+                round(limit_price, 4),
+                round(next_open, 4),
+                round(next_low, 4),
+                round(next_high, 4),
+                round(next_close, 4),
+                would_have_filled,
+                realistic_fill_str,
+                slippage_pct,
+                round(float(aud.get("FX_Fee_EUR") or 0.0), 2),
+                round(float(aud.get("Broker_Fee_EUR") or 0.0), 2),
+            ])
+            state_dirty = True
+            audited_count += 1
+
+        portfolio.pending_execution_audits = remaining_pending
+
+        if rows_to_append:
+            with open(csv_path, "a", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerows(rows_to_append)
+
+        if state_dirty:
+            portfolio.save_state()
+
+        return audited_count
+
+    def record_p13_shadow_audit_log(self, portfolio: PortfolioInstance, today: Optional[date] = None) -> Dict[str, Any]:
+        """
+        Appends a daily X-Ray JSONL entry to `data/portfolios/p13_shadow_audit_log.jsonl` for P13_Live_Candidate.
+        Includes `timestamp`, `regime`, `portfolio_snapshot`, `candidates_ranking` (Top 5 per sub-strategy),
+        and `open_positions_health`.
+        """
+        if today is None:
+            today = datetime.now(timezone.utc).date()
+
+        cfg = portfolio.config
+        regime_data = getattr(self.market_engine, "market_regime", {}) or {}
+        regime_str = str(regime_data.get("regime", "")).upper()
+        last_px = float(regime_data.get("last_price", 0.0) or 0.0)
+        sma_50 = float(regime_data.get("sma_50", 0.0) or 0.0)
+        is_below_sma50 = (last_px > 0 and sma_50 > 0 and last_px < sma_50)
+        is_choppy_or_bear = ("CHOPPY" in regime_str or "BEAR" in regime_str or is_below_sma50)
+        buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
+        required_cash_buffer_eur = (cfg.start_cash * buffer_pct) if is_choppy_or_bear else 0.0
+
+        stock_val_eur = self.calculate_stock_value_eur(portfolio)
+        total_p13_equity_eur = portfolio.cash_balance + stock_val_eur
+
+        # Ensure candidates_ranking is populated for all 3 sub-strategies
+        if not portfolio.last_candidates_ranking and cfg.sub_strategies:
+            held_tickers = {p["Ticker"] for p in portfolio.positions}
+            self.execute_phase2_sub_strategies_screening(
+                portfolio=portfolio,
+                run_trades=None,
+                available_cash=0.0,
+                held_tickers=held_tickers,
+                cooldown_tickers={},
+                today=today,
+                max_buys_allowed=0,
+            )
+
+        open_positions_health: List[Dict[str, Any]] = []
+        for pos in portfolio.active_positions():
+            ticker = str(pos.get("Ticker") or pos.get("ticker") or "")
+            buy_price = float(pos.get("Buy Price") or pos.get("buy_price") or 0.0)
+            current_price = float(self.market_engine.prices_cache.get(ticker, buy_price) or buy_price)
+            cur_peak = float(pos.get("Peak Price") or pos.get("peak_price") or pos.get("highest_price_seen") or max(buy_price, current_price))
+            if current_price > cur_peak:
+                cur_peak = current_price
+
+            pnl_pct = ((current_price - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
+            drawdown_from_peak_pct = ((cur_peak - current_price) / cur_peak * 100.0) if cur_peak > 0 else 0.0
+
+            sub_strat = str(pos.get("Sub_Strategy") or pos.get("sub_strategy") or "")
+            if pos.get("partial_profit_taken", False):
+                trail_stop_px = cur_peak * (1.0 - float(cfg.partial_trailing_stop_pct or 0.15))
+                stop_price = max(buy_price, trail_stop_px)
+            elif sub_strat == "core_nordic_midcap_quality":
+                stop_price = buy_price * (1.0 - 0.15)
+            elif sub_strat in ("satellite_us_microcap_growth", "satellite_nordic_microcap_catalyst"):
+                stop_price = buy_price * (1.0 - 0.12)
+            else:
+                stop_price = buy_price * (1.0 - float(cfg.stop_loss_pct or 0.12))
+
+            distance_to_stop_pct = ((current_price - stop_price) / current_price * 100.0) if current_price > 0 else 0.0
+
+            tp_thresh = float(cfg.take_profit_threshold_pct or 0.25)
+            tp_price = buy_price * (1.0 + tp_thresh)
+            if pos.get("partial_profit_taken", False):
+                distance_to_partial_tp_pct = 0.0
+            else:
+                distance_to_partial_tp_pct = max(0.0, ((tp_price - current_price) / current_price * 100.0)) if current_price > 0 else 0.0
+
+            buy_date_str = str(pos.get("Buy Date") or pos.get("buy_date") or "")[:10]
+            try:
+                b_date = datetime.strptime(buy_date_str, "%Y-%m-%d").date()
+                try:
+                    import numpy as np
+                    trading_days_held = max(0, int(np.busday_count(b_date, today)))
+                except Exception:
+                    trading_days_held = max(0, int((today - b_date).days * 5 / 7))
+            except Exception:
+                trading_days_held = 0
+
+            if ticker in getattr(self.market_engine, "news_radar_cache", {}):
+                nlp_status = self.market_engine.news_radar_cache[ticker][0]
+            elif hasattr(self.market_engine, "get_ticker_nlp_status"):
+                nlp_status = self.market_engine.get_ticker_nlp_status(ticker)[0]
+            else:
+                nlp_status = "HOLD"
+
+            open_positions_health.append({
+                "ticker": ticker,
+                "sub_strategy": sub_strat,
+                "current_price": round(current_price, 4),
+                "pnl_pct": round(pnl_pct, 2),
+                "drawdown_from_peak_pct": round(drawdown_from_peak_pct, 2),
+                "distance_to_stop_pct": round(distance_to_stop_pct, 2),
+                "distance_to_partial_tp_pct": round(distance_to_partial_tp_pct, 2),
+                "trading_days_held": trading_days_held,
+                "nlp_status": nlp_status,
+            })
+
+        audit_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "regime": {
+                "iwc_price": round(last_px, 4),
+                "sma_50": round(sma_50, 4),
+                "is_choppy_or_bear": bool(is_choppy_or_bear),
+                "required_cash_buffer_eur": round(required_cash_buffer_eur, 2),
+            },
+            "portfolio_snapshot": {
+                "cash_balance": round(portfolio.cash_balance, 2),
+                "non_hodl_stock_value_eur": round(stock_val_eur, 2),
+                "total_p13_equity_eur": round(total_p13_equity_eur, 2),
+            },
+            "candidates_ranking": portfolio.last_candidates_ranking,
+            "open_positions_health": open_positions_health,
+        }
+
+        log_path = portfolio.shadow_audit_log_file
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+
+        return audit_entry
+
     def run_cycle(self) -> Dict[str, Dict[str, Any]]:
         """Runs a complete walk-forward cycle across all 10 portfolios."""
         print("\n" + "=" * 100)
@@ -2832,10 +3366,14 @@ class MasterLiveTradingDaemon:
         logger.info(f"Executing Phase A: Base Signal Portfolios ({len(base_portfolios)} portfolios: P1–P10)")
         for p in base_portfolios:
             p.reload_if_changed_on_disk()
+            if p.config.portfolio_id == "P13_Live_Candidate" or p.config.sub_strategies:
+                self.audit_p13_next_day_executions(p)
             closed = self.execute_phase1_exits(p, run_trades=run_trades)
             opened = self.execute_phase2_screening(p, run_trades=run_trades)
             stock_val_eur = self.calculate_stock_value_eur(p)
             p.record_snapshot(stock_val_eur)
+            if p.config.portfolio_id == "P13_Live_Candidate" or p.config.sub_strategies:
+                self.record_p13_shadow_audit_log(p)
 
             total_equity = p.cash_balance + stock_val_eur
             ret_pct = ((total_equity - p.starting_balance) / p.starting_balance) * 100.0 if p.starting_balance > 0 else 0.0
