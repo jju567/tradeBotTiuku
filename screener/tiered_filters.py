@@ -312,6 +312,41 @@ def matches_us_microcap_growth(
     if has_dividend:
         reasons.append("Dividend yield detected > 0.0% (Forbidden on OST)")
 
+    # 3b. Geographic VIE / shell risk guard: Reject China, Hong Kong, Cayman Islands
+    country = str(hard_facts.get("country") or meta.get("country") or "").strip()
+    if country and country.lower() in {"china", "hong kong", "cayman islands"}:
+        reasons.append(f"Disallowed country: {country} (VIE/shell risk)")
+
+    # 3c. Profitability emergency brake: Reject extreme cash burners (ROE < -40% or EBIT margin < -40%)
+    roe = hard_facts.get("roe")
+    if roe is not None and float(roe) < -0.40:
+        reasons.append(f"ROE {float(roe):.2f} < -0.40 (profitability emergency brake)")
+
+    ebit_margin = hard_facts.get("ebit_margin") if hard_facts.get("ebit_margin") is not None else hard_facts.get("operating_margin")
+    if ebit_margin is not None and float(ebit_margin) < -0.40:
+        reasons.append(f"EBIT margin {float(ebit_margin):.2f} < -0.40 (operating loss deeper than -40%)")
+
+    # 3d. Mandatory Cash Runway / Cash Flow Viability Gate for ALL US_MicroCap_Growth candidates
+    runway = hard_facts.get("cash_runway_months")
+    runway_12m = False
+    if runway is not None:
+        if str(runway).strip().lower() == "infinite":
+            runway_12m = True
+        else:
+            try:
+                runway_12m = float(runway) >= 12.0
+            except Exception:
+                runway_12m = False
+
+    ocf = hard_facts.get("operating_cash_flow_ttm") if hard_facts.get("operating_cash_flow_ttm") is not None else hard_facts.get("ocf")
+    fcf = hard_facts.get("free_cash_flow") if hard_facts.get("free_cash_flow") is not None else hard_facts.get("fcf")
+    ocf_pos = (ocf is not None and float(ocf) > 0)
+    fcf_pos = (fcf is not None and float(fcf) > 0)
+    runway_ok = (runway_12m or ocf_pos or fcf_pos)
+
+    if not runway_ok:
+        reasons.append(f"Cash runway insufficient ({runway}) without positive OCF/FCF (requires runway >= 12m or OCF/FCF > 0)")
+
     # 4. Catalyst: Strong revenue growth (>15%) or Profile A or high NLP score with viability
     rev_yoy = hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy")
     is_prof_a = hard_facts.get("is_profile_a", False)
@@ -321,25 +356,11 @@ def matches_us_microcap_growth(
     if growth_ok or is_prof_a:
         catalyst_ok = True
     elif nlp_strong:
-        # Prevent buying pure hype: require positive revenue AND (cash runway >= 12m OR operating_cash_flow_ttm > 0)
+        # Prevent buying pure hype: require positive revenue AND runway_ok
         revenue = hard_facts.get("total_revenue_current") or hard_facts.get("revenue") or hard_facts.get("total_revenue") or meta.get("revenue", 0.0)
         rev_pos = (revenue is not None and float(revenue) > 0)
 
-        runway = hard_facts.get("cash_runway_months")
-        runway_12m = False
-        if runway is not None:
-            if str(runway).lower() == "infinite":
-                runway_12m = True
-            else:
-                try:
-                    runway_12m = float(runway) >= 12.0
-                except Exception:
-                    runway_12m = False
-
-        ocf = hard_facts.get("operating_cash_flow_ttm") or hard_facts.get("ocf") or hard_facts.get("free_cash_flow") or hard_facts.get("fcf")
-        ocf_pos = (ocf is not None and float(ocf) > 0)
-
-        if rev_pos and (runway_12m or ocf_pos):
+        if rev_pos and runway_ok:
             catalyst_ok = True
         else:
             catalyst_ok = False
@@ -348,7 +369,7 @@ def matches_us_microcap_growth(
         catalyst_ok = False
         reasons.append(f"No catalyst: YoY growth={rev_yoy}%, Profile A={is_prof_a}, NLP={nlp_verdict}")
 
-    passed = len(reasons) == 0
+    passed = len(reasons) == 0 and catalyst_ok
     return passed, reasons
 
 

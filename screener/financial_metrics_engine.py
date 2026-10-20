@@ -141,6 +141,7 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "trailing_annual_dividend_rate": None,
         "cash_dividends_paid": None,
         "exchange": None,
+        "country": None,
         "market_cap": None,
         "latest_statement_date": None,
         "data_age_days": None,
@@ -409,9 +410,11 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             else:
                 result["dividend_yield"] = 0.0
 
-            # Exchange
+            # Exchange & Country
             exch = info.get("exchange")
             result["exchange"] = str(exch).upper() if exch else None
+            country_val = info.get("country")
+            result["country"] = str(country_val).strip() if country_val else None
 
             # Market Cap
             mcap = (fast_info and getattr(fast_info, "market_cap", None)) or info.get("marketCap")

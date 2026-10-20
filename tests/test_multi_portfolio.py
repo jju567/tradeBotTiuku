@@ -923,6 +923,7 @@ def test_p13_sub_strategies_screening_execution(tmp_path):
             "exchange": "NASDAQ",
             "dividend_yield": 0.0,
             "revenue_growth_yoy_pct": 25.0,
+            "cash_runway_months": 24.0,
             "is_profile_a": True,
         },
         "NORDCAT.ST": {
@@ -991,12 +992,14 @@ def test_p13_candidate_ranking_higher_score_beats_alphabetical_order(tmp_path):
             "exchange": "NASDAQ",
             "dividend_yield": 0.0,
             "revenue_growth_yoy_pct": 16.0,  # weak growth
+            "cash_runway_months": 24.0,
             "is_profile_a": False,
         },
         "Z_STRONG": {
             "exchange": "NASDAQ",
             "dividend_yield": 0.0,
             "revenue_growth_yoy_pct": 60.0,  # explosive growth + profile A
+            "cash_runway_months": 24.0,
             "is_profile_a": True,
         },
     }
@@ -1621,6 +1624,168 @@ def test_p13_shadow_trading_audit_logs_and_next_day_execution_audit(tmp_path):
     assert row_fi["Would_Have_Filled"] == "UNFILLED_GAP_UP"
     assert row_fi["Realistic_Fill_Price"] == ""
     assert float(row_fi["Slippage_vs_Paper_Pct"]) == pytest.approx(2.50)
+
+
+def test_p13_xray_fixes_us_viability_capping_sub_strategy_persistence_and_partial_tp_audit(tmp_path):
+    """
+    Tests all 4 X-Ray Audit fixes:
+    1. `matches_us_microcap_growth`: mandatory `runway_ok` (blocks UXIN with 1.1m runway),
+       profitability emergency brake (`roe < -0.40` or `ebit_margin < -0.40` blocks ARBE),
+       and VIE/shell country filter (`China`, `Hong Kong`, `Cayman Islands` blocks HOLO).
+    2. Capping / Winsorizing in `candidate_score`: `capped_roe <= 40.0`, `capped_ebit <= 35.0`, `capped_rev_yoy <= 60.0`.
+    3. `_ensure_sub_strategy_tags`: legacy untagged P13 positions get `Sub_Strategy` inferred and persisted in `state.json`.
+    4. `PARTIAL_TP` / `SELL` pending execution audit is verified on the next day (`NextDay_High >= Limit_Price`) and written to `p13_execution_audit.csv`.
+    """
+    import csv
+    import json
+    from datetime import datetime, timedelta, timezone
+    from screener.tiered_filters import matches_us_microcap_growth
+
+    us_meta = {"market": "US", "exchange": "NASDAQ", "market_cap_usd": 80_000_000.0, "currency": "USD"}
+
+    # 1a. Reject UXIN-like stock with high growth (+135%) but only 1.1 months cash runway and no positive OCF/FCF
+    passed_uxin, r_uxin = matches_us_microcap_growth(
+        "UXIN",
+        {"revenue_growth_yoy_pct": 135.66, "cash_runway_months": 1.1, "roe": -0.078, "ebit_margin": -0.132, "dividend_yield": 0.0},
+        us_meta,
+    )
+    assert passed_uxin is False
+    assert any("Cash runway insufficient" in r for r in r_uxin)
+
+    # 1b. Reject ARBE-like stock with ROE -83.2% (< -0.40) even if runway is 24m
+    passed_arbe, r_arbe = matches_us_microcap_growth(
+        "ARBE",
+        {"revenue_growth_yoy_pct": 33.59, "cash_runway_months": 24.0, "roe": -0.8318, "ebit_margin": -0.1399, "dividend_yield": 0.0},
+        us_meta,
+    )
+    assert passed_arbe is False
+    assert any("ROE" in r for r in r_arbe)
+
+    # 1c. Reject Cayman Islands / China / Hong Kong VIE shell risk even with good fundamentals
+    passed_vie, r_vie = matches_us_microcap_growth(
+        "HOLO",
+        {"revenue_growth_yoy_pct": 39.06, "cash_runway_months": "Infinite", "roe": 0.10, "ebit_margin": 0.05, "country": "Cayman Islands", "dividend_yield": 0.0},
+        us_meta,
+    )
+    assert passed_vie is False
+    assert any("Disallowed country" in r for r in r_vie)
+
+    # 2, 3 & 4: Score capping, legacy Sub_Strategy persistence, and PARTIAL_TP Next-Day Audit
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.00, "EURSEK": 10.0, "EURNOK": 10.0, "EURDKK": 7.46}
+    daemon.market_engine.news_radar_cache = {}
+    daemon.market_engine.operational_metrics = {}
+    daemon.market_engine.market_regime = {"regime": "BULL", "last_price": 120.0, "sma_50": 110.0}
+    daemon.market_engine._fetch_live_price = lambda t: daemon.market_engine.prices_cache.get(t)
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        slots=5,
+        partial_take_profit=True,
+        take_profit_threshold_pct=0.25,
+        partial_sell_fraction=0.50,
+        partial_trailing_stop_pct=0.15,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 7000,
+                "slots": 3,
+                "slot_sizes": [2350, 2350, 2300],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+            "satellite_us_microcap_growth": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "US_MicroCap_Growth",
+            },
+            "satellite_nordic_microcap_catalyst": {
+                "allocated_capital": 1500,
+                "slots": 1,
+                "slot_sizes": [1500],
+                "universe_filter": "Nordic_MicroCap_Catalyst",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 5000.0
+
+    # Add 4 legacy untagged positions (like VIAFIN.HE, SEDANA.ST, MOB.ST, MSAB-B.ST in production)
+    p.positions = [
+        {"Ticker": "VIAFIN.HE", "Buy Date": "2026-10-14", "Buy Price": 20.0, "Shares": 100, "Capital Invested": 2000.0, "Strategy": "Profile B", "Currency": "EUR"},
+        {"Ticker": "SEDANA.ST", "Buy Date": "2026-10-14", "Buy Price": 10.0, "Shares": 2000, "Capital Invested": 20000.0, "Strategy": "Profile B", "Currency": "SEK"},
+        {"Ticker": "MOB.ST", "Buy Date": "2026-10-14", "Buy Price": 11.0, "Shares": 2000, "Capital Invested": 22000.0, "Strategy": "Profile B", "Currency": "SEK"},
+        {"Ticker": "MSAB-B.ST", "Buy Date": "2026-10-14", "Buy Price": 84.0, "Shares": 264, "Capital Invested": 22176.0, "Strategy": "Profile B", "Currency": "SEK"},
+    ]
+
+    # MSAB-B.ST rises +25% from 84.0 -> 105.0 SEK, triggering PARTIAL_TP!
+    daemon.market_engine.prices_cache = {
+        "VIAFIN.HE": 20.5,
+        "SEDANA.ST": 10.0,
+        "MOB.ST": 11.0,
+        "MSAB-B.ST": 105.0,
+        "PUUILO.HE": 18.5,
+        "CAMP": 3.14,
+    }
+    daemon.market_engine.universe_metadata = {
+        "PUUILO.HE": {"market": "FI", "market_cap_eur": 800_000_000.0, "currency": "EUR", "adv_20d_local": 500_000.0, "current_price": 18.5},
+        "CAMP": {"market": "US", "exchange": "NASDAQ", "market_cap_usd": 100_000_000.0, "currency": "USD", "adv_20d_local": 500_000.0, "current_price": 3.14},
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "VIAFIN.HE": {"roe": 0.20, "ebit_margin": 0.15, "net_debt_to_ebitda": 0.5},
+        "SEDANA.ST": {"roe": 0.20, "ebit_margin": 0.15, "net_debt_to_ebitda": 0.5},
+        "MOB.ST": {"roe": 0.20, "ebit_margin": 0.15, "net_debt_to_ebitda": 0.5},
+        "MSAB-B.ST": {"roe": 0.20, "ebit_margin": 0.15, "net_debt_to_ebitda": 0.5},
+        # Extreme ROE 89.24% and EBIT 50.0% -> must be capped at 40.0% and 35.0%!
+        # Capped score = 40*1.5 + 35*1.5 - 1.0*5 = 60 + 52.5 - 5 = 107.5
+        "PUUILO.HE": {"roe": 0.8924, "ebit_margin": 0.50, "free_cash_flow": 50_000_000.0, "net_debt_to_ebitda": 1.0},
+        # Extreme Rev YoY +436.5% -> must be capped at 60.0%!
+        # Capped score = 60.0 + 30.0 (Profile A) = 90.0
+        "CAMP": {"revenue_growth_yoy_pct": 436.5, "cash_runway_months": 36.3, "is_profile_a": True, "dividend_yield": 0.0, "roe": 0.10, "ebit_margin": 0.05},
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache[t]
+
+    # Run Phase 1 exits -> must infer and persist Sub_Strategy on all 4 legacy positions AND trigger PARTIAL_TP on MSAB-B.ST
+    daemon.execute_phase1_exits(p)
+    saved_state = json.loads(p.state_file.read_text(encoding="utf-8"))
+    saved_sub_map = {pos["Ticker"]: pos.get("Sub_Strategy") for pos in saved_state["positions"]}
+    assert saved_sub_map["VIAFIN.HE"] == "core_nordic_midcap_quality"
+    assert saved_sub_map["SEDANA.ST"] == "core_nordic_midcap_quality"
+    assert saved_sub_map["MOB.ST"] == "core_nordic_midcap_quality"
+    assert saved_sub_map["MSAB-B.ST"] == "satellite_nordic_microcap_catalyst"
+
+    # Verify PARTIAL_TP created a pending execution audit entry
+    assert len(p.pending_execution_audits) == 1
+    assert p.pending_execution_audits[0]["Ticker"] == "MSAB-B.ST"
+    assert p.pending_execution_audits[0]["Action"] == "PARTIAL_TP"
+    assert p.pending_execution_audits[0]["Execution_Verified"] is False
+
+    # Verify score capping in candidate collection
+    daemon.execute_phase2_screening(p)
+    core_top = p.last_candidates_ranking["core_nordic_midcap_quality"]["top_5_candidates"][0]
+    assert core_top["ticker"] == "PUUILO.HE"
+    assert core_top["candidate_score"] == pytest.approx(107.5)
+    us_top = p.last_candidates_ranking["satellite_us_microcap_growth"]["top_5_candidates"][0]
+    assert us_top["ticker"] == "CAMP"
+    assert us_top["candidate_score"] == pytest.approx(90.0)
+
+    # Verify PARTIAL_TP Next-Day Limit Fill Audit on T+1
+    yesterday_str = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y-%m-%d")
+    p.pending_execution_audits[0]["Date"] = yesterday_str  # Paper=105.0, Sell Limit = 105.0 * 0.998 = 104.79
+    daemon.market_engine.next_day_ohlc_cache = {
+        "MSAB-B.ST": {"Open": 105.20, "Low": 104.00, "High": 106.00, "Close": 105.50},
+    }
+    audited_cnt = daemon.audit_p13_next_day_executions(p)
+    assert audited_cnt >= 1
+    with open(p.execution_audit_csv_file, "r", encoding="utf-8") as f:
+        audit_rows = list(csv.DictReader(f))
+    tp_row = next(r for r in audit_rows if r["Ticker"] == "MSAB-B.ST" and r["Action"] == "PARTIAL_TP")
+    assert tp_row["Would_Have_Filled"] == "FILLED"
+    assert float(tp_row["Realistic_Fill_Price"]) == pytest.approx(105.20)
+
 
 
 

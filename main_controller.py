@@ -1361,6 +1361,65 @@ class MasterLiveTradingDaemon:
         # which have simply not triggered yet due to the short walk-forward history.
 
 
+    def _ensure_sub_strategy_tags(self, portfolio: PortfolioInstance) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Ensures every active (non-HODL) position in a composite portfolio has its `Sub_Strategy` tag
+        inferred and persisted in `pos["Sub_Strategy"]` and `state.json`.
+        Returns the mapping `positions_by_sub`.
+        """
+        cfg = portfolio.config
+        if not cfg.sub_strategies:
+            return {}
+
+        positions_by_sub: Dict[str, List[Dict[str, Any]]] = {k: [] for k in cfg.sub_strategies.keys()}
+        dirty = False
+
+        for pos in portfolio.positions:
+            if portfolio.is_hodl_position(pos):
+                continue
+            s_name = pos.get("Sub_Strategy") or pos.get("sub_strategy")
+            if s_name and s_name in positions_by_sub:
+                if pos.get("Sub_Strategy") != s_name:
+                    pos["Sub_Strategy"] = s_name
+                    dirty = True
+                positions_by_sub[s_name].append(pos)
+            else:
+                # Infer for legacy or untagged positions (e.g. opened before Sub_Strategy tagging)
+                t_sym = str(pos.get("Ticker") or pos.get("ticker", "")).strip().upper()
+                is_us = ("." not in t_sym)
+                assigned = False
+                for k, sc in cfg.sub_strategies.items():
+                    u_filt = str(sc.get("universe_filter", ""))
+                    if is_us and "US" in u_filt:
+                        pos["Sub_Strategy"] = k
+                        positions_by_sub[k].append(pos)
+                        dirty = True
+                        assigned = True
+                        break
+                    elif not is_us and "Nordic" in u_filt:
+                        if "MidCap" in u_filt and len(positions_by_sub[k]) < int(sc.get("slots", 3)):
+                            pos["Sub_Strategy"] = k
+                            positions_by_sub[k].append(pos)
+                            dirty = True
+                            assigned = True
+                            break
+                        elif "MicroCap" in u_filt:
+                            pos["Sub_Strategy"] = k
+                            positions_by_sub[k].append(pos)
+                            dirty = True
+                            assigned = True
+                            break
+                if not assigned and positions_by_sub:
+                    first_k = next(iter(cfg.sub_strategies.keys()))
+                    pos["Sub_Strategy"] = first_k
+                    positions_by_sub[first_k].append(pos)
+                    dirty = True
+
+        if dirty:
+            portfolio.save_state()
+
+        return positions_by_sub
+
     def execute_phase1_exits(self, portfolio: PortfolioInstance, run_trades: Optional[List[Dict[str, Any]]] = None) -> int:
         """
         Phase 1: Portfolio Management (Tri-Layer Exit & Dead Money Timer).
@@ -1369,6 +1428,9 @@ class MasterLiveTradingDaemon:
         closed_count = 0
         retained_positions: List[Dict[str, Any]] = []
         today = datetime.now(timezone.utc).date()
+
+        if portfolio.config.sub_strategies:
+            self._ensure_sub_strategy_tags(portfolio)
 
         # Check if portfolio uses consensus conviction exits
         conviction_map: Dict[str, int] = {}
@@ -1971,20 +2033,24 @@ class MasterLiveTradingDaemon:
             cash_runway_raw = hard_facts.get("cash_runway_months")
             cash_runway_val = round(float(cash_runway_raw), 2) if isinstance(cash_runway_raw, (int, float)) and not isinstance(cash_runway_raw, bool) else cash_runway_raw
 
-            # Step 1.3: Calculate candidate_score
+            # Step 1.3: Calculate candidate_score with Capping / Winsorizing against extreme outliers
+            capped_roe = min(max(float(roe_pct or 0.0), 0.0), 40.0)
+            capped_ebit = min(max(float(ebit_margin_pct or 0.0), 0.0), 35.0)
+            capped_rev_yoy = min(max(float(rev_yoy_val or 0.0), 0.0), 60.0)
+
             if "midcap" in u_filter.lower():
-                # Core (Nordic_MidCap_Compounder): (roe_pct * 1.5) + (ebit_margin_pct * 1.5) - (net_debt_to_ebitda * 5.0)
-                cand_score = ((roe_pct or 0.0) * 1.5) + ((ebit_margin_pct or 0.0) * 1.5) - ((nd_val or 0.0) * 5.0)
+                # Core (Nordic_MidCap_Compounder): (capped_roe * 1.5) + (capped_ebit * 1.5) - (net_debt_to_ebitda * 5.0)
+                cand_score = (capped_roe * 1.5) + (capped_ebit * 1.5) - ((nd_val or 0.0) * 5.0)
             elif "us_" in u_filter.lower():
-                # Satellite 1 (US_MicroCap_Growth): rev_yoy + (30.0 if is_profile_a) + (25.0 if nlp_verdict == "STRONG BUY")
+                # Satellite 1 (US_MicroCap_Growth): capped_rev_yoy + (30.0 if is_profile_a) + (25.0 if nlp_verdict == "STRONG BUY")
                 is_prof_a = bool(hard_facts.get("is_profile_a", False))
-                cand_score = float(rev_yoy_val or 0.0) + (30.0 if is_prof_a else 0.0) + (25.0 if news_verdict == "STRONG BUY" else 0.0)
+                cand_score = capped_rev_yoy + (30.0 if is_prof_a else 0.0) + (25.0 if news_verdict == "STRONG BUY" else 0.0)
             else:
-                # Satellite 2 (Nordic_MicroCap_Catalyst): (35.0 if is_profile_a) + (25.0 if is_profile_b) + (30.0 if nlp in STRONG BUY/WATCH_TURNAROUND) + rev_yoy * 0.5
+                # Satellite 2 (Nordic_MicroCap_Catalyst): (35.0 if is_profile_a) + (25.0 if is_profile_b) + (30.0 if nlp in STRONG BUY/WATCH_TURNAROUND) + capped_rev_yoy * 0.5
                 is_prof_a = bool(hard_facts.get("is_profile_a", False))
                 is_prof_b = bool(hard_facts.get("is_profile_b", False))
                 nlp_cat = (news_verdict in ["STRONG BUY", "WATCH_TURNAROUND"])
-                cand_score = (35.0 if is_prof_a else 0.0) + (25.0 if is_prof_b else 0.0) + (30.0 if nlp_cat else 0.0) + (float(rev_yoy_val or 0.0) * 0.5)
+                cand_score = (35.0 if is_prof_a else 0.0) + (25.0 if is_prof_b else 0.0) + (30.0 if nlp_cat else 0.0) + (capped_rev_yoy * 0.5)
 
             rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
             fx_to_eur = 1.0
@@ -2055,37 +2121,8 @@ class MasterLiveTradingDaemon:
         new_buys = 0
         portfolio.last_candidates_ranking = {}
 
-        # Map each existing active (non-HODL) position to its sub-strategy
-        positions_by_sub: Dict[str, List[Dict[str, Any]]] = {k: [] for k in cfg.sub_strategies.keys()}
-        for pos in portfolio.positions:
-            if portfolio.is_hodl_position(pos):
-                continue
-            s_name = pos.get("Sub_Strategy") or pos.get("sub_strategy")
-            if s_name and s_name in positions_by_sub:
-                positions_by_sub[s_name].append(pos)
-            else:
-                # Infer for legacy or untagged positions
-                t_sym = str(pos.get("Ticker") or pos.get("ticker", "")).strip().upper()
-                is_us = ("." not in t_sym)
-                assigned = False
-                for k, sc in cfg.sub_strategies.items():
-                    u_filt = sc.get("universe_filter", "")
-                    if is_us and "US" in u_filt:
-                        positions_by_sub[k].append(pos)
-                        assigned = True
-                        break
-                    elif not is_us and "Nordic" in u_filt:
-                        if "MidCap" in u_filt and len(positions_by_sub[k]) < int(sc.get("slots", 3)):
-                            positions_by_sub[k].append(pos)
-                            assigned = True
-                            break
-                        elif "MicroCap" in u_filt:
-                            positions_by_sub[k].append(pos)
-                            assigned = True
-                            break
-                if not assigned and positions_by_sub:
-                    first_k = next(iter(cfg.sub_strategies.keys()))
-                    positions_by_sub[first_k].append(pos)
+        # Map each existing active (non-HODL) position to its sub-strategy and persist missing Sub_Strategy tags
+        positions_by_sub = self._ensure_sub_strategy_tags(portfolio)
 
         # Iterate through each sub_strategy in order
         for sub_name, sub_cfg in cfg.sub_strategies.items():
@@ -3230,6 +3267,8 @@ class MasterLiveTradingDaemon:
             today = datetime.now(timezone.utc).date()
 
         cfg = portfolio.config
+        if cfg.sub_strategies:
+            self._ensure_sub_strategy_tags(portfolio)
         regime_data = getattr(self.market_engine, "market_regime", {}) or {}
         regime_str = str(regime_data.get("regime", "")).upper()
         last_px = float(regime_data.get("last_price", 0.0) or 0.0)
