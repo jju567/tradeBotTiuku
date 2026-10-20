@@ -920,7 +920,7 @@ def render_portfolio_equity_chart(
 # ----------------------------------------------------------------------
 with st.sidebar:
     st.title("🐱 tradeBotTiuku")
-    st.caption("Nordic & US Small-Cap Quantitative Screener v2.0")
+    st.caption("Nordic & US Small-Cap Quantitative Screener v2.1 🚀 • Etäpäivitys aktiivinen")
     st.divider()
 
     menu = st.radio(
@@ -1224,6 +1224,7 @@ with st.sidebar:
         daemon_info = get_daemon_status()
 
         with st.expander("🛠️ Palvelimen Etäylläpito (Git & Daemon)", expanded=False):
+            st.info("📱 Mobiili-etäylläpito aktiivinen (v2.1) ✨")
             # Git status info
             st.markdown(f"**Haara:** `{git_info.get('branch', 'unknown')}` &nbsp;|&nbsp; **Commit:** `{git_info.get('commit_hash', 'N/A')}`")
             if git_info.get("commit_msg"):
