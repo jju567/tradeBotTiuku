@@ -142,7 +142,8 @@ cp .env.example .env
 Aseta API-avaimet:
 ```env
 OPENROUTER_API_KEY="your-openrouter-api-key"
-OPENAI_API_KEY="your-openai-api-key" # Valinnainen fallback
+OPENROUTER_MODEL="google/gemini-2.5-flash"
+OPENROUTER_FALLBACK_MODEL="meta-llama/llama-3.3-70b-instruct"
 
 # Salkkuasetukset
 NORDNET_FEE_TIER=3

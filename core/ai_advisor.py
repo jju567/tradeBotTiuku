@@ -7,27 +7,33 @@ logger = logging.getLogger(__name__)
 
 
 class StockAdvisorAI:
-    """Tiuku AI Agent evaluating equities using technical indicators (RSI, Bollinger Bands, Moving Averages) and GPT-4o / GPT-4o-mini."""
+    """Tiuku AI Agent evaluating equities using technical indicators (RSI, Bollinger Bands, Moving Averages) and OpenRouter LLM (google/gemini-2.5-flash)."""
 
-    def __init__(self, api_key: str = config.OPENAI_API_KEY, model: str = config.OPENAI_MODEL):
+    def __init__(
+        self,
+        api_key: str = config.OPENROUTER_API_KEY or config.OPENAI_API_KEY,
+        model: str = config.OPENROUTER_MODEL,
+        base_url: str = config.OPENROUTER_BASE_URL,
+    ):
         self.api_key = api_key
         self.model = model
+        self.base_url = base_url
         self.client = None
 
         if self.api_key:
             try:
                 from openai import OpenAI
-                self.client = OpenAI(api_key=self.api_key)
-                logger.info(f"🤖 OpenAI AIAdvisor initialized successfully (Model: {self.model})")
+                self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+                logger.info(f"🤖 OpenRouter AIAdvisor initialized successfully (Model: {self.model})")
             except Exception as e:
-                logger.warning(f" Could not initialize OpenAI client: {e}. Falling back to rule-based Tiuku engine.")
+                logger.warning(f" Could not initialize OpenRouter client: {e}. Falling back to rule-based Tiuku engine.")
         else:
-            logger.info("ℹ️ OPENAI_API_KEY missing. Using rule-based Tiuku quantitative engine.")
+            logger.info("ℹ️ OPENROUTER_API_KEY missing. Using rule-based Tiuku quantitative engine.")
 
     def evaluate_equities(self, market_data: List[Dict[str, Any]], current_portfolio: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Evaluates equities and assigns an AI Score (1-10), target weight, and reasoning for each stock."""
         results = []
-        mode_str = f"OpenAI {self.model}" if self.client else "Rule-based Engine"
+        mode_str = f"OpenRouter {self.model}" if self.client else "Rule-based Engine"
         logger.info(f"Starting equity evaluation for {len(market_data)} symbols using {mode_str}...")
 
         global_strat = current_portfolio.get("global_strategy") or config.INVESTMENT_STRATEGY
@@ -118,9 +124,10 @@ Kirjoita selkeä, ammattimainen ja kannustava suomenkielinen yhteenveto salkun h
                 ],
                 temperature=0.4,
             )
+            self._record_token_usage(response)
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"OpenAI overall summary error: {e}")
+            logger.error(f"OpenRouter overall summary error: {e}")
             return self._rule_based_portfolio_summary(portfolio_summary, avg_score, max_position_pct, top_name, 1, 0)
 
     def _rule_based_portfolio_summary(
@@ -193,6 +200,7 @@ Respond ONLY with valid JSON with keys:
                 ],
                 temperature=0.3,
             )
+            self._record_token_usage(response)
             content = response.choices[0].message.content.strip()
             if content.startswith("```"):
                 content = content.split("```")[1].strip()
@@ -200,8 +208,21 @@ Respond ONLY with valid JSON with keys:
                     content = content[4:].strip()
             return json.loads(content)
         except Exception as e:
-            logger.error(f"OpenAI API evaluation error for {stock.get('symbol')}: {e}")
+            logger.error(f"OpenRouter API evaluation error for {stock.get('symbol')}: {e}")
             return self._rule_based_tiuku_eval(stock, global_strat)
+
+    def _record_token_usage(self, response: Any) -> None:
+        """Records token usage via TokenTracker if usage metadata is present."""
+        usage = getattr(response, "usage", None)
+        if usage:
+            p_tok = getattr(usage, "prompt_tokens", 0)
+            c_tok = getattr(usage, "completion_tokens", 0)
+            if p_tok > 0 or c_tok > 0:
+                try:
+                    from core.token_tracker import record_tokens
+                    record_tokens(p_tok, c_tok, model=self.model, source="ai_advisor")
+                except Exception:
+                    pass
 
     def _rule_based_tiuku_eval(self, stock: Dict[str, Any], global_strategy: str = None) -> Dict[str, Any]:
         """Rule-based Tiuku engine for scoring stocks (1-10) using RSI, Bollinger Bands, trend, and strategy profile."""

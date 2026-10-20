@@ -10,7 +10,7 @@ Noudata näitä ohjeita kaikessa uudessa koodissa ja muutoksissa.
 **tradeBotTiuku** on Python-pohjainen portfolio-neuvonantosovellus, joka:
 - Hakee osakemarkkinadatan `yfinance`-kirjastolla
 - Laskee tekniset indikaattorit (RSI, SMA, EMA, Bollinger Bands)
-- Arvioi osakkeet OpenAI GPT-4o -mallilla ja rule-based -varamoottorilla
+- Arvioi osakkeet OpenRouter LLM -mallilla (`google/gemini-2.5-flash`) ja rule-based -varamoottorilla
 - Tuottaa tasapainousehdotuksia (ei toteuta kauppoja automaattisesti)
 - Generoi Markdown- ja HTML-raportteja suomeksi
 

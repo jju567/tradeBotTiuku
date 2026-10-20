@@ -36,9 +36,14 @@ ETF_WATCHLIST_PATH = DATA_DIR / "etf_watchlist.json"
 for directory in [DATA_DIR, LOG_DIR, REPORT_OUTPUT_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-# API Keys & Services
-OPENAI_API_KEY = env.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
-OPENAI_MODEL = env.get("OPENAI_MODEL", "gpt-4o")
+# API Keys & Services (Unified on OpenRouter & Gemini 2.5 Flash)
+OPENROUTER_API_KEY = env.get("OPENROUTER_API_KEY", os.environ.get("OPENROUTER_API_KEY", ""))
+OPENROUTER_MODEL = env.get("OPENROUTER_MODEL", os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash"))
+OPENROUTER_FALLBACK_MODEL = env.get("OPENROUTER_FALLBACK_MODEL", os.environ.get("OPENROUTER_FALLBACK_MODEL", "meta-llama/llama-3.3-70b-instruct"))
+OPENROUTER_BASE_URL = env.get("OPENROUTER_BASE_URL", os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"))
+
+OPENAI_API_KEY = OPENROUTER_API_KEY or env.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+OPENAI_MODEL = env.get("OPENROUTER_MODEL", env.get("OPENAI_MODEL", "google/gemini-2.5-flash"))
 
 # Nordnet Credentials & API Settings
 NORDNET_USERNAME = env.get("NORDNET_USERNAME", "")

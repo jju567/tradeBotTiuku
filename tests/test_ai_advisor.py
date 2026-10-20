@@ -44,8 +44,8 @@ def make_stock(
 
 @pytest.fixture
 def rule_based_advisor() -> StockAdvisorAI:
-    """StockAdvisorAI without OpenAI key — always uses rule-based engine."""
-    return StockAdvisorAI(api_key="", model="gpt-4o")
+    """StockAdvisorAI without OpenRouter/OpenAI key — always uses rule-based engine."""
+    return StockAdvisorAI(api_key="", model="google/gemini-2.5-flash")
 
 
 # ---------------------------------------------------------------------------
@@ -210,3 +210,12 @@ class TestGenerateOverallPortfolioAnalysis:
         ai_evals = [{"symbol": "A.HE", "score": 4}]
         result = rule_based_advisor.generate_overall_portfolio_analysis(portfolio, ai_evals, [])
         assert result["health_rating"] in ("HYVÄ", "KOHTALAINEN")
+
+    def test_openrouter_client_initialization(self, monkeypatch):
+        from unittest.mock import MagicMock
+        mock_openai = MagicMock()
+        monkeypatch.setattr("openai.OpenAI", mock_openai)
+        advisor = StockAdvisorAI(api_key="test-or-key", model="google/gemini-2.5-flash", base_url="https://openrouter.ai/api/v1")
+        assert advisor.model == "google/gemini-2.5-flash"
+        assert advisor.base_url == "https://openrouter.ai/api/v1"
+        mock_openai.assert_called_once_with(base_url="https://openrouter.ai/api/v1", api_key="test-or-key")
