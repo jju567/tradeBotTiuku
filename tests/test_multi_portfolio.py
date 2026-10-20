@@ -1315,3 +1315,30 @@ def test_set_holding_hodl_does_not_consume_active_slots(tmp_path):
     assert len(p.active_positions()) == 1
     assert {x["Ticker"] for x in p.positions} == {"FARON.HE", "HARVIA.HE"}
 
+
+def test_nlp_archive_ignores_false_lack_of_info_snippet_reject(tmp_path):
+    """Verifies that a hallucinated REJECT caused by 'lack of information / without financial statements' on a news snippet is ignored."""
+    from main_controller import append_nlp_decision
+
+    archive_file = tmp_path / "nlp_decisions_archive.csv"
+    universe_file = tmp_path / "clean_microcap_universe.csv"
+    universe_file.write_text("ticker,market\nHUMBLE.ST,SE\n", encoding="utf-8")
+
+    append_nlp_decision(
+        ticker="HUMBLE.ST",
+        headline="SPCX and several tickers in daily market roundup",
+        llm_decision="REJECT",
+        reasoning=(
+            "Fatal NLP Risk triggered: The provided information for SPCX is a news headline snippet that lists several tickers "
+            "without any financial documents or context for SPCX itself. Without financial statements or regulatory filings, "
+            "it is impossible to assess the company's financial health. Therefore, SPCX is rejected as an empty shell due to lack of information."
+        ),
+        archive_path=archive_file,
+    )
+
+    engine = MarketDataEngine(clean_universe_path=universe_file)
+    engine.evaluated_news_cache.clear()
+    engine._load_evaluated_news_cache(archive_path=archive_file, max_age_days=14.0)
+    assert ("HUMBLE.ST", "SPCX and several tickers in daily market roundup") not in engine.evaluated_news_cache
+
+

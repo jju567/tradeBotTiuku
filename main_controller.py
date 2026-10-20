@@ -808,18 +808,34 @@ class MarketDataEngine:
                         reason = row[4].strip()
                         if not (ticker and headline):
                             continue
-                        if decision == "REJECT" and ts_str:
-                            try:
-                                clean_ts = ts_str[:-1] + "+00:00" if ts_str.endswith("Z") else ts_str
-                                dt_val = datetime.fromisoformat(clean_ts)
-                                if dt_val.tzinfo is None:
-                                    dt_val = dt_val.replace(tzinfo=timezone.utc)
-                                age_days = (now_utc - dt_val).total_seconds() / 86400.0
-                                if age_days > max_age_days:
-                                    # Stale historical REJECT (>14d old): do not permanently blacklist ticker
-                                    continue
-                            except Exception:
-                                pass
+                        if decision == "REJECT":
+                            # Filter out hallucinated "lack of information / missing financial statements in news snippet" or wrong-ticker REJECTs
+                            r_low = reason.lower()
+                            if any(
+                                phrase in r_low
+                                for phrase in (
+                                    "lack of information",
+                                    "without financial statements",
+                                    "impossible to assess",
+                                    "news headline snippet",
+                                    "cryptocurrency token",
+                                    "empty shell spac",
+                                    "insufficient information",
+                                )
+                            ):
+                                continue
+                            if ts_str:
+                                try:
+                                    clean_ts = ts_str[:-1] + "+00:00" if ts_str.endswith("Z") else ts_str
+                                    dt_val = datetime.fromisoformat(clean_ts)
+                                    if dt_val.tzinfo is None:
+                                        dt_val = dt_val.replace(tzinfo=timezone.utc)
+                                    age_days = (now_utc - dt_val).total_seconds() / 86400.0
+                                    if age_days > max_age_days:
+                                        # Stale historical REJECT (>14d old): do not permanently blacklist ticker
+                                        continue
+                                except Exception:
+                                    pass
                         self.evaluated_news_cache[(ticker, headline)] = (decision, reason)
             if self.evaluated_news_cache:
                 logger.info(f"Loaded {len(self.evaluated_news_cache)} active news evaluations into NLP cache.")
@@ -1084,7 +1100,12 @@ class MarketDataEngine:
                         if os.getenv("OPENROUTER_API_KEY"):
                             try:
                                 from screener.nlp_analyzer import analyze_core_fundamentals
-                                nlp_res = analyze_core_fundamentals(full_text)
+                                hf_context = self.hard_facts_cache.get(ticker)
+                                nlp_res = analyze_core_fundamentals(
+                                    full_text,
+                                    ticker=ticker,
+                                    hard_financials=hf_context,
+                                )
                             except Exception as e:
                                 logger.warning(f"⚠️ [OPERATIONAL HEALTH] LLM API call error for {ticker}: {e}")
                                 nlp_res = None
@@ -1097,9 +1118,23 @@ class MarketDataEngine:
                             nlp_res = rule_based_analyze_core_fundamentals(full_text)
 
                         safety = nlp_res.get("financial_safety", {})
-                        if safety.get("going_concern_risk") or safety.get("erratic_pivots_detected"):
+                        v_reason_raw = str(nlp_res.get("verdict_details", {}).get("reasoning", "") or "")
+                        v_reason_low = v_reason_raw.lower()
+                        is_false_snippet_reject = any(
+                            phrase in v_reason_low
+                            for phrase in (
+                                "lack of information",
+                                "without financial statements",
+                                "impossible to assess",
+                                "news headline snippet",
+                                "cryptocurrency token",
+                                "empty shell spac",
+                                "insufficient information",
+                            )
+                        )
+                        if (safety.get("going_concern_risk") or safety.get("erratic_pivots_detected")) and not is_false_snippet_reject:
                             item_decision = "REJECT"
-                            item_reason = f"Fatal NLP Risk triggered: {nlp_res.get('verdict_details', {}).get('reasoning')}"
+                            item_reason = f"Fatal NLP Risk triggered: {v_reason_raw}"
                         elif nlp_res.get("verdict_details", {}).get("verdict") == "WARN" or safety.get("warning_detected"):
                             if item_decision != "REJECT":
                                 item_decision = "WARN"

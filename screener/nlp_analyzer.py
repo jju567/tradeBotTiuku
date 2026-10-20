@@ -125,6 +125,7 @@ If ANY of the following conditions are met, the stock MUST receive a verdict of 
 2. ERRATIC STRATEGIC PIVOTS / EMPTY SHELLS:
    - Sudden, unrelated business model pivots (e.g., pivot from retail/cosmetics to AI, crypto, mining within a short timeframe).
    - SPAC empty shells without commercial operating assets.
+   - CRITICAL NEWS SNIPPET RULE: When evaluating a short news headline or snippet (rather than a full 10-K/interim filing), NEVER reject a company as an "empty shell" or "erratic pivot" merely because the short news headline lacks financial statements or financial details. Furthermore, NEVER reject the target ticker because a news headline mentions a different ticker, ETF, SPAC, or cryptocurrency token (e.g. SPCX, UBER, STI, AAC.U, BICO/USD). If a news snippet is unrelated to the target company or only contains a brief headline without fatal risk keywords for the target company itself, return verdict "HOLD" with all safety failure flags set to false.
 
 3. NEGATIVE SHAREHOLDERS' EQUITY:
    - Deeply negative book equity resulting from cumulative operational losses, unless explicitly offset by non-recourse project structures.

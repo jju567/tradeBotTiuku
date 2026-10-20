@@ -312,10 +312,10 @@ class WebSearchVerifier:
                     if m not in snippets:
                         snippets.append(m)
 
-            # 3. Fallback to English global query if very few local snippets
-            if len(snippets) < 2:
-                q_en = f"{clean_ticker} {company_name} stock news".strip()
-                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="US", max_age_days=max_age_days)
+            # 3. Fallback to English query ONLY within FI locale and with explicit company name
+            if len(snippets) < 2 and company_name.strip():
+                q_en = f'"{company_name.strip()}" stock news'.strip()
+                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="FI", max_age_days=max_age_days)
                 for m in en_snippets:
                     if m not in snippets:
                         snippets.append(m)
@@ -333,10 +333,10 @@ class WebSearchVerifier:
                     if m not in snippets:
                         snippets.append(m)
 
-            # 3. Fallback to English global query if very few local snippets
-            if len(snippets) < 2:
-                q_en = f"{clean_ticker} {company_name} stock news".strip()
-                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="US", max_age_days=max_age_days)
+            # 3. Fallback to English query ONLY within SE locale and with explicit company name (prevents matching English words like "humble", "dust", "rug" or US SPACs)
+            if len(snippets) < 2 and company_name.strip():
+                q_en = f'"{company_name.strip()}" stock news'.strip()
+                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="SE", max_age_days=max_age_days)
                 for m in en_snippets:
                     if m not in snippets:
                         snippets.append(m)
@@ -353,8 +353,8 @@ class WebSearchVerifier:
                     if m not in snippets:
                         snippets.append(m)
 
-        # General web fallback (DuckDuckGo) if RSS returns empty
-        if not snippets:
+        # General web fallback (DuckDuckGo) if RSS returns empty for US stocks
+        if not snippets and detected_mkt == "US":
             ddg_query = f"{ticker} {search_name} stock news"
             snippets = self.search_duckduckgo(ddg_query, max_results=5)
 
