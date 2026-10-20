@@ -1219,7 +1219,7 @@ with st.sidebar:
     # SERVER REMOTE OPS & GIT PULL (Etäylläpito puhelimesta)
     # ------------------------------------------------------------------
     try:
-        from core.server_maintenance import get_git_info, get_daemon_status, git_pull, restart_daemon
+        from core.server_maintenance import get_git_info, get_daemon_status, git_pull, restart_daemon, git_hard_reset_to_origin
         git_info = get_git_info()
         daemon_info = get_daemon_status()
 
@@ -1255,10 +1255,11 @@ with st.sidebar:
                             st.code(f"{pull_log}\n\n{restart_log}")
                     else:
                         st.error(f"❌ Git pull epäonnistui:\n{pull_log}")
+                        st.info("🛡️ Palvelin suoritti automaattisen peruutuksen (merge --abort). Daemon jatkaa vanhalla ehjällä koodilla.")
                     time.sleep(1.5)
                     st.rerun()
 
-            # Secondary Action: Restart Daemon only
+            # Secondary Actions: Restart Daemon only & Status Refresh
             col_d1, col_d2 = st.columns(2)
             with col_d1:
                 if st.button("🔄 Restart Daemon", width="stretch", help="Käynnistää pelkän taustadaemonin uudelleen ilman git pullia."):
@@ -1272,6 +1273,20 @@ with st.sidebar:
                     st.rerun()
             with col_d2:
                 if st.button("📡 Tarkista tila", width="stretch"):
+                    st.rerun()
+
+            # Emergency Conflict Resolver (Hard Reset)
+            with st.expander("⚠️ Konfliktin hätäkorjaus (Hard Reset)", expanded=False):
+                st.caption("Jos git pull estyy konfliktien takia, tämä palauttaa kooditiedostot vastaamaan 100% GitHubia (ignoratut salkkutiedot säilyvät).")
+                if st.button("🚨 Pakota synkronointi (Reset to Origin)", type="secondary", width="stretch"):
+                    with st.spinner("Palautetaan palvelin GitHubin mukaiseksi..."):
+                        reset_ok, reset_log = git_hard_reset_to_origin()
+                        if reset_ok:
+                            restart_daemon(daily_at=daemon_info.get("daily_at", "23:05"))
+                            st.success("✅ Palvelin palautettu ja synkronoitu puhtaasti GitHubin tilanteeseen!")
+                        else:
+                            st.error(f"Palautus epäonnistui:\n{reset_log}")
+                    time.sleep(1.5)
                     st.rerun()
     except Exception as e:
         logger.debug(f"Could not load server maintenance widget: {e}")

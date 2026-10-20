@@ -266,6 +266,8 @@ def git_pull(branch: Optional[str] = None) -> Tuple[bool, str]:
     """
     Performs a safe git pull from remote.
     Uses --autostash to protect any untracked or locally modified config files on the server.
+    If a conflict occurs, automatically performs an abort/rollback so the working directory
+    is never left in a broken or merging state, and the running daemon is untouched.
     """
     git_info = get_git_info()
     if not git_info.get("is_git"):
@@ -284,7 +286,13 @@ def git_pull(branch: Optional[str] = None) -> Tuple[bool, str]:
     logs.append(f"⬇️ Suoritetaan git pull --autostash origin {target_branch}...")
     rc, out, err = _run_cmd(["git", "pull", "--autostash", "origin", target_branch])
     if rc != 0:
-        return False, f"Git pull epäonnistui (koodi {rc}):\n{err or out}"
+        logs.append(f"❌ Git pull epäonnistui (koodi {rc}):\n{err or out}")
+        # Automatic Rollback / Abort to prevent broken state on server
+        logs.append("🛡️ [Auto-Rollback] Palautetaan palvelin ehjään tilaan (aborting merge/rebase)...")
+        _run_cmd(["git", "merge", "--abort"])
+        _run_cmd(["git", "rebase", "--abort"])
+        logs.append("✅ Automaattinen peruutus suoritettu. Palvelimen koodi ja daemon säilyivät entisellään.")
+        return False, "\n".join(logs)
 
     logs.append(out if out else "Koodi ajan tasalla.")
 
@@ -292,6 +300,37 @@ def git_pull(branch: Optional[str] = None) -> Tuple[bool, str]:
     new_info = get_git_info()
     logs.append(f"✅ Uusin commit: {new_info.get('commit_hash')} — {new_info.get('commit_msg')}")
 
+    return True, "\n".join(logs)
+
+
+def git_hard_reset_to_origin(branch: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Emergency override: Forces local branch to match origin/<branch> exactly.
+    Safely resolves unrecoverable merge conflicts without touching ignored data/ portfolios.
+    """
+    git_info = get_git_info()
+    if not git_info.get("is_git"):
+        return False, "Hakemisto ei ole Git-repositorio."
+
+    target_branch = branch or git_info.get("branch") or "main"
+    logs: List[str] = [f"⚠️ Suoritetaan pakotettu synkronointi kohteeseen origin/{target_branch}..."]
+
+    # Abort any in-progress merge/rebase
+    _run_cmd(["git", "merge", "--abort"])
+    _run_cmd(["git", "rebase", "--abort"])
+
+    # Fetch fresh
+    rc, out, err = _run_cmd(["git", "fetch", "origin", target_branch])
+    if rc != 0:
+        return False, f"Git fetch epäonnistui:\n{err or out}"
+
+    # Reset hard
+    rc, out, err = _run_cmd(["git", "reset", "--hard", f"origin/{target_branch}"])
+    if rc != 0:
+        return False, f"Git reset epäonnistui:\n{err or out}"
+
+    new_info = get_git_info()
+    logs.append(f"✅ Palvelin synkronoitu pakotetusti tilaan: {new_info.get('commit_hash')} — {new_info.get('commit_msg')}")
     return True, "\n".join(logs)
 
 

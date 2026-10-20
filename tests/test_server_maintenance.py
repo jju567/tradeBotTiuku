@@ -12,6 +12,7 @@ from core.server_maintenance import (
     find_daemon_pids,
     get_daemon_status,
     get_git_info,
+    git_hard_reset_to_origin,
     git_pull,
     is_pid_alive,
     restart_daemon,
@@ -124,3 +125,43 @@ def test_restart_daemon_standalone():
         assert ok is True
         assert "itsenäisenä taustaprosessina" in msg
         assert "54321" in msg
+
+
+def test_git_pull_conflict_auto_rollback():
+    with patch("core.server_maintenance.get_git_info") as mock_info, \
+         patch("core.server_maintenance._run_cmd") as mock_cmd:
+        mock_info.return_value = {"is_git": True, "branch": "main"}
+        # fetch ok (0), pull conflict (1), merge --abort (0), rebase --abort (0)
+        mock_cmd.side_effect = [
+            (0, "Fetched origin/main", ""),
+            (1, "", "error: Your local changes would be overwritten by merge"),
+            (0, "", ""),
+            (0, "", ""),
+        ]
+
+        success, logs = git_pull()
+        assert success is False
+        assert "Auto-Rollback" in logs
+        assert "Automaattinen peruutus suoritettu" in logs
+
+
+def test_git_hard_reset_to_origin():
+    with patch("core.server_maintenance.get_git_info") as mock_info, \
+         patch("core.server_maintenance._run_cmd") as mock_cmd:
+        mock_info.side_effect = [
+            {"is_git": True, "branch": "main"},
+            {"is_git": True, "branch": "main", "commit_hash": "f00ba42", "commit_msg": "forced sync commit"},
+        ]
+        # merge --abort, rebase --abort, fetch, reset --hard
+        mock_cmd.side_effect = [
+            (0, "", ""),
+            (0, "", ""),
+            (0, "", ""),
+            (0, "HEAD is now at f00ba42", ""),
+        ]
+
+        success, logs = git_hard_reset_to_origin()
+        assert success is True
+        assert "f00ba42" in logs
+        assert "Palvelin synkronoitu pakotetusti" in logs
+
