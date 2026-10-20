@@ -353,6 +353,9 @@ class PortfolioConfig:
     description: Optional[str] = None
     ignore_hodl_positions: bool = False
     portfolio_max_drawdown_alert_pct: float = -15.0
+    max_new_buys_per_cycle: Optional[int] = None
+    min_days_between_buys: Optional[int] = None
+    max_new_buys_per_7d: Optional[int] = None
     sub_strategies: Dict[str, Any] = field(default_factory=dict)
     execution_constraints: Dict[str, Any] = field(default_factory=dict)
 
@@ -398,6 +401,15 @@ class PortfolioConfig:
 
         dd_alert = float(exec_constraints.get("portfolio_max_drawdown_alert_pct", data.get("portfolio_max_drawdown_alert_pct", -15.0)))
         ignore_hodl = bool(data.get("ignore_hodl_positions", False))
+
+        raw_max_cycle = exec_constraints.get("max_new_buys_per_cycle", data.get("max_new_buys_per_cycle"))
+        max_new_buys_cycle_val = int(raw_max_cycle) if raw_max_cycle is not None else None
+
+        raw_min_days = exec_constraints.get("min_days_between_buys", data.get("min_days_between_buys"))
+        min_days_between_buys_val = int(raw_min_days) if raw_min_days is not None else None
+
+        raw_max_7d = exec_constraints.get("max_new_buys_per_7d", data.get("max_new_buys_per_7d"))
+        max_new_buys_7d_val = int(raw_max_7d) if raw_max_7d is not None else None
 
         has_sub_strat_partial_tp = False
         if isinstance(sub_strats, dict):
@@ -445,6 +457,9 @@ class PortfolioConfig:
             description=data.get("description"),
             ignore_hodl_positions=ignore_hodl,
             portfolio_max_drawdown_alert_pct=dd_alert,
+            max_new_buys_per_cycle=max_new_buys_cycle_val,
+            min_days_between_buys=min_days_between_buys_val,
+            max_new_buys_per_7d=max_new_buys_7d_val,
             sub_strategies=sub_strats,
             execution_constraints=exec_constraints,
         )
@@ -1701,6 +1716,67 @@ class MasterLiveTradingDaemon:
         portfolio.save_state()
         return closed_count
 
+    def _get_allowed_new_buys_this_cycle(self, portfolio: PortfolioInstance, today: Any) -> int:
+        """
+        Evaluates staggered entry constraints (`max_new_buys_per_cycle`, `min_days_between_buys`, `max_new_buys_per_7d`)
+        against the portfolio's active (non-HODL) positions' `Buy Date` timestamps.
+        Returns the maximum number of new positions allowed to be opened in the current cycle.
+        """
+        cfg = portfolio.config
+        active_pos = portfolio.active_positions()
+        remaining_slots = max(0, cfg.slots - len(active_pos))
+        if remaining_slots <= 0:
+            return 0
+
+        min_days_elapsed: Optional[int] = None
+        latest_ticker = ""
+        latest_buy_date_str = ""
+        recent_7d_buys = 0
+
+        for pos in active_pos:
+            b_str = str(pos.get("Buy Date") or pos.get("buy_date") or "").strip()[:10]
+            if not b_str:
+                continue
+            try:
+                b_dt = datetime.strptime(b_str, "%Y-%m-%d").date()
+                days_ago = (today - b_dt).days
+                if days_ago >= 0:
+                    if min_days_elapsed is None or days_ago < min_days_elapsed:
+                        min_days_elapsed = days_ago
+                        latest_ticker = str(pos.get("Ticker") or pos.get("ticker") or "")
+                        latest_buy_date_str = b_str
+                    if days_ago < 7:
+                        recent_7d_buys += 1
+            except Exception:
+                continue
+
+        if cfg.min_days_between_buys is not None and cfg.min_days_between_buys > 0:
+            if min_days_elapsed is not None and min_days_elapsed < cfg.min_days_between_buys:
+                logger.info(
+                    f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard (min_days_between_buys={cfg.min_days_between_buys}d): "
+                    f"Latest active position ({latest_ticker} on {latest_buy_date_str}) was bought {min_days_elapsed}d ago "
+                    f"(< {cfg.min_days_between_buys}d). Skipping new buys this cycle."
+                )
+                return 0
+
+        allowed = remaining_slots
+        if cfg.max_new_buys_per_7d is not None and cfg.max_new_buys_per_7d > 0:
+            rem_7d = cfg.max_new_buys_per_7d - recent_7d_buys
+            if rem_7d <= 0:
+                logger.info(
+                    f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard (max_new_buys_per_7d={cfg.max_new_buys_per_7d}): "
+                    f"{recent_7d_buys} active position(s) already opened within the last 7 days. Skipping new buys this cycle."
+                )
+                return 0
+            allowed = min(allowed, rem_7d)
+
+        if cfg.max_new_buys_per_cycle is not None and cfg.max_new_buys_per_cycle > 0:
+            allowed = min(allowed, cfg.max_new_buys_per_cycle)
+        if cfg.min_days_between_buys is not None and cfg.min_days_between_buys > 0:
+            allowed = min(allowed, 1)
+
+        return max(0, allowed)
+
     def execute_phase2_sub_strategies_screening(
         self,
         portfolio: PortfolioInstance,
@@ -1709,6 +1785,7 @@ class MasterLiveTradingDaemon:
         held_tickers: Optional[Set[str]] = None,
         cooldown_tickers: Optional[Dict[str, Any]] = None,
         today: Optional[date] = None,
+        max_buys_allowed: Optional[int] = None,
     ) -> int:
         """
         Executes screening and sizing for composite/hybrid portfolios using sub-strategies
@@ -1721,6 +1798,11 @@ class MasterLiveTradingDaemon:
             cooldown_tickers = {}
         if today is None:
             today = datetime.now(timezone.utc).date()
+
+        if max_buys_allowed is None:
+            max_buys_allowed = self._get_allowed_new_buys_this_cycle(portfolio, today)
+        if max_buys_allowed <= 0:
+            return 0
 
         new_buys = 0
 
@@ -1759,6 +1841,12 @@ class MasterLiveTradingDaemon:
         # Iterate through each sub_strategy in order
         for sub_name, sub_cfg in cfg.sub_strategies.items():
             if len(portfolio.active_positions()) >= cfg.slots:
+                break
+            if new_buys >= max_buys_allowed:
+                logger.info(
+                    f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard: reached cycle buy limit ({new_buys}/{max_buys_allowed} new position(s)). "
+                    f"Deferring remaining open slots to subsequent cycles."
+                )
                 break
 
             sub_slots = int(sub_cfg.get("slots", 1))
@@ -1964,6 +2052,12 @@ class MasterLiveTradingDaemon:
             for slot_idx in range(current_held, sub_slots):
                 if len(portfolio.active_positions()) >= cfg.slots:
                     break
+                if new_buys >= max_buys_allowed:
+                    logger.info(
+                        f"[{cfg.portfolio_id}] ⏳ Staggered Entry Guard: reached cycle buy limit ({new_buys}/{max_buys_allowed} new position(s)). "
+                        f"Deferring remaining open slots in `{sub_name}` to subsequent cycles."
+                    )
+                    break
                 if available_cash < (MIN_BROKER_FEE + 10.0):
                     logger.info(f"[{cfg.portfolio_id}] Available cash exhausted ({available_cash:.2f}€). Halting buys.")
                     break
@@ -2134,6 +2228,9 @@ class MasterLiveTradingDaemon:
                     pass
 
         new_buys = 0
+        max_buys_allowed = self._get_allowed_new_buys_this_cycle(portfolio, today)
+        if max_buys_allowed <= 0:
+            return 0
 
         # Dedicated execution branch for composite portfolios with sub_strategies (e.g. P13_Live_Candidate)
         if cfg.sub_strategies:
@@ -2144,6 +2241,7 @@ class MasterLiveTradingDaemon:
                 held_tickers=held_tickers,
                 cooldown_tickers=cooldown_tickers,
                 today=today,
+                max_buys_allowed=max_buys_allowed,
             )
 
         # Dedicated execution branch for P11 Meta_Consensus strategy
@@ -2161,7 +2259,7 @@ class MasterLiveTradingDaemon:
             min_score = cfg.min_conviction_score if cfg.min_conviction_score is not None else 8
 
             for _, row in df_conv.iterrows():
-                if open_count + new_buys >= cfg.slots:
+                if open_count + new_buys >= cfg.slots or new_buys >= max_buys_allowed:
                     break
 
                 ticker = str(row["Ticker"]).strip().upper()
@@ -2419,7 +2517,7 @@ class MasterLiveTradingDaemon:
             breakout_candidates.sort(key=lambda x: (x["vol_surge"], x["day_change_pct"]), reverse=True)
 
             for cand in breakout_candidates:
-                if open_count + new_buys >= cfg.slots:
+                if open_count + new_buys >= cfg.slots or new_buys >= max_buys_allowed:
                     break
 
                 ticker = cand["ticker"]
@@ -2519,7 +2617,7 @@ class MasterLiveTradingDaemon:
             return new_buys
 
         for ticker, meta in self.market_engine.universe_metadata.items():
-            if open_count + new_buys >= cfg.slots:
+            if open_count + new_buys >= cfg.slots or new_buys >= max_buys_allowed:
                 break
 
             if ticker in held_tickers:

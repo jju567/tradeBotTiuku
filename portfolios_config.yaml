@@ -184,5 +184,9 @@ portfolios:
       limit_price_buffer_pct: 0.2 # Buy Limit = Prev Close + 0.2%, Sell Limit = Prev Close - 0.2%
       market_regime_cash_buffer_pct: 40.0 # Hold 40% cash in CHOPPY/BEAR regimes
       portfolio_max_drawdown_alert_pct: -15.0 # Trigger full portfolio review alert
+      max_new_buys_per_cycle: 1 # Max 1 new position per EOD cycle (staggered entry)
+      min_days_between_buys: 3 # Minimum 3 calendar days between new active position buys
+      max_new_buys_per_7d: 2 # Maximum 2 new active positions opened within any 7-day rolling window
+
 
 

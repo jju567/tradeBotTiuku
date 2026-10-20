@@ -111,6 +111,9 @@ def test_portfolios_yaml_structure():
     assert p13["execution_constraints"]["allowed_order_types"] == ["LIMIT"]
     assert p13["execution_constraints"]["market_regime_cash_buffer_pct"] == 40.0
     assert p13["execution_constraints"]["portfolio_max_drawdown_alert_pct"] == -15.0
+    assert p13["execution_constraints"]["max_new_buys_per_cycle"] == 1
+    assert p13["execution_constraints"]["min_days_between_buys"] == 3
+    assert p13["execution_constraints"]["max_new_buys_per_7d"] == 2
 
     # Also check PortfolioConfig.from_dict mapping
     cfg13 = PortfolioConfig.from_dict("P13_Live_Candidate", p13)
@@ -122,6 +125,9 @@ def test_portfolios_yaml_structure():
     assert cfg13.market_regime_cash_buffer_pct == pytest.approx(0.40)
     assert cfg13.ignore_hodl_positions is True
     assert cfg13.portfolio_max_drawdown_alert_pct == pytest.approx(-15.0)
+    assert cfg13.max_new_buys_per_cycle == 1
+    assert cfg13.min_days_between_buys == 3
+    assert cfg13.max_new_buys_per_7d == 2
     assert "core_nordic_midcap_quality" in cfg13.sub_strategies
     assert "satellite_us_microcap_growth" in cfg13.sub_strategies
     assert "satellite_nordic_microcap_catalyst" in cfg13.sub_strategies
@@ -1340,5 +1346,96 @@ def test_nlp_archive_ignores_false_lack_of_info_snippet_reject(tmp_path):
     engine.evaluated_news_cache.clear()
     engine._load_evaluated_news_cache(archive_path=archive_file, max_age_days=14.0)
     assert ("HUMBLE.ST", "SPCX and several tickers in daily market roundup") not in engine.evaluated_news_cache
+
+
+def test_p13_staggered_entry_constraints(tmp_path):
+    """
+    Verifies staggered entry protection on P13_Live_Candidate:
+    1. max_new_buys_per_cycle=1 limits a single cycle to at most 1 new position even when 3 slots are open.
+    2. min_days_between_buys=3 blocks new buys if the newest active position was bought < 3 days ago (while ignoring HODL positions).
+    3. max_new_buys_per_7d=2 blocks a 3rd buy within a 7-day rolling window even when >= 3 days have elapsed since the 2nd buy.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.market_regime = {"regime": "BULL", "last_price": 120.0, "sma_50": 110.0}
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        slots=3,
+        ignore_hodl_positions=True,
+        max_new_buys_per_cycle=1,
+        min_days_between_buys=3,
+        max_new_buys_per_7d=2,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 7000,
+                "slots": 3,
+                "slot_sizes": [2350, 2350, 2300],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    # Add a fresh HODL position bought today -> must NOT block staggered active buys
+    p.set_holding("FARON.HE", 1000, 0.40, hodl=True)
+
+    daemon.market_engine.universe_metadata = {
+        "CORE1.HE": {"market": "FI", "market_cap_eur": 400_000_000.0, "currency": "EUR", "adv_20d_local": 300_000.0, "current_price": 20.0},
+        "CORE2.HE": {"market": "FI", "market_cap_eur": 450_000_000.0, "currency": "EUR", "adv_20d_local": 300_000.0, "current_price": 25.0},
+        "CORE3.HE": {"market": "FI", "market_cap_eur": 500_000_000.0, "currency": "EUR", "adv_20d_local": 300_000.0, "current_price": 30.0},
+    }
+    daemon.market_engine.prices_cache = {"CORE1.HE": 20.0, "CORE2.HE": 25.0, "CORE3.HE": 30.0}
+    common_facts = {"roe": 0.22, "ebit_margin": 0.18, "free_cash_flow": 25_000_000.0, "net_debt_to_ebitda": 0.8}
+    daemon.market_engine.hard_facts_cache = {
+        "CORE1.HE": common_facts,
+        "CORE2.HE": common_facts,
+        "CORE3.HE": common_facts,
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: common_facts
+
+    # Cycle 1 (Day 0): 3 candidates eligible, but max_new_buys_per_cycle=1 -> only 1 position opened
+    opened_day0 = daemon.execute_phase2_screening(p)
+    assert opened_day0 == 1
+    assert len(p.active_positions()) == 1
+
+    # Cycle 2 (1 day after buy): min_days_between_buys=3 -> blocked (1d < 3d)
+    p.active_positions()[0]["Buy Date"] = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    opened_day1 = daemon.execute_phase2_screening(p)
+    assert opened_day1 == 0
+    assert len(p.active_positions()) == 1
+
+    # Cycle 3 (3 days after first buy): 3d >= min_days_between_buys(3) and 1 < max_new_buys_per_7d(2) -> 2nd buy allowed!
+    p.active_positions()[0]["Buy Date"] = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    opened_day3 = daemon.execute_phase2_screening(p)
+    assert opened_day3 == 1
+    assert len(p.active_positions()) == 2
+
+    # Cycle 4 (First buy was 6 days ago, second buy was 3 days ago):
+    # min_days_between_buys=3 is satisfied (3d >= 3d), BUT both active positions were bought within the last 7 days (< 7d)
+    # -> max_new_buys_per_7d=2 blocks the 3rd buy!
+    active_list = p.active_positions()
+    active_list[0]["Buy Date"] = (today - timedelta(days=6)).strftime("%Y-%m-%d")
+    active_list[1]["Buy Date"] = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    opened_day6 = daemon.execute_phase2_screening(p)
+    assert opened_day6 == 0
+    assert len(p.active_positions()) == 2
+
+    # Cycle 5 (First buy is now 7 days ago, second buy was 3 days ago):
+    # Only 1 buy in the last 7 days (< 7d) and newest buy is 3d ago (>= 3d) -> 3rd buy allowed!
+    active_list[0]["Buy Date"] = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    active_list[1]["Buy Date"] = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    opened_day7 = daemon.execute_phase2_screening(p)
+    assert opened_day7 == 1
+    assert len(p.active_positions()) == 3
+
 
 

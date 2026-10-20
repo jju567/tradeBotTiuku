@@ -87,6 +87,11 @@ flowchart TD
 * **Limit-hintalaskenta**: `Ostolimiitti = Päätöskurssi * (1.0 + 0.002)` (+0.2 % puskuri).
 * **Markkinavaikutusrajoitin (`MAX_ADV_ALLOCATION_PCT = 0.05`)**: 
   * Kertaosto ei saa ylittää **5 % osakkeen 20 päivän keskivaihdosta (ADV)**. Mikäli slottikoko (1 500 €) ylittäisi tämän, toimeksiannon kokoa pienennetään automaattisesti.
+* **Vaiheistettu Aloitus & Ajallinen Porrastus (`Staggered Entry Guard`)**:
+  * Eliminoi yksittäisen aloituspäivän markkinatuuririskin tarkistamalla salkun aktiivisten (ei-HODL) positioiden `Buy Date` -päivämäärät:
+    * `max_new_buys_per_cycle: 1` (korkeintaan 1 uusi positio per EOD-iltasykli).
+    * `min_days_between_buys: 3` (vähintään 3 kalenteripäivää edellisestä ostosta ennen seuraavaa uutta positiota).
+    * `max_new_buys_per_7d: 2` (korkeintaan 2 uutta positiota 7 kalenteripäivän rullaavassa aikaikkunassa).
 * **Valuuttamuunnokset**: Automaattinen EKP-keskikurssimuunnos (USD, SEK, DKK, NOK $\rightarrow$ EUR) ilman manuaalisia laskutoimituksia.
 
 ---
