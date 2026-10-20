@@ -1215,7 +1215,66 @@ with st.sidebar:
                     time.sleep(1.2)
                     st.rerun()
 
+    # ------------------------------------------------------------------
+    # SERVER REMOTE OPS & GIT PULL (Etäylläpito puhelimesta)
+    # ------------------------------------------------------------------
+    try:
+        from core.server_maintenance import get_git_info, get_daemon_status, git_pull, restart_daemon
+        git_info = get_git_info()
+        daemon_info = get_daemon_status()
 
+        with st.expander("🛠️ Palvelimen Etäylläpito (Git & Daemon)", expanded=False):
+            # Git status info
+            st.markdown(f"**Haara:** `{git_info.get('branch', 'unknown')}` &nbsp;|&nbsp; **Commit:** `{git_info.get('commit_hash', 'N/A')}`")
+            if git_info.get("commit_msg"):
+                st.caption(f"💬 *{git_info.get('commit_msg')}* ({git_info.get('commit_relative', '')})")
+
+            # Daemon status info
+            d_status_str = daemon_info.get("status_text", "Tuntematon")
+            st.markdown(f"**Daemon:** {d_status_str}")
+            if daemon_info.get("daily_at"):
+                st.caption(f"⏰ Koodiajastin: päivittäin klo `{daemon_info.get('daily_at')}`")
+
+            # Main Action: Git Pull & Restart Daemon
+            if st.button("⬇️ Git Pull & 🔄 Restart Daemon", type="primary", width="stretch", help="Hakee uusimmat koodit GitHubista ja käynnistää taustadaemonin uudella koodilla."):
+                with st.spinner("Suoritetaan git pull ja käynnistetään daemon uudelleen..."):
+                    pull_ok, pull_log = git_pull()
+                    if pull_ok:
+                        restart_ok, restart_log = restart_daemon(daily_at=daemon_info.get("daily_at", "23:05"))
+                        # Clear Streamlit cache so UI picks up newly pulled code
+                        try:
+                            st.cache_data.clear()
+                            st.cache_resource.clear()
+                        except Exception:
+                            pass
+                        if restart_ok:
+                            st.success("✅ Koodi päivitetty ja daemon käynnistetty uudelleen onnistuneesti!")
+                        else:
+                            st.warning(f"Git pull onnistui, mutta daemonin käynnistyksessä huomio:\n{restart_log}")
+                        with st.expander("📜 Lokituloste", expanded=True):
+                            st.code(f"{pull_log}\n\n{restart_log}")
+                    else:
+                        st.error(f"❌ Git pull epäonnistui:\n{pull_log}")
+                    time.sleep(1.5)
+                    st.rerun()
+
+            # Secondary Action: Restart Daemon only
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                if st.button("🔄 Restart Daemon", width="stretch", help="Käynnistää pelkän taustadaemonin uudelleen ilman git pullia."):
+                    with st.spinner("Käynnistetään daemon uudelleen..."):
+                        restart_ok, restart_log = restart_daemon(daily_at=daemon_info.get("daily_at", "23:05"))
+                        if restart_ok:
+                            st.success("✅ Daemon käynnistetty uudelleen!")
+                        else:
+                            st.error(f"❌ Virhe käynnistyksessä: {restart_log}")
+                    time.sleep(1.2)
+                    st.rerun()
+            with col_d2:
+                if st.button("📡 Tarkista tila", width="stretch"):
+                    st.rerun()
+    except Exception as e:
+        logger.debug(f"Could not load server maintenance widget: {e}")
 
     # Environment Info
     st.caption(f"📁 Workspace: `{BASE_DIR.name}`")

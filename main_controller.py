@@ -104,6 +104,7 @@ PORTFOLIOS_DIR = BASE_DIR / "data" / "portfolios"
 DEFAULT_CLEAN_UNIVERSE_CSV = BASE_DIR / "data" / "clean_microcap_universe.csv"
 DEFAULT_NLP_ARCHIVE_CSV = BASE_DIR / "data" / "nlp_decisions_archive.csv"
 DEFAULT_OPERATIONAL_METRICS_JSON = BASE_DIR / "data" / "operational_metrics.json"
+DEFAULT_DAEMON_STATUS_JSON = BASE_DIR / "data" / "daemon_status.json"
 
 # Legacy fallback paths for backwards compatibility
 DEFAULT_PAPER_ACCOUNT_JSON = BASE_DIR / "data" / "paper_account.json"
@@ -3496,21 +3497,45 @@ class MasterLiveTradingDaemon:
 
         return results
 
+    def _update_daemon_status(self, status: str = "running", mode: str = "schedule", daily_at: str = "23:05") -> None:
+        """Writes/updates daemon process status and heartbeat to data/daemon_status.json."""
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if not hasattr(self, "_daemon_started_at"):
+                self._daemon_started_at = now_iso
+            payload = {
+                "pid": os.getpid(),
+                "status": status,
+                "mode": mode,
+                "daily_at": daily_at,
+                "started_at": self._daemon_started_at,
+                "last_heartbeat": now_iso,
+            }
+            _atomic_write_json(DEFAULT_DAEMON_STATUS_JSON, payload)
+        except Exception as e:
+            logger.debug(f"Could not update daemon status JSON: {e}")
+
     def run_loop(self, interval_hours: float = 24.0) -> None:
         """Runs the multi-portfolio engine continuously with a sleep loop."""
         interval_seconds = int(interval_hours * 3600)
         logger.info(f"Starting continuous multi-portfolio daemon loop (Interval: {interval_hours}h)...")
-        while True:
-            try:
-                self.run_cycle()
-                logger.info(f"Sleeping for {interval_hours} hours until next cycle...")
-                time.sleep(interval_seconds)
-            except KeyboardInterrupt:
-                logger.info("Daemon stopped by user.")
-                break
-            except Exception as e:
-                logger.error(f"Unexpected error in daemon loop: {e}. Retrying in 60s...")
-                time.sleep(60)
+        self._update_daemon_status("running", "loop", daily_at="N/A")
+        try:
+            while True:
+                try:
+                    self._update_daemon_status("running", "loop", daily_at="N/A")
+                    self.run_cycle()
+                    logger.info(f"Sleeping for {interval_hours} hours until next cycle...")
+                    self._update_daemon_status("running", "loop", daily_at="N/A")
+                    time.sleep(interval_seconds)
+                except KeyboardInterrupt:
+                    logger.info("Daemon stopped by user.")
+                    break
+                except Exception as e:
+                    logger.error(f"Unexpected error in daemon loop: {e}. Retrying in 60s...")
+                    time.sleep(60)
+        finally:
+            self._update_daemon_status("stopped", "loop", daily_at="N/A")
 
     def run_intraday_p12_tick(self) -> None:
         """DECOMMISSIONED: Intraday scanning is disabled. Retained for backward compatibility."""
@@ -3529,6 +3554,7 @@ class MasterLiveTradingDaemon:
         - Executes daily post-market close sync at daily_at (Nordic + US markets close by 23:00).
         - Purely End-Of-Day (EOD) analysis. Intraday market-hours scanning is decommissioned.
         """
+        self._update_daemon_status("running", "schedule", daily_at=daily_at)
         if run_immediately:
             logger.info("🚀 [Scheduler] Suoritetaan välitön alkukierros käynnistyksen yhteydessä...")
             try:
@@ -3544,16 +3570,20 @@ class MasterLiveTradingDaemon:
             schedule.every(interval_hours).hours.do(self.run_cycle)
 
         logger.info("⏳ [Scheduler] Valmiustilassa. Odotetaan ajastettua ilta-ajoa (tarkistus 30s välein)...")
-        while True:
-            try:
-                schedule.run_pending()
-                time.sleep(30)
-            except KeyboardInterrupt:
-                logger.info("🛑 [Scheduler] Ajastin pysäytetty käyttäjän toimesta.")
-                break
-            except Exception as e:
-                logger.error(f"❌ [Scheduler] Odottamaton virhe ajastinsilmukassa: {e}. Yritetään uudelleen 60s kuluttua...")
-                time.sleep(60)
+        try:
+            while True:
+                try:
+                    self._update_daemon_status("running", "schedule", daily_at=daily_at)
+                    schedule.run_pending()
+                    time.sleep(30)
+                except KeyboardInterrupt:
+                    logger.info("🛑 [Scheduler] Ajastin pysäytetty käyttäjän toimesta.")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ [Scheduler] Odottamaton virhe ajastinsilmukassa: {e}. Yritetään uudelleen 60s kuluttua...")
+                    time.sleep(60)
+        finally:
+            self._update_daemon_status("stopped", "schedule", daily_at=daily_at)
 
 
 KNOWN_ENTRY_PRICES: Dict[str, float] = {

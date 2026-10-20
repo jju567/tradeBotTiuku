@@ -149,3 +149,31 @@ sudo ufw allow 8502/tcp
 Avaa selain osoitteessa: `http://<palvelimen-ip>:8502`
 
 *(Valinnainen tuotantosuositus: voit asettaa Nginx reverse proxyn ja HTTPS Let's Encrypt -sertifikaatin ohjaamaan liikenteen porttiin 8502).*
+
+---
+
+## 📱 8. Etäylläpito & Koodipäivitykset Puhelimesta (Git Pull & Daemon Restart)
+
+tradeBotTiukun hallintapaneelissa (`dashboard.py`) on sisäänrakennettu etäylläpito-osio: **"🛠️ Palvelimen Etäylläpito (Git & Daemon)"**.
+
+Tämän avulla voit tehdä koodimuutokset esimerkiksi puhelimesta Antigravity-istunnossa, puskea ne gittiin (`git push origin main`), ja yhdellä klikkauksella päivittää palvelimen koodin ja käynnistää taustadaemonin uudelleen ilman SSH-yhteyttä.
+
+### Miten se toimii:
+1. Avaa hallintapaneeli selaimessa (`http://<palvelimen-ip>:8502`).
+2. Avaa vasemmasta sivupalkista valikko: **🛠️ Palvelimen Etäylläpito (Git & Daemon)**.
+3. Näet nykyisen Git-haaran, viimeisimmän commitin ja daemonin tilan (PID, koodiajastin).
+4. Klikkaa: **`⬇️ Git Pull & 🔄 Restart Daemon`**.
+   - Järjestelmä ajaa turvallisen `git pull --autostash origin main` (ei ylikirjoita palvelimen paikallisia seurantalistoja).
+   - Käynnistää taustadaemonin siististi uudelleen uudella koodilla.
+   - Tyhjentää Streamlit-välimuistin, jolloin myös UI ottaa heti uudet Python-moduulit käyttöön.
+
+### Valinnainen: Sudoers-oikeus ilman salasanaa (suorille systemctl-komennoille)
+Jos haluat antaa Streamlit-prosessille suoran oikeuden ajaa `systemctl restart`, lisää Linux-palvelimella sudoers-sääntö:
+```bash
+sudo visudo -f /etc/sudoers.d/tradebot-tiuku
+```
+Lisää tiedostoon rivi (korvaa `ubuntu` palvelimen käyttäjätunnuksella):
+```text
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart tradebot-tiuku-daemon, /bin/systemctl restart tradebot-tiuku, /bin/systemctl restart tradebot-tiuku-ui
+```
+*Huom: Vaikka sudoers-riviä ei olisi lisätty, järjestelmä käyttää automaattista fallbackia: se sulkee vanhan `main_controller.py`-prosessin, jolloin systemd (`Restart=always`) nostaa sen automaattisesti 5 sekunnissa uudelleen pystyyn.*

@@ -83,7 +83,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    processes: list[tuple[str, subprocess.Popen]] = []
+    daemon_cmd: list[str] = []
+    p_ui: subprocess.Popen | None = None
+    p_daemon: subprocess.Popen | None = None
 
     try:
         # 1. Start Streamlit UI Dashboard
@@ -99,9 +101,8 @@ def main() -> None:
                 str(args.port),
             ]
             p_ui = subprocess.Popen(ui_cmd, cwd=str(BASE_DIR))
-            processes.append(("Streamlit UI Dashboard", p_ui))
 
-        # 2. Start Paper Trader Daemon
+        # 2. Build Paper Trader Daemon command
         if not args.ui_only:
             if args.run_once:
                 mode_desc = "kerran (--run-once)"
@@ -124,7 +125,6 @@ def main() -> None:
                 ])
 
             p_daemon = subprocess.Popen(daemon_cmd, cwd=str(BASE_DIR))
-            processes.append(("Paper Trader Daemon", p_daemon))
 
         print("\n" + "=" * 65)
         print("✅ tradeBotTiuku käynnistetty onnistuneesti!")
@@ -133,27 +133,45 @@ def main() -> None:
         print("Paina Ctrl+C sammuttaaksesi molemmat prosessit siististi.")
         print("=" * 65 + "\n")
 
-        # Monitor loop
-        while True:
+        # Monitor loop with resilient daemon auto-respawn
+        shutdown_initiated = False
+        while not shutdown_initiated:
             time.sleep(1)
-            for name, p in processes:
-                ret = p.poll()
-                if ret is not None:
-                    print(f"⚠️ Prosessi '{name}' päättyi koodilla {ret}.")
-                    return
+
+            # Check UI process
+            if p_ui is not None:
+                ret_ui = p_ui.poll()
+                if ret_ui is not None:
+                    print(f"⚠️ Streamlit UI päättyi koodilla {ret_ui}. Suljetaan järjestelmä...")
+                    break
+
+            # Check Daemon process
+            if p_daemon is not None and not args.run_once:
+                ret_d = p_daemon.poll()
+                if ret_d is not None:
+                    print(f"🔄 Paper Trader Daemon päättyi (koodi {ret_d}). Käynnistetään automaattisesti uudelleen...")
+                    time.sleep(2)
+                    p_daemon = subprocess.Popen(daemon_cmd, cwd=str(BASE_DIR))
+                    print(f"✅ Paper Trader Daemon uudelleenkäynnistetty (PID: {p_daemon.pid}).")
+            elif p_daemon is not None and args.run_once:
+                ret_d = p_daemon.poll()
+                if ret_d is not None:
+                    print(f"✅ Paper Trader Daemon suoritti kerta-ajon (--run-once).")
+                    p_daemon = None
 
     except KeyboardInterrupt:
         print("\n🛑 Sammutetaan tradeBotTiuku -prosessit...")
     finally:
-        for name, p in processes:
-            try:
-                p.terminate()
-                p.wait(timeout=3)
-            except Exception:
+        for p in [p_ui, p_daemon]:
+            if p is not None:
                 try:
-                    p.kill()
+                    p.terminate()
+                    p.wait(timeout=3)
                 except Exception:
-                    pass
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
         print("👋 Kaikki prosessit on suljettu.")
 
 if __name__ == "__main__":

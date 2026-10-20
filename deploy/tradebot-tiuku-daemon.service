@@ -10,7 +10,7 @@ Environment="PATH=/home/ubuntu/tradeBotTiuku/venv/bin:/usr/local/bin:/usr/bin"
 EnvironmentFile=-/home/ubuntu/tradeBotTiuku/.env
 ExecStart=/home/ubuntu/tradeBotTiuku/venv/bin/python main_controller.py --schedule --daily-at 23:05 --no-initial-run
 Restart=always
-RestartSec=30
+RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
