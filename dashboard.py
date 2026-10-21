@@ -243,7 +243,66 @@ st.markdown("""
     div[data-testid="stStatusWidget"] {
         visibility: hidden !important;
     }
+    /* BaseWeb Popover and Selectbox Mobile Optimization */
+    div[data-baseweb="popover"] {
+        max-height: 75vh !important;
+        z-index: 9999999 !important;
+    }
+    div[data-baseweb="popover"] > div,
+    div[data-baseweb="popover"] ul[role="listbox"],
+    div[data-baseweb="menu"] {
+        max-height: 65vh !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        overscroll-behavior: contain !important;
+        padding-bottom: 75px !important; /* Critical: provides large safety margin at the bottom so P11, P12, P13 are never obscured */
+    }
+    div[data-baseweb="popover"] li[role="option"] {
+        min-height: 48px !important;
+        padding: 12px 14px !important;
+        font-size: 14px !important;
+        line-height: 1.35 !important;
+        cursor: pointer !important;
+        -webkit-tap-highlight-color: rgba(59, 130, 246, 0.2) !important;
+    }
+    div[data-baseweb="popover"] li[role="option"]:last-child {
+        margin-bottom: 25px !important;
+    }
+
+    /* Style Streamlit Pills for Ultra-Responsive Mobile Switching */
+    div[data-testid="stPills"] {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+        margin-bottom: 8px !important;
+    }
+    div[data-testid="stPills"] button {
+        border-radius: 8px !important;
+        font-size: 0.85rem !important;
+        font-weight: 600 !important;
+        padding: 6px 12px !important;
+        min-height: 38px !important;
+        transition: all 0.15s ease-in-out !important;
+    }
+    /* Highlight P13 Live pill specifically with distinctive green branding */
+    div[data-testid="stPills"] button:last-child {
+        border: 1.5px solid #22c55e !important;
+        background-color: #f0fdf4 !important;
+        color: #15803d !important;
+    }
+    div[data-testid="stPills"] button[aria-selected="true"]:last-child {
+        background-color: #16a34a !important;
+        color: #ffffff !important;
+    }
+
     /* Mobile-first & Responsive Enhancements */
+    @media (max-width: 820px) {
+        /* Prevent mobile virtual keyboard from popping up on selectbox clicks */
+        div[data-baseweb="select"] input {
+            caret-color: transparent !important;
+            pointer-events: none !important;
+        }
+    }
     @media (max-width: 768px) {
         .main-header {
             font-size: 1.45rem !important;
@@ -274,9 +333,44 @@ st.markdown("""
         .metric-card {
             padding: 10px !important;
         }
+        /* Compact navigation buttons */
+        button[data-testid="baseButton-secondary"] {
+            padding: 6px 6px !important;
+            font-size: 0.82rem !important;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
+
+# Mobile Selectbox Virtual Keyboard Suppressor
+st.html("""
+<script>
+(function() {
+    function setupMobileSelects() {
+        try {
+            const doc = (window.parent && window.parent.document) ? window.parent.document : document;
+            const selectInputs = doc.querySelectorAll('div[data-baseweb="select"] input');
+            selectInputs.forEach(function(input) {
+                if (input.getAttribute('inputmode') !== 'none') {
+                    input.setAttribute('inputmode', 'none');
+                    input.setAttribute('readonly', 'readonly');
+                }
+            });
+        } catch(e) {}
+    }
+    setupMobileSelects();
+    try {
+        const doc = (window.parent && window.parent.document) ? window.parent.document : document;
+        const targetWindow = window.parent || window;
+        if (!targetWindow.__mobileSelectWatcherInstalled) {
+            targetWindow.__mobileSelectWatcherInstalled = true;
+            const observer = new MutationObserver(setupMobileSelects);
+            observer.observe(doc.body, { childList: true, subtree: true });
+        }
+    } catch(e) {}
+})();
+</script>
+""")
 
 
 def load_csv_safely(path: Path, expected_cols: list = None) -> pd.DataFrame:
@@ -972,11 +1066,14 @@ with st.sidebar:
         st.session_state["selected_portfolio"] = portfolio_options[0] if portfolio_options else "P1_Base"
     if "main_selected_portfolio" not in st.session_state:
         st.session_state["main_selected_portfolio"] = st.session_state["selected_portfolio"]
+    if "pill_selected_portfolio" not in st.session_state:
+        st.session_state["pill_selected_portfolio"] = st.session_state["selected_portfolio"]
 
     def _on_sidebar_portfolio_change():
         v = st.session_state.get("selected_portfolio")
         if v:
             st.session_state["main_selected_portfolio"] = v
+            st.session_state["pill_selected_portfolio"] = v
 
     st.subheader("📂 Paper-salkku")
     selected_portfolio = st.selectbox(
@@ -985,7 +1082,7 @@ with st.sidebar:
         index=portfolio_options.index(st.session_state["selected_portfolio"]) if st.session_state["selected_portfolio"] in portfolio_options else 0,
         key="selected_portfolio",
         on_change=_on_sidebar_portfolio_change,
-        help="Valitse tarkasteltava paperisalkku 10 rinnakkaisen walk-forward-testisalkun joukosta.",
+        help="Valitse tarkasteltava paperisalkku 13 rinnakkaisen walk-forward-testisalkun joukosta (P1–P13).",
     )
     if selected_portfolio in portfolio_meta_map:
         p_meta = portfolio_meta_map[selected_portfolio]
@@ -1542,11 +1639,21 @@ def render_dashboard_views(active_menu: str):
         selected_portfolio = st.session_state.get("selected_portfolio", p_options[0])
         if "main_selected_portfolio" not in st.session_state:
             st.session_state["main_selected_portfolio"] = selected_portfolio
+        if "pill_selected_portfolio" not in st.session_state:
+            st.session_state["pill_selected_portfolio"] = selected_portfolio
 
         def _on_main_portfolio_change():
             v = st.session_state.get("main_selected_portfolio")
             if v:
                 st.session_state["selected_portfolio"] = v
+                st.session_state["pill_selected_portfolio"] = v
+                st.rerun()
+
+        def _on_pill_portfolio_change():
+            v = st.session_state.get("pill_selected_portfolio")
+            if v:
+                st.session_state["selected_portfolio"] = v
+                st.session_state["main_selected_portfolio"] = v
                 st.rerun()
 
         def _on_prev_portfolio():
@@ -1555,6 +1662,7 @@ def render_dashboard_views(active_menu: str):
             new_pid = p_options[(idx - 1) % len(p_options)]
             st.session_state["selected_portfolio"] = new_pid
             st.session_state["main_selected_portfolio"] = new_pid
+            st.session_state["pill_selected_portfolio"] = new_pid
 
         def _on_next_portfolio():
             curr = st.session_state.get("selected_portfolio", p_options[0])
@@ -1562,6 +1670,7 @@ def render_dashboard_views(active_menu: str):
             new_pid = p_options[(idx + 1) % len(p_options)]
             st.session_state["selected_portfolio"] = new_pid
             st.session_state["main_selected_portfolio"] = new_pid
+            st.session_state["pill_selected_portfolio"] = new_pid
 
         port_state_file = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_state.json"
         port_history_csv = PORTFOLIOS_DIR / f"portfolio_{selected_portfolio}_history.csv"
@@ -1580,12 +1689,27 @@ def render_dashboard_views(active_menu: str):
                 pass
 
         # Top Portfolio Switcher (Direct access on mobile & desktop without opening sidebar)
+        if st.session_state.get("pill_selected_portfolio") != selected_portfolio:
+            st.session_state["pill_selected_portfolio"] = selected_portfolio
+        if st.session_state.get("main_selected_portfolio") != selected_portfolio:
+            st.session_state["main_selected_portfolio"] = selected_portfolio
+
         curr_idx = p_options.index(selected_portfolio) if selected_portfolio in p_options else 0
         with st.container():
+            st.markdown('<div style="font-weight: 700; font-size: 0.95rem; margin-bottom: 4px; color: #1e3a8a;">⚡ Pikavalinta salkulle (P1–P13):</div>', unsafe_allow_html=True)
+            st.pills(
+                "Salkun pikavalinta:",
+                p_options,
+                selection_mode="single",
+                format_func=lambda pid: "⭐ P13 Live" if pid == "P13_Live_Candidate" else pid.split("_")[0],
+                key="pill_selected_portfolio",
+                on_change=_on_pill_portfolio_change,
+                label_visibility="collapsed",
+            )
             col_port_sel, col_port_nav = st.columns([3, 2])
             with col_port_sel:
                 st.selectbox(
-                    "📂 Valittu Paper-salkku (P1–P12):",
+                    "📂 Valittu Paper-salkku (P1–P13):",
                     p_options,
                     index=curr_idx,
                     key="main_selected_portfolio",
@@ -1594,7 +1718,7 @@ def render_dashboard_views(active_menu: str):
                         if pid in portfolio_meta_map else pid
                     ),
                     on_change=_on_main_portfolio_change,
-                    help="Vaihda tarkasteltavaa salkkua suoraan tästä ilman vasemman sivupalkin avaamista.",
+                    help="Vaihda tarkasteltavaa salkkua suoraan tästä tai yllä olevista pika-painikkeista.",
                 )
             with col_port_nav:
                 st.markdown('<div style="height: 28px;"></div>', unsafe_allow_html=True)
