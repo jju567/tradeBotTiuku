@@ -3649,8 +3649,7 @@ class PaperAccountManager:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
-        with open(self.account_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+        _atomic_write_json(self.account_path, payload)
 
     def reset(self, balance: Optional[float] = None) -> None:
         """Resets account to starting capital."""

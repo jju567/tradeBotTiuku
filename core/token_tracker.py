@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -21,6 +22,38 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_TOKEN_FILE = BASE_DIR / "data" / "token_usage.json"
 
 _lock = threading.Lock()
+
+
+def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
+    """Writes JSON atomically via a PID-scoped temporary file and os.replace."""
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, target_path)
+                break
+            except Exception:
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
+
 
 # Model Pricing per 1,000,000 tokens (USD)
 MODEL_PRICING: Dict[str, Dict[str, float]] = {
@@ -124,8 +157,7 @@ class TokenTracker:
             s_stat["cost_usd"] += cost
 
             try:
-                with open(self.file_path, "w", encoding="utf-8") as f:
-                    json.dump(stats, f, indent=2)
+                _atomic_write_json(self.file_path, stats)
             except Exception as e:
                 logger.error(f"Failed to save token usage: {e}")
 
@@ -144,8 +176,10 @@ class TokenTracker:
             "by_source": {},
         }
         with _lock:
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(empty_stats, f, indent=2)
+            try:
+                _atomic_write_json(self.file_path, empty_stats)
+            except Exception as e:
+                logger.error(f"Failed to reset token usage: {e}")
 
 # Global default instance
 tracker = TokenTracker()

@@ -41,6 +41,37 @@ DATA_DIR = BASE_DIR / "data"
 DAEMON_STATUS_JSON = DATA_DIR / "daemon_status.json"
 
 
+def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
+    """Writes JSON atomically via a PID-scoped temporary file and os.replace."""
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, target_path)
+                break
+            except Exception:
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
+
+
 def _run_cmd(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 45) -> Tuple[int, str, str]:
     """Runs a shell command synchronously and returns (returncode, stdout, stderr)."""
     try:
@@ -420,8 +451,7 @@ def restart_daemon(daily_at: str = "23:05") -> Tuple[bool, str]:
                 "last_heartbeat": datetime.now(timezone.utc).isoformat(),
             }
             DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with open(DAEMON_STATUS_JSON, "w", encoding="utf-8") as f:
-                json.dump(status_payload, f, indent=2)
+            _atomic_write_json(DAEMON_STATUS_JSON, status_payload)
         except Exception:
             pass
 

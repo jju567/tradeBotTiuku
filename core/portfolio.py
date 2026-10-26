@@ -1,11 +1,44 @@
 import json
 import logging
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 import config
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
+    """Writes JSON atomically via a PID-scoped temporary file and os.replace."""
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, target_path)
+                break
+            except Exception:
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
 
 
 class PortfolioManager:
@@ -46,10 +79,9 @@ class PortfolioManager:
         self.save_state()
 
     def save_state(self):
-        """Saves current state to local tiuku_portfolio.json."""
+        """Saves current state to local tiuku_portfolio.json atomically."""
         try:
-            with open(self.portfolio_file, "w", encoding="utf-8") as f:
-                json.dump(self.portfolio_state, f, indent=2, ensure_ascii=False)
+            _atomic_write_json(self.portfolio_file, self.portfolio_state, ensure_ascii=False)
             logger.info(f"Saved Tiuku portfolio state to {self.portfolio_file}")
         except Exception as e:
             logger.error(f"Failed to save portfolio state: {e}")
@@ -146,7 +178,6 @@ class PortfolioManager:
         history.append(snapshot)
 
         try:
-            with open(self.history_file, "w", encoding="utf-8") as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
+            _atomic_write_json(self.history_file, history, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save portfolio history: {e}")

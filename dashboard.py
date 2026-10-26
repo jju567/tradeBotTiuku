@@ -1187,8 +1187,7 @@ with st.sidebar:
 
     def save_ui_settings(settings):
         try:
-            with open(UI_SETTINGS_JSON, "w", encoding="utf-8") as f:
-                json.dump(settings, f)
+            _atomic_write_json(UI_SETTINGS_JSON, settings)
         except Exception:
             pass
 
@@ -1260,8 +1259,10 @@ with st.sidebar:
                             subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
                         except Exception:
                             pass
-                    with open(BATCH_STATUS_JSON, "w", encoding="utf-8") as f:
-                        json.dump({"is_running": False, "pid": 0}, f)
+                    try:
+                        _atomic_write_json(BATCH_STATUS_JSON, {"is_running": False, "pid": 0})
+                    except Exception:
+                        pass
                     st.warning("Massa-ajo pysäytetty.")
                     time.sleep(1.0)
                     st.rerun()
