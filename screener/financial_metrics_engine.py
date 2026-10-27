@@ -143,6 +143,11 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "exchange": None,
         "country": None,
         "market_cap": None,
+        "bid_ask_spread_pct": None,
+        "next_earnings_date": None,
+        "days_to_earnings": None,
+        "held_percent_insiders": None,
+        "insider_buying_signal": False,
         "latest_statement_date": None,
         "data_age_days": None,
         "data_source": "yfinance",
@@ -419,6 +424,45 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             # Market Cap
             mcap = (fast_info and getattr(fast_info, "market_cap", None)) or info.get("marketCap")
             result["market_cap"] = float(mcap) if mcap is not None else None
+
+            # Bid-Ask Spread % (Real-Time Liquidity Friction)
+            bid_px = info.get("bid")
+            ask_px = info.get("ask")
+            if (
+                isinstance(bid_px, (int, float))
+                and isinstance(ask_px, (int, float))
+                and bid_px > 0
+                and ask_px >= bid_px
+            ):
+                result["bid_ask_spread_pct"] = round(((float(ask_px) - float(bid_px)) / float(ask_px)) * 100.0, 3)
+
+            # Earnings Calendar Gate (Next Earnings Date & Days to Earnings)
+            earn_ts = (
+                info.get("earningsTimestamp")
+                or info.get("earningsTimestampStart")
+                or info.get("earningsCallTimestampStart")
+            )
+            earn_dt_obj = None
+            if isinstance(earn_ts, (int, float)) and earn_ts > 0:
+                try:
+                    earn_dt_obj = datetime.fromtimestamp(float(earn_ts), tz=timezone.utc).date()
+                except Exception:
+                    earn_dt_obj = None
+            if earn_dt_obj is not None:
+                today_utc = datetime.now(timezone.utc).date()
+                d_to_earn = (earn_dt_obj - today_utc).days
+                if d_to_earn >= -1:
+                    result["next_earnings_date"] = earn_dt_obj.strftime("%Y-%m-%d")
+                    result["days_to_earnings"] = int(d_to_earn)
+
+            # Insider Skin-in-the-Game & Net Buying Signal
+            ins_pct = info.get("heldPercentInsiders")
+            if isinstance(ins_pct, (int, float)) and ins_pct >= 0:
+                result["held_percent_insiders"] = round(float(ins_pct) * 100.0 if float(ins_pct) <= 1.0 else float(ins_pct), 2)
+
+            net_ins = info.get("netPercentInsiderShares") or info.get("netInsiderPurchasePercent")
+            if isinstance(net_ins, (int, float)) and float(net_ins) > 0.0:
+                result["insider_buying_signal"] = True
         except Exception as e_extra:
             logger.debug(f"Tiered metrics extraction skipped for {cleaned_ticker}: {e_extra}")
 

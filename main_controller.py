@@ -1958,6 +1958,28 @@ class MasterLiveTradingDaemon:
             if not passed:
                 continue
 
+            # Earnings Calendar Gate: Prevent binary earnings gap risk 0–2 days before earnings report
+            days_to_earn = hard_facts.get("days_to_earnings")
+            if isinstance(days_to_earn, (int, float)) and not isinstance(days_to_earn, bool) and 0 <= int(days_to_earn) <= 2:
+                logger.info(
+                    f"[{portfolio.config.portfolio_id}] 📅 [EARNINGS GATE] Skipping {ticker}: "
+                    f"Earnings report in {int(days_to_earn)}d ({hard_facts.get('next_earnings_date')}) — avoiding pre-earnings binary gap."
+                )
+                if hasattr(self.market_engine, "operational_metrics") and isinstance(self.market_engine.operational_metrics, dict):
+                    self.market_engine.operational_metrics["earnings_gate_blocks"] = (
+                        self.market_engine.operational_metrics.get("earnings_gate_blocks", 0) + 1
+                    )
+                continue
+
+            # Bid-Ask Spread Guard: Reject illiquid traps with > 6.0% live spread
+            spread_pct = hard_facts.get("bid_ask_spread_pct")
+            if isinstance(spread_pct, (int, float)) and not isinstance(spread_pct, bool) and float(spread_pct) > 6.0:
+                logger.info(
+                    f"[{portfolio.config.portfolio_id}] 🛑 [SPREAD GUARD] Skipping {ticker}: "
+                    f"Live bid-ask spread {float(spread_pct):.2f}% > 6.0% threshold."
+                )
+                continue
+
             # Fetch fresh live market price for the validated candidate
             cand_price = None
             if hasattr(self.market_engine, "_fetch_live_price"):
@@ -2053,6 +2075,15 @@ class MasterLiveTradingDaemon:
                 nlp_cat = (news_verdict in ["STRONG BUY", "WATCH_TURNAROUND"])
                 cand_score = (35.0 if is_prof_a else 0.0) + (25.0 if is_prof_b else 0.0) + (30.0 if nlp_cat else 0.0) + (capped_rev_yoy * 0.5)
 
+            # Insider Buying Bonus (+15.0 pts when verified open-market insider buying or MAR manager transaction)
+            news_reason_low = str(news_reason or "").lower()
+            insider_sig = bool(hard_facts.get("insider_buying_signal", False)) or any(
+                kw in news_reason_low
+                for kw in ("johdon liiketoimet", "insider buying", "insynshandel", "manager's transaction", "sisäpiirin osto")
+            )
+            if insider_sig:
+                cand_score += 15.0
+
             rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
             fx_to_eur = 1.0
             if ticker_curr == "SEK":
@@ -2074,6 +2105,12 @@ class MasterLiveTradingDaemon:
                 "adv_eur": round(adv_eur, 2),
                 "nlp_verdict": news_verdict,
             }
+            if insider_sig:
+                entry_hard_facts["insider_buying_signal"] = True
+            if days_to_earn is not None:
+                entry_hard_facts["days_to_earnings"] = int(days_to_earn)
+            if spread_pct is not None:
+                entry_hard_facts["bid_ask_spread_pct"] = round(float(spread_pct), 3)
 
             valid_candidates.append({
                 "ticker": ticker,

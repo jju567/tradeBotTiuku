@@ -226,3 +226,159 @@ def test_calculate_top_picks_conviction(tmp_path):
     assert df.iloc[1]["Star Rating"] == "⭐⭐"
 
 
+def test_p13_real_market_counterfactual_and_nlp_calibration(tmp_path):
+    import json
+
+    # 1. Create mock p13_execution_audit.csv
+    exec_csv = tmp_path / "p13_execution_audit.csv"
+    exec_csv.write_text(
+        "Date,Ticker,Sub_Strategy,Action,Paper_Price,Limit_Price,NextDay_Open,NextDay_Low,NextDay_High,NextDay_Close,Would_Have_Filled,Realistic_Fill_Price,Slippage_vs_Paper_Pct,FX_Fee_EUR,Broker_Fee_EUR\n"
+        "2026-10-20,MSAB-B.ST,satellite_nordic_microcap_catalyst,PARTIAL_TP,104.0,103.792,109.5,105.5,109.5,106.0,FILLED,109.5,5.2885,3.21,8.85\n"
+        "2026-10-21,EQV1V.HE,core_nordic_midcap_quality,BUY,8.0,8.016,8.02,7.90,8.02,7.92,FILLED,8.016,0.20,0.0,9.0\n",
+        encoding="utf-8",
+    )
+
+    # 2. Create mock portfolio_P13_Live_Candidate_state.json
+    state_json = tmp_path / "portfolio_P13_Live_Candidate_state.json"
+    state_json.write_text(
+        json.dumps({
+            "portfolio_id": "P13_Live_Candidate",
+            "starting_balance": 10000.0,
+            "cash_balance": 4696.53,
+            "positions": [
+                {
+                    "Ticker": "MSAB-B.ST",
+                    "Buy Date": "2026-10-14",
+                    "Buy Price": 84.0,
+                    "current_price": 108.0,
+                    "Currency": "SEK",
+                    "Sub_Strategy": "satellite_nordic_microcap_catalyst",
+                    "Candidate_Score": 120.0,
+                    "Entry_Hard_Facts": {"roe": 25.0, "ebit_margin": 18.0, "rev_yoy": 30.0, "nlp_verdict": "STRONG BUY"},
+                },
+                {
+                    "Ticker": "EQV1V.HE",
+                    "Buy Date": "2026-10-21",
+                    "Buy Price": 8.0,
+                    "current_price": 8.08,
+                    "Currency": "EUR",
+                    "Sub_Strategy": "core_nordic_midcap_quality",
+                    "Candidate_Score": 109.25,
+                    "Entry_Hard_Facts": {"roe": 37.84, "ebit_margin": 38.93, "rev_yoy": -8.06, "nlp_verdict": "HOLD"},
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    # 3. Create mock p13_shadow_audit_log.jsonl with 2 snapshots
+    shadow_jsonl = tmp_path / "p13_shadow_audit_log.jsonl"
+    entry1 = {
+        "timestamp": "2026-10-20T08:00:00+00:00",
+        "regime": {"iwc_price": 174.0, "sma_50": 190.0, "is_choppy_or_bear": True, "required_cash_buffer_eur": 4000.0},
+        "portfolio_snapshot": {"cash_balance": 5756.96, "non_hodl_stock_value_eur": 4467.95, "total_p13_equity_eur": 10224.91},
+        "candidates_ranking": {
+            "core_nordic_midcap_quality": {
+                "status": "BLOCKED_BY_REGIME_CASH_BUFFER",
+                "top_5_candidates": [
+                    {
+                        "rank": 1,
+                        "ticker": "MIPS.ST",
+                        "candidate_score": 111.0,
+                        "price": 400.0,
+                        "currency": "SEK",
+                        "hard_facts": {"roe": 29.0, "ebit_margin": 46.0, "rev_yoy": 10.0, "nlp_verdict": "HOLD"},
+                        "selected": False,
+                        "selection_status": "BLOCKED_BY_REGIME_CASH_BUFFER",
+                    }
+                ],
+            }
+        },
+        "open_positions_health": [
+            {
+                "ticker": "MSAB-B.ST",
+                "sub_strategy": "satellite_nordic_microcap_catalyst",
+                "current_price": 104.0,
+                "pnl_pct": 23.81,
+                "drawdown_from_peak_pct": 2.8,
+                "distance_to_stop_pct": 28.9,
+                "distance_to_partial_tp_pct": 0.96,
+                "trading_days_held": 4,
+                "nlp_status": "STRONG BUY",
+            }
+        ],
+    }
+    entry2 = {
+        "timestamp": "2026-10-25T20:00:00+00:00",
+        "regime": {"iwc_price": 176.36, "sma_50": 188.4, "is_choppy_or_bear": True, "required_cash_buffer_eur": 4000.0},
+        "portfolio_snapshot": {"cash_balance": 4696.53, "non_hodl_stock_value_eur": 5620.99, "total_p13_equity_eur": 10317.52},
+        "candidates_ranking": {
+            "core_nordic_midcap_quality": {
+                "status": "INSUFFICIENT_CASH",
+                "top_5_candidates": [
+                    {
+                        "rank": 1,
+                        "ticker": "MIPS.ST",
+                        "candidate_score": 111.0,
+                        "price": 392.0,
+                        "currency": "SEK",
+                        "hard_facts": {"roe": 29.0, "ebit_margin": 46.0, "rev_yoy": 10.0, "nlp_verdict": "HOLD"},
+                        "selected": False,
+                        "selection_status": "BLOCKED_BY_REGIME_CASH_BUFFER",
+                    }
+                ],
+            }
+        },
+        "open_positions_health": [
+            {
+                "ticker": "MSAB-B.ST",
+                "sub_strategy": "satellite_nordic_microcap_catalyst",
+                "current_price": 108.0,
+                "pnl_pct": 28.57,
+                "drawdown_from_peak_pct": 0.92,
+                "distance_to_stop_pct": 14.21,
+                "distance_to_partial_tp_pct": 0.0,
+                "trading_days_held": 8,
+                "nlp_status": "STRONG BUY",
+            }
+        ],
+    }
+    shadow_jsonl.write_text(json.dumps(entry1) + "\n" + json.dumps(entry2) + "\n", encoding="utf-8")
+
+    # Verify load_portfolio_data ingests P13 shadow equity curve
+    eq_dict, _ = qa.load_portfolio_data(tmp_path)
+    assert "P13_Live_Candidate" in eq_dict
+    assert len(eq_dict["P13_Live_Candidate"]) == 2
+    assert pytest.approx(float(eq_dict["P13_Live_Candidate"].iloc[-1]), 0.01) == 10317.52
+
+    # Run counterfactual & real-market audit
+    res = qa.analyze_p13_real_market_and_counterfactual(tmp_path, fetch_live_prices=False, use_llm=False)
+
+    exec_sum = res["execution_summary"]
+    assert exec_sum["total_orders"] == 2
+    assert exec_sum["filled_orders"] == 2
+    assert exec_sum["fill_rate_pct"] == 100.0
+    assert pytest.approx(exec_sum["total_broker_fees_eur"], 0.01) == 17.85
+
+    cf_sum = res["counterfactual_summary"]
+    # Selected (MSAB-B.ST +28.57%, EQV1V.HE +1.00%) -> mean +14.79%
+    # Blocked (MIPS.ST 400 -> 392 = -2.00%)
+    assert cf_sum["selected_mean_return_pct"] > 10.0
+    assert cf_sum["blocked_mean_return_pct"] == -2.0
+    assert cf_sum["guard_alpha_saved_pct"] > 12.0
+
+    mfe_df = res["mfe_mae_df"]
+    assert not mfe_df.empty
+    assert mfe_df.iloc[0]["Ticker"] == "MSAB-B.ST"
+    assert mfe_df.iloc[0]["MFE_Peak_PnL_Pct"] == 28.57
+    assert mfe_df.iloc[0]["MAE_Worst_PnL_Pct"] == 23.81
+
+    pm = res["ai_post_mortem"]
+    assert pm["readiness_score"] >= 65
+    assert len(pm["position_critiques"]) == 2
+    # EQV1V.HE has rev_yoy = -8.06 -> Devil's advocate should warn about shrinking revenue
+    eqv_crit = next(c for c in pm["position_critiques"] if c["Ticker"] == "EQV1V.HE")
+    assert "supistuu" in eqv_crit["Devils_Advocate_Challenge"]
+
+
+

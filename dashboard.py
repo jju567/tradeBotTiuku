@@ -2723,11 +2723,11 @@ def render_dashboard_views(active_menu: str):
             st.divider()
 
             # ------------------------------------------------------------------
-            # 4. Unified Summary Table (Rows = 11 Portfolios)
+            # 4. Unified Summary Table (Rows = 13 Portfolios)
             # Columns = 30d Sharpe, 30d Sortino, Median Return, Mean Return, Max DD, Top-1 PnL %, Median Hold Days
             # ------------------------------------------------------------------
-            st.markdown("#### 📋 11 Salkun Institutional-Yhteenveto")
-            st.caption("Rivit = 11 salkkua. Sarakkeet = 30d Sharpe, 30d Sortino, Mediaanituotto, Keskituotto, Max Drawdown, Top-1 PnL % ja Mediaanipitoaika.")
+            st.markdown("#### 📋 13 Salkun Institutional-Yhteenveto (P1–P13)")
+            st.caption("Rivit = 13 salkkua (mukaan lukien P13 Live Candidate varjoajon aikasarja). Sarakkeet = 30d Sharpe, 30d Sortino, Mediaanituotto, Keskituotto, Max Drawdown, Top-1 PnL % ja Mediaanipitoaika.")
 
             spec_cols = [
                 "Portfolio",
@@ -2877,6 +2877,139 @@ def render_dashboard_views(active_menu: str):
                     df_hold = df_summary[["Portfolio", "Median Return", "Mean Return", "Median Hold Days"]].copy()
                     df_hold.columns = ["Salkku", "Mediaanituotto", "Keskituotto", "Mediaanipitoaika"]
                     st.dataframe(df_hold, width="stretch", hide_index=True)
+
+            st.divider()
+
+            # ------------------------------------------------------------------
+            # 8. P13 Real-Market Execution, Counterfactual ("Missed Alpha"),
+            #    NLP Calibration & AI Devil's Advocate Audit
+            # ------------------------------------------------------------------
+            st.markdown("#### 🎯 P13 Live Candidate: Oikean Markkinan Kelpoisuus, Counterfactual & AI Red-Team Audit")
+            st.caption(
+                "Analysoi P13-lippulaivasalkun todellisen pörssitoteutuvuuden (seuraavan päivän OHLC Limit Fill -auditointi), "
+                "suojaporttien estämien osakkeiden vaihtoehtoiskustannuksen (Counterfactual / Missed Alpha), "
+                "NLP-signaalien osumatarkkuuden sekä positioiden MFE/MAE-riskiprofiilin."
+            )
+
+            col_p13_btn1, col_p13_btn2 = st.columns([1, 3])
+            with col_p13_btn1:
+                run_live_llm_audit = st.button(
+                    "🤖 Aja LLM Red-Team -analyysi",
+                    key="btn_p13_llm_redteam",
+                    width="stretch",
+                    help="Kutsuu OpenRouter LLM:ää (jos API-avain on asetettu) ja päivittää reaaliaikaiset markkinahinnat Counterfactual-laskentaan.",
+                )
+
+            p13_audit = qa.analyze_p13_real_market_and_counterfactual(
+                PORTFOLIOS_DIR,
+                fetch_live_prices=bool(run_live_llm_audit),
+                use_llm=bool(run_live_llm_audit),
+            )
+            credit_info = qa.get_credit_macro_stress_indicator()
+
+            p13_snap = p13_audit.get("portfolio_snapshot", {})
+            p13_exec = p13_audit.get("execution_summary", {})
+            p13_cf = p13_audit.get("counterfactual_summary", {})
+            p13_nlp = p13_audit.get("nlp_calibration_summary", {})
+            p13_mfe_df = p13_audit.get("mfe_mae_df", pd.DataFrame())
+            p13_pm = p13_audit.get("ai_post_mortem", {})
+
+            p13_eq = float(p13_snap.get("total_p13_equity_eur", 10000.0) or 10000.0)
+            p13_ret_pct = ((p13_eq - 10000.0) / 10000.0) * 100.0
+            p13_cash = float(p13_snap.get("cash_balance", 0.0) or 0.0)
+
+            k_col1, k_col2, k_col3, k_col4, k_col5 = st.columns(5)
+            with k_col1:
+                st.metric(
+                    "P13 Nettopääoma (Kulujen jälk.)",
+                    f"{p13_eq:,.2f} €",
+                    f"{p13_ret_pct:+.2f}% (Kassa {p13_cash:,.0f} €)",
+                    help="P13-salkun todellinen markkina-arvo kaikkien välityspalkkioiden (8,85–9,00 €) ja valuuttakulujen jälkeen.",
+                )
+            with k_col2:
+                st.metric(
+                    "Real-Market Limit Fill Rate",
+                    f"{p13_exec.get('fill_rate_pct', 0.0):.0f}%",
+                    f"{p13_exec.get('filled_orders', 0)}/{p13_exec.get('total_orders', 0)} FILLED (Osto-liukuma {p13_exec.get('buy_slippage_pct', 0.0):+.2f}%)",
+                    help="Kuinka moni P13:n limit-toimeksiannoista olisi toteutunut oikeassa pörssissä seuraavan päivän todellisilla OHLC-hinnoilla.",
+                )
+            with k_col3:
+                g_alpha = float(p13_cf.get("guard_alpha_saved_pct", 0.0))
+                st.metric(
+                    "Valitut vs. Estetyt (Alpha Edge)",
+                    f"{g_alpha:+.2f} %-yks.",
+                    f"Valitut {p13_cf.get('selected_mean_return_pct', 0.0):+.2f}% vs Estetyt {p13_cf.get('blocked_mean_return_pct', 0.0):+.2f}%",
+                    help="Positiivinen luku tarkoittaa, että salkkuun valitut osakkeet ovat tuottaneet paremmin kuin suojaporttien (Regime Buffer / Staggered Guard) estämät ehdokkaat.",
+                )
+            with k_col4:
+                st.metric(
+                    "Kaupankäynnin Kitka (Yht.)",
+                    f"{p13_exec.get('total_friction_eur', 0.0):.2f} €",
+                    f"Välitys {p13_exec.get('total_broker_fees_eur', 0.0):.2f} € | FX {p13_exec.get('total_fx_fees_eur', 0.0):.2f} €",
+                    delta_color="inverse",
+                    help="Kumulatiiviset välityspalkkiot ja valuutanvaihtokulut auditoiduista toimeksiannoista.",
+                )
+            with k_col5:
+                st.metric(
+                    "Luottomarkkinan Stressi (HYG/IEF)",
+                    credit_info.get("credit_status", "🟡 NEUTRAL").split()[0] + " " + credit_info.get("credit_status", "NEUTRAL").split()[1],
+                    f"20d Spread: {credit_info.get('hyg_ief_spread_20d_pct', 0.0):+.2f}%",
+                    help=credit_info.get("description", ""),
+                )
+
+            st.info(p13_pm.get("executive_summary", ""))
+            if p13_pm.get("llm_narrative"):
+                st.success(f"🤖 **Live LLM Risk Officer Synthesis:**\n\n{p13_pm['llm_narrative']}")
+
+            p13_sub1, p13_sub2, p13_sub3 = st.tabs([
+                "🧾 Toteutusauditointi & MFE/MAE Röntgen",
+                "🧪 Counterfactual ('Missed Alpha') & NLP-Kalibrointi",
+                "😈 AI Devil's Advocate (Positio- & Ehdokashaasteet)",
+            ])
+
+            with p13_sub1:
+                st.markdown("##### 1️⃣ Seuraavan Päivän OHLC Limit-Toteutusauditointi (`p13_execution_audit.csv`)")
+                df_exec_aud = p13_exec.get("audit_df", pd.DataFrame())
+                if not df_exec_aud.empty:
+                    st.dataframe(df_exec_aud, width="stretch", hide_index=True)
+                else:
+                    st.caption("Ei vielä auditoituja toimeksiantoja.")
+
+                st.markdown("##### 2️⃣ Avoimien Positioiden MFE / MAE (Huippukäynti, Pohjakäynti & Stop-Etäisyys)")
+                if not p13_mfe_df.empty:
+                    st.dataframe(p13_mfe_df, width="stretch", hide_index=True)
+                else:
+                    st.caption("Ei vielä MFE/MAE-seurantadataa.")
+
+            with p13_sub2:
+                st.markdown(p13_cf.get("verdict", ""))
+                c_cf1, c_cf2 = st.columns(2)
+                with c_cf1:
+                    st.markdown("##### 🛡️ Tuottoerittely Suojaportin / Päätöksen Mukaan")
+                    df_by_st = p13_cf.get("by_status_df", pd.DataFrame())
+                    if not df_by_st.empty:
+                        st.dataframe(df_by_st, width="stretch", hide_index=True)
+                with c_cf2:
+                    st.markdown("##### 🧠 NLP-Signaalien Kalibrointi (`STRONG BUY` vs `HOLD`)")
+                    df_nlp_cal = p13_nlp.get("calibration_df", pd.DataFrame())
+                    if not df_nlp_cal.empty:
+                        st.dataframe(df_nlp_cal, width="stretch", hide_index=True)
+
+                st.markdown("##### 📊 Kaikki Seuratut Top-5 Ehdokkaat & Vaihtoehtoistuotto (Counterfactual Tracker)")
+                df_cands_all = p13_cf.get("candidates_df", pd.DataFrame())
+                if not df_cands_all.empty:
+                    disp_cands = df_cands_all[[c for c in df_cands_all.columns if not c.startswith("_")]].copy()
+                    st.dataframe(disp_cands, width="stretch", hide_index=True)
+
+            with p13_sub3:
+                st.markdown("##### 🔍 Kriittinen Devil's Advocate -Tarkastelu: Avoimet Positiot")
+                pos_crit = p13_pm.get("position_critiques", [])
+                if pos_crit:
+                    st.dataframe(pd.DataFrame(pos_crit), width="stretch", hide_index=True)
+                st.markdown("##### ⚠️ Estettyjen Top-Ehdokkaiden Piiloriskit (Miksi suojaportti oli hyödyllinen?)")
+                cand_warn = p13_pm.get("candidate_warnings", [])
+                if cand_warn:
+                    st.dataframe(pd.DataFrame(cand_warn), width="stretch", hide_index=True)
 
         with tab2:
             st.markdown("### ⚡ Avaa Uusi Virtuaalipositio (Paper Trade)")

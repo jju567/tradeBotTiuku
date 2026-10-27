@@ -1787,6 +1787,94 @@ def test_p13_xray_fixes_us_viability_capping_sub_strategy_persistence_and_partia
     assert float(tp_row["Realistic_Fill_Price"]) == pytest.approx(105.20)
 
 
+def test_p13_earnings_gate_spread_guard_and_insider_bonus(tmp_path):
+    """
+    Tests:
+    1. Earnings Calendar Gate blocks candidates with 0 <= days_to_earnings <= 2.
+    2. Bid-Ask Spread Guard blocks candidates with bid_ask_spread_pct > 6.0%.
+    3. Insider Buying Signal Bonus adds +15.0 pts to candidate_score and records insider_buying_signal in Entry_Hard_Facts.
+    """
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.00, "EURSEK": 10.0, "EURNOK": 10.0, "EURDKK": 7.46}
+    daemon.market_engine.news_radar_cache = {}
+    daemon.market_engine.operational_metrics = {}
+    daemon.market_engine.market_regime = {"regime": "BULL", "last_price": 195.0, "sma_50": 185.0}
+    daemon.market_engine._fetch_live_price = lambda t: daemon.market_engine.prices_cache.get(t)
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        description="Test P13 Gates & Insider",
+        strategy="Hybrid Core-Satellite",
+        dead_money_days=63,
+        min_adv=20000,
+        slots=5,
+        regions=["FI", "SE", "US"],
+        start_cash=10000.0,
+        max_new_buys_per_cycle=2,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 4000,
+                "slots": 2,
+                "slot_sizes": [2000, 2000],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    daemon.market_engine.universe_metadata = {
+        "EARN_TOMORROW.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 300_000.0, "current_price": 20.0},
+        "WIDE_SPREAD.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 300_000.0, "current_price": 20.0},
+        "INSIDER_BUY.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 300_000.0, "current_price": 20.0},
+    }
+    daemon.market_engine.prices_cache = {
+        "EARN_TOMORROW.HE": 20.0,
+        "WIDE_SPREAD.HE": 20.0,
+        "INSIDER_BUY.HE": 20.0,
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "EARN_TOMORROW.HE": {
+            "roe": 0.30,
+            "ebit_margin": 0.25,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "days_to_earnings": 1,
+            "next_earnings_date": "2026-10-28",
+        },
+        "WIDE_SPREAD.HE": {
+            "roe": 0.30,
+            "ebit_margin": 0.25,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "bid_ask_spread_pct": 7.5,
+        },
+        "INSIDER_BUY.HE": {
+            "roe": 0.20,
+            "ebit_margin": 0.20,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "insider_buying_signal": True,
+            "bid_ask_spread_pct": 0.45,
+        },
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache[t]
+
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 1
+    active = p.active_positions()
+    assert len(active) == 1
+    assert active[0]["Ticker"] == "INSIDER_BUY.HE"
+    # Base score: 20*1.5 + 20*1.5 - 0 = 60.0 + 15.0 (insider bonus) = 75.0
+    assert active[0]["Candidate_Score"] == pytest.approx(75.0)
+    assert active[0]["Entry_Hard_Facts"]["insider_buying_signal"] is True
+    assert active[0]["Entry_Hard_Facts"]["bid_ask_spread_pct"] == pytest.approx(0.45)
+    assert daemon.market_engine.operational_metrics.get("earnings_gate_blocks") == 1
+
+
+
 
 
 
