@@ -1100,7 +1100,7 @@ with st.sidebar:
 
     # Token Usage & Cost Counter (Always accessible directly under navigation)
     try:
-        from core.token_tracker import get_token_stats, tracker
+        from core.token_tracker import get_token_stats, tracker, fetch_openrouter_balance
         token_stats = get_token_stats()
         total_tokens = token_stats.get("total_tokens", 0)
         prompt_tokens = token_stats.get("total_prompt_tokens", 0)
@@ -1108,28 +1108,51 @@ with st.sidebar:
         total_cost = token_stats.get("total_cost_usd", 0.0)
         total_reqs = token_stats.get("total_requests", 0)
 
-        with st.expander("🪙 Token-laskuri & Kustannus", expanded=True):
+        # Real-time OpenRouter account balance & usage
+        or_balance = fetch_openrouter_balance()
+
+        with st.expander("🪙 Token-laskuri & OpenRouter-saldo", expanded=True):
+            if or_balance:
+                bal = or_balance.get("balance", 0.0)
+                bal_icon = "🟢" if bal > 2.0 else ("🟡" if bal > 0.5 else "🔴")
+                st.markdown(f"**OpenRouter-saldo:** {bal_icon} **`${bal:.2f}`**")
+
+                col_or1, col_or2 = st.columns(2)
+                with col_or1:
+                    st.caption(f"Tässä kuussa: `${or_balance.get('usage_monthly', 0.0):.2f}`")
+                    st.caption(f"Viimeiset 7 pv: `${or_balance.get('usage_weekly', 0.0):.3f}`")
+                with col_or2:
+                    st.caption(f"Tänään: `${or_balance.get('usage_daily', 0.0):.4f}`")
+                    st.caption(f"Krediitit yht: `${or_balance.get('total_credits', 0.0):.0f}`")
+                st.divider()
+
             if total_cost < 0.01:
                 cost_str = f"${total_cost:.5f}"
             else:
                 cost_str = f"${total_cost:.4f}"
 
-            st.markdown(f"**Kokonaiskulutus:** `{cost_str}`")
-            st.markdown(f"**Pyyntöjä tehty:** `{total_reqs} kpl`")
+            st.markdown(f"**Laitteen istuntokulutus:** `{cost_str}`")
+            st.markdown(f"**Pyyntöjä tehty:** `{total_reqs:,} kpl`")
             st.markdown(f"**Tokenit yhteensä:** `{total_tokens:,}`")
             st.caption(f"- Syöte (Prompt): `{prompt_tokens:,}`\n- Tuotos (Output): `{completion_tokens:,}`")
 
-            # Estimate capacity from $10 OpenRouter balance
-            rem_budget = max(0.0, 10.0 - total_cost)
-            avg_cost = (total_cost / total_reqs) if total_reqs > 0 else 0.00055
-            rem_reports = int(rem_budget / avg_cost) if avg_cost > 0 else 18000
-            st.info(f"💡 **10 $ budjetilla jäljellä:** n. **${rem_budget:.2f}** (~{rem_reports:,} analyysiä)")
+            # Capacity estimation based on live balance or reference
+            active_bal = or_balance.get("balance", 10.0) if or_balance else max(0.0, 10.0 - total_cost)
+            avg_cost = (total_cost / total_reqs) if total_reqs > 0 else 0.0033
+            rem_reports = int(active_bal / avg_cost) if avg_cost > 0 else 3000
+            st.info(f"💡 **Saldolla jäljellä:** n. **${active_bal:.2f}** (~{rem_reports:,} analyysiä)")
 
-            if st.button("🗑️ Nollaa laskuri", width="stretch"):
-                tracker.reset_stats()
-                st.success("Laskuri nollattu!")
-                time.sleep(0.5)
-                st.rerun()
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("🔄 Päivitä saldo", width="stretch"):
+                    fetch_openrouter_balance(max_age_seconds=0)
+                    st.rerun()
+            with col_btn2:
+                if st.button("🗑️ Nollaa loki", width="stretch"):
+                    tracker.reset_stats()
+                    st.success("Laskuri nollattu!")
+                    time.sleep(0.5)
+                    st.rerun()
     except Exception as e:
         logger.warning(f"Failed to render token tracker in dashboard: {e}")
         st.caption(f"⚠️ Token-laskuri: {e}")

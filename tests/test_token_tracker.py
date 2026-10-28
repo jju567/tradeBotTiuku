@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import json
 
-from core.token_tracker import TokenTracker, calculate_cost
+from core.token_tracker import TokenTracker, calculate_cost, recalculate_stats
 
 class TestTokenTracker(unittest.TestCase):
     def setUp(self):
@@ -15,13 +15,13 @@ class TestTokenTracker(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_calculate_cost(self):
-        # 1M prompt tokens with gemini-2.5-flash ($0.075/1M)
+        # 1M prompt tokens with gemini-2.5-flash ($0.30/1M)
         cost_prompt = calculate_cost(1_000_000, 0, "google/gemini-2.5-flash")
-        self.assertAlmostEqual(cost_prompt, 0.075, places=4)
+        self.assertAlmostEqual(cost_prompt, 0.30, places=4)
 
-        # 1M completion tokens ($0.30/1M)
+        # 1M completion tokens ($2.50/1M)
         cost_comp = calculate_cost(0, 1_000_000, "google/gemini-2.5-flash")
-        self.assertAlmostEqual(cost_comp, 0.30, places=4)
+        self.assertAlmostEqual(cost_comp, 2.50, places=4)
 
     def test_record_usage_and_persistence(self):
         stats = self.tracker.record_usage(
@@ -42,6 +42,16 @@ class TestTokenTracker(unittest.TestCase):
         self.assertEqual(stats2["total_tokens"], 4250)
         self.assertIn("google/gemini-2.5-flash", stats2["by_model"])
         self.assertIn("batch_nlp", stats2["by_source"])
+
+    def test_cost_override(self):
+        stats = self.tracker.record_usage(
+            prompt_tokens=1000,
+            completion_tokens=100,
+            model="google/gemini-2.5-flash",
+            source="test",
+            cost_override=0.05
+        )
+        self.assertAlmostEqual(stats["total_cost_usd"], 0.05, places=4)
 
     def test_reset_stats(self):
         self.tracker.record_usage(1000, 50, "google/gemini-2.5-flash", "test")

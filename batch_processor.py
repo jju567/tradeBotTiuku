@@ -360,10 +360,11 @@ def call_llm_dual_lens(
             usage = res_json.get("usage", {})
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
+            cost_reported = usage.get("cost")
             if prompt_tokens > 0 or completion_tokens > 0:
                 try:
                     from core.token_tracker import record_tokens
-                    record_tokens(prompt_tokens, completion_tokens, model=current_model, source="batch_nlp")
+                    record_tokens(prompt_tokens, completion_tokens, model=current_model, source="batch_nlp", cost_override=cost_reported)
                 except Exception:
                     pass
 
