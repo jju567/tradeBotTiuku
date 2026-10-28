@@ -131,18 +131,45 @@ def test_git_pull_conflict_auto_rollback():
     with patch("core.server_maintenance.get_git_info") as mock_info, \
          patch("core.server_maintenance._run_cmd") as mock_cmd:
         mock_info.return_value = {"is_git": True, "branch": "main"}
-        # fetch ok (0), pull conflict (1), merge --abort (0), rebase --abort (0)
+        # fetch ok (0), pull conflict (1), merge --abort (0), rebase --abort (0), reset --hard (0)
         mock_cmd.side_effect = [
             (0, "Fetched origin/main", ""),
             (1, "", "error: Your local changes would be overwritten by merge"),
             (0, "", ""),
             (0, "", ""),
+            (0, "HEAD is now at origin/main", ""),
         ]
 
         success, logs = git_pull()
         assert success is False
         assert "Auto-Rollback" in logs
-        assert "Automaattinen peruutus suoritettu" in logs
+        assert "Automaattinen peruutus" in logs
+
+
+def test_git_pull_autostash_conflict_heals_cleanly():
+    """
+    Ensures that when `git pull --autostash` leaves conflict markers (`Applying autostash resulted in conflicts`),
+    `git_pull()` automatically cleans the working tree with `git reset --hard origin/main` so `dashboard.py`
+    never crashes with `SyntaxError: <<<<<<< Updated upstream`.
+    """
+    with patch("core.server_maintenance.get_git_info") as mock_info, \
+         patch("core.server_maintenance._run_cmd") as mock_cmd:
+        mock_info.side_effect = [
+            {"is_git": True, "branch": "main"},
+            {"is_git": True, "branch": "main", "commit_hash": "d57fdd9", "commit_msg": "clean sync"},
+        ]
+        mock_cmd.side_effect = [
+            (0, "Fetched origin/main", ""),
+            (1, "Applying autostash resulted in conflicts.\nYour changes are safe in the stash.", "CONFLICT (content): Merge conflict in dashboard.py"),
+            (0, "", ""),
+            (0, "", ""),
+            (0, "HEAD is now at d57fdd9", ""),
+        ]
+
+        success, logs = git_pull()
+        assert success is True
+        assert "d57fdd9" in logs
+        assert "konfliktin siivous suoritettu" in logs
 
 
 def test_git_hard_reset_to_origin():

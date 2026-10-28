@@ -316,13 +316,25 @@ def git_pull(branch: Optional[str] = None) -> Tuple[bool, str]:
     # 2. Pull with autostash
     logs.append(f"⬇️ Suoritetaan git pull --autostash origin {target_branch}...")
     rc, out, err = _run_cmd(["git", "pull", "--autostash", "origin", target_branch])
-    if rc != 0:
-        logs.append(f"❌ Git pull epäonnistui (koodi {rc}):\n{err or out}")
-        # Automatic Rollback / Abort to prevent broken state on server
-        logs.append("🛡️ [Auto-Rollback] Palautetaan palvelin ehjään tilaan (aborting merge/rebase)...")
+    combined_out = f"{out}\n{err}".lower()
+    has_stash_conflict = (
+        "applying autostash resulted in conflicts" in combined_out
+        or "conflict (content)" in combined_out
+        or "unmerged paths" in combined_out
+    )
+
+    if rc != 0 or has_stash_conflict:
+        logs.append(f"❌ Git pull kohtasi ristiriidan (koodi {rc}):\n{err or out}")
+        # Automatic Rollback / Clean Sync to prevent broken <<<<<<< Updated upstream syntax errors
+        logs.append("🛡️ [Auto-Rollback] Poistetaan konfliktimerkit ja palautetaan kooditiedostot ehjään tilaan...")
         _run_cmd(["git", "merge", "--abort"])
         _run_cmd(["git", "rebase", "--abort"])
-        logs.append("✅ Automaattinen peruutus suoritettu. Palvelimen koodi ja daemon säilyivät entisellään.")
+        _run_cmd(["git", "reset", "--hard", f"origin/{target_branch}"])
+        logs.append("✅ Automaattinen peruutus ja konfliktin siivous suoritettu. Palvelimen koodi ja daemon ovat ehjässä tilassa.")
+        if has_stash_conflict:
+            new_info = get_git_info()
+            logs.append(f"✅ Päivitetty puhtaasti GitHubin tilaan: {new_info.get('commit_hash')} — {new_info.get('commit_msg')}")
+            return True, "\n".join(logs)
         return False, "\n".join(logs)
 
     logs.append(out if out else "Koodi ajan tasalla.")
