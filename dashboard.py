@@ -1587,10 +1587,10 @@ def render_real_portfolio_view():
             with st.container(border=True):
                 col_found_info, col_found_btn = st.columns([3, 2])
                 with col_found_info:
-                    st.markdown(f"⚡ **Löydettiin uusin Nordnet-vientisi:** `{latest_dl_file.name}`")
+                    st.markdown(f"⚡ **Löydettiin uusin Nordnet-vientisi koneeltasi:** `{latest_dl_file.name}`")
                     st.caption(f"📅 Ladattu: {file_time_str} &bull; Koko: {latest_dl_file.stat().st_size} tavua")
                 with col_found_btn:
-                    if st.button("⚡ Tuo uusin lataus suoraan (1-klikkaus)", type="primary", key="btn_quick_import_latest", use_container_width=True):
+                    if st.button("⚡ Tuo tämä uusin lataus heti", type="primary", key="btn_quick_import_latest", use_container_width=True):
                         try:
                             f_bytes = latest_dl_file.read_bytes()
                             res_q = pm.import_from_csv_bytes(f_bytes, sync_p13=True, preserve_hodl=False)
@@ -1599,6 +1599,25 @@ def render_real_portfolio_view():
                             st.rerun()
                         except Exception as q_err:
                             st.error(f"Virhe tuotaessa tiedostoa: {q_err}")
+
+                # Show expandable preview of the auto-detected file
+                try:
+                    quick_prev = pm.preview_csv_bytes(latest_dl_file.read_bytes(), preserve_hodl=False)
+                    with st.expander(f"🔍 Esikatselu: `{latest_dl_file.name}` sisältö ({quick_prev['total_rows']} osaketta)", expanded=True):
+                        if quick_prev["parsed_positions"]:
+                            df_qprev = pd.DataFrame(quick_prev["parsed_positions"])
+                            df_qprev.rename(columns={
+                                "symbol": "Ticker",
+                                "name": "Nordnet Nimi",
+                                "quantity": "Määrä",
+                                "avg_price": "Keskikurssi (€)",
+                                "target_weight": "Tavoitepaino",
+                                "is_hodl": "HODL",
+                                "is_new": "Uusi Positio",
+                            }, inplace=True)
+                            st.dataframe(df_qprev, use_container_width=True, hide_index=True)
+                except Exception:
+                    pass
 
     with st.expander("ℹ️ Ohje: Miten lataat tiedoston Nordnetistä?", expanded=False):
         st.markdown(
