@@ -147,9 +147,19 @@ class NordnetCSVImporter:
     """Parses Nordnet portfolio export files (UTF-16/UTF-8, tab or semicolon separated) and updates holdings."""
 
     @staticmethod
-    def parse_lines(lines: List[str], existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int, List[Dict[str, Any]]]:
+    def parse_lines(
+        lines: List[str],
+        existing_holdings: Dict[str, Any],
+        preserve_hodl: bool = True,
+    ) -> Tuple[Dict[str, Any], int, List[Dict[str, Any]]]:
         """Core parsing logic for decoded CSV lines.
         
+        Args:
+            lines: Decoded CSV lines.
+            existing_holdings: Current portfolio holdings dict.
+            preserve_hodl: If True, positions with hodl=True are preserved even if absent from CSV.
+                          If False, only positions present in the CSV are included (full mirror).
+
         Returns:
             Tuple of (updated_holdings, imported_count, parsed_rows_detail)
         """
@@ -170,17 +180,19 @@ class NordnetCSVImporter:
 
         reader = csv.DictReader(content_lines, delimiter=delimiter)
 
-        # Start from HODL-locked positions only — everything else must come from the CSV.
-        # This ensures positions that have been sold in Nordnet are removed on re-import.
-        updated_holdings: Dict[str, Any] = {
-            sym: data
-            for sym, data in existing_holdings.items()
-            if data.get("hodl", False)
-        }
-
-        hodl_preserved = set(updated_holdings.keys())
-        if hodl_preserved:
-            logger.info(f"Preserved {len(hodl_preserved)} HODL-locked position(s) outside CSV scope: {', '.join(hodl_preserved)}")
+        # Start from HODL-locked positions only if preserve_hodl is requested;
+        # otherwise, start from empty dict so the imported CSV represents 100% of real holdings.
+        if preserve_hodl:
+            updated_holdings: Dict[str, Any] = {
+                sym: data
+                for sym, data in existing_holdings.items()
+                if data.get("hodl", False)
+            }
+            hodl_preserved = set(updated_holdings.keys())
+            if hodl_preserved:
+                logger.info(f"Preserved {len(hodl_preserved)} HODL-locked position(s) outside CSV scope: {', '.join(hodl_preserved)}")
+        else:
+            updated_holdings = {}
 
         imported_count = 0
         parsed_rows_detail: List[Dict[str, Any]] = []
@@ -259,27 +271,27 @@ class NordnetCSVImporter:
         return updated_holdings, imported_count, parsed_rows_detail
 
     @staticmethod
-    def import_csv(filepath: Path, existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+    def import_csv(filepath: Path, existing_holdings: Dict[str, Any], preserve_hodl: bool = True) -> Tuple[Dict[str, Any], int]:
         """Parses Nordnet CSV export file and returns a holdings dict that mirrors the CSV exactly."""
         if not filepath.exists():
             raise FileNotFoundError(f"Portfolio CSV file not found: {filepath}")
 
         lines = read_file_lines(filepath)
-        updated_holdings, count, _ = NordnetCSVImporter.parse_lines(lines, existing_holdings)
+        updated_holdings, count, _ = NordnetCSVImporter.parse_lines(lines, existing_holdings, preserve_hodl=preserve_hodl)
         return updated_holdings, count
 
     @staticmethod
-    def import_csv_bytes(content_bytes: bytes, existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+    def import_csv_bytes(content_bytes: bytes, existing_holdings: Dict[str, Any], preserve_hodl: bool = True) -> Tuple[Dict[str, Any], int]:
         """Parses raw Nordnet CSV export bytes directly and returns a holdings dict."""
         lines = read_bytes_lines(content_bytes)
-        updated_holdings, count, _ = NordnetCSVImporter.parse_lines(lines, existing_holdings)
+        updated_holdings, count, _ = NordnetCSVImporter.parse_lines(lines, existing_holdings, preserve_hodl=preserve_hodl)
         return updated_holdings, count
 
     @staticmethod
-    def preview_csv_bytes(content_bytes: bytes, existing_holdings: Dict[str, Any]) -> Dict[str, Any]:
+    def preview_csv_bytes(content_bytes: bytes, existing_holdings: Dict[str, Any], preserve_hodl: bool = True) -> Dict[str, Any]:
         """Previews parsed holdings from raw CSV bytes without modifying state."""
         lines = read_bytes_lines(content_bytes)
-        updated_holdings, count, rows = NordnetCSVImporter.parse_lines(lines, existing_holdings)
+        updated_holdings, count, rows = NordnetCSVImporter.parse_lines(lines, existing_holdings, preserve_hodl=preserve_hodl)
         found_symbols = {r["symbol"] for r in rows}
         removed = [s for s in existing_holdings.keys() if s not in updated_holdings]
         hodl_kept = [s for s in updated_holdings.keys() if updated_holdings[s].get("hodl") and s not in found_symbols]

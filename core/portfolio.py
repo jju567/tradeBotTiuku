@@ -154,11 +154,11 @@ class PortfolioManager:
             return not current
         return False
 
-    def import_from_csv(self, csv_filepath: Path, sync_p13: bool = False, p13_state_path: Optional[Path] = None) -> Tuple[Dict[str, Any], int]:
+    def import_from_csv(self, csv_filepath: Path, sync_p13: bool = False, p13_state_path: Optional[Path] = None, preserve_hodl: bool = True) -> Tuple[Dict[str, Any], int]:
         """Imports holdings from a Nordnet CSV export file."""
         from utils.csv_importer import NordnetCSVImporter
         existing = self.portfolio_state.get("holdings", {})
-        updated_holdings, count = NordnetCSVImporter.import_csv(csv_filepath, existing)
+        updated_holdings, count = NordnetCSVImporter.import_csv(csv_filepath, existing, preserve_hodl=preserve_hodl)
         self.portfolio_state["holdings"] = updated_holdings
         self.save_state()
         logger.info(f"Successfully imported {count} holdings from {csv_filepath}")
@@ -174,6 +174,7 @@ class PortfolioManager:
         content_bytes: bytes,
         sync_p13: bool = False,
         p13_state_path: Optional[Path] = None,
+        preserve_hodl: bool = True,
     ) -> Dict[str, Any]:
         """Imports holdings directly from raw CSV bytes (e.g. from UI file uploader).
 
@@ -185,7 +186,7 @@ class PortfolioManager:
             raise ValueError("CSV-tiedoston sisältö on tyhjä.")
 
         existing = dict(self.portfolio_state.get("holdings", {}))
-        preview = NordnetCSVImporter.preview_csv_bytes(content_bytes, existing)
+        preview = NordnetCSVImporter.preview_csv_bytes(content_bytes, existing, preserve_hodl=preserve_hodl)
         updated_holdings = preview["updated_holdings"]
         count = preview["total_rows"]
 
@@ -215,13 +216,13 @@ class PortfolioManager:
             "parsed_positions": preview["parsed_positions"],
         }
 
-    def preview_csv_bytes(self, content_bytes: bytes) -> Dict[str, Any]:
+    def preview_csv_bytes(self, content_bytes: bytes, preserve_hodl: bool = True) -> Dict[str, Any]:
         """Previews parsed holdings from raw CSV bytes without modifying state."""
         from utils.csv_importer import NordnetCSVImporter
         if not content_bytes:
             raise ValueError("CSV-tiedoston sisältö on tyhjä.")
         existing = dict(self.portfolio_state.get("holdings", {}))
-        return NordnetCSVImporter.preview_csv_bytes(content_bytes, existing)
+        return NordnetCSVImporter.preview_csv_bytes(content_bytes, existing, preserve_hodl=preserve_hodl)
 
     def _sync_to_p13_state(self, p13_file: Path, updated_holdings: Dict[str, Any]) -> bool:
         """Syncs imported holdings into P13 Live Candidate state file."""

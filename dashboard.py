@@ -1566,6 +1566,40 @@ def render_real_portfolio_view():
         "Systeemi tunnistaa automaattisesti eri merkistökoodaukset (UTF-16, UTF-8, CP1252) ja suomalaiset lukumuodot."
     )
 
+    # Quick 1-click import from Downloads folder if a fresh file exists
+    downloads_dir = Path.home() / "Downloads"
+    recent_nordnet_files = []
+    if downloads_dir.exists():
+        try:
+            recent_nordnet_files = sorted(
+                list(downloads_dir.glob("Osaketaulukko*.csv")) + list(downloads_dir.glob("*salkku*.csv")),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except Exception:
+            pass
+
+    if recent_nordnet_files:
+        latest_dl_file = recent_nordnet_files[0]
+        file_age_hours = (time.time() - latest_dl_file.stat().st_mtime) / 3600.0
+        if file_age_hours < 72:  # Found fresh download from the last 3 days
+            file_time_str = datetime.fromtimestamp(latest_dl_file.stat().st_mtime).strftime("%d.%m.%Y klo %H:%M")
+            with st.container(border=True):
+                col_found_info, col_found_btn = st.columns([3, 2])
+                with col_found_info:
+                    st.markdown(f"⚡ **Löydettiin uusin Nordnet-vientisi:** `{latest_dl_file.name}`")
+                    st.caption(f"📅 Ladattu: {file_time_str} &bull; Koko: {latest_dl_file.stat().st_size} tavua")
+                with col_found_btn:
+                    if st.button("⚡ Tuo uusin lataus suoraan (1-klikkaus)", type="primary", key="btn_quick_import_latest", use_container_width=True):
+                        try:
+                            f_bytes = latest_dl_file.read_bytes()
+                            res_q = pm.import_from_csv_bytes(f_bytes, sync_p13=True, preserve_hodl=False)
+                            st.success(f"🎉 Tuotiin onnistuneesti {res_q['count']} positiota tiedostosta `{latest_dl_file.name}`!")
+                            time.sleep(0.5)
+                            st.rerun()
+                        except Exception as q_err:
+                            st.error(f"Virhe tuotaessa tiedostoa: {q_err}")
+
     with st.expander("ℹ️ Ohje: Miten lataat tiedoston Nordnetistä?", expanded=False):
         st.markdown(
             """
@@ -1573,7 +1607,7 @@ def render_real_portfolio_view():
             2. Mene sivulle **Salkku** (tai **Salkkuraportti**).
             3. Etsi taulukon ylä- tai alalaidasta painike **Vie Exceliin** tai **Lataa CSV**.
             4. Tallenna tiedosto tietokoneellesi ja lataa / raahaa se alla olevaan kenttään.
-            5. *Vinkki*: Myydyt osakkeet poistuvat automaattisesti salkusta, mutta **HODL**-merkityt osakkeet (kuten `FARON.HE`) säilyvät aina!
+            5. Paina **🚀 Tuo ja Päivitä Reaalisalkku**. Voit samalla päivittää käteissaldon yhdellä kertaa!
             """
         )
 
@@ -1587,7 +1621,7 @@ def render_real_portfolio_view():
     if uploaded_csv is not None:
         file_bytes = uploaded_csv.getvalue()
         try:
-            preview = pm.preview_csv_bytes(file_bytes)
+            preview = pm.preview_csv_bytes(file_bytes, preserve_hodl=False)
             parsed_rows = preview["parsed_positions"]
             total_found = preview["total_rows"]
             removed_syms = preview["removed_symbols"]
@@ -1607,7 +1641,7 @@ def render_real_portfolio_view():
                 if hodl_syms:
                     st.info(f"🔒 **Säilyvät HODL-positiot:** {', '.join(hodl_syms)}")
                 else:
-                    st.caption("Ei erillisiä HODL-positioita CSV:n ulkopuolella.")
+                    st.caption("Koko salkku peilataan Nordnetin CSV:stä.")
 
             if parsed_rows:
                 df_prev = pd.DataFrame(parsed_rows)
@@ -1622,27 +1656,44 @@ def render_real_portfolio_view():
                 }, inplace=True)
                 st.dataframe(df_prev, use_container_width=True, hide_index=True)
 
-            col_opt, col_btn = st.columns([2, 1])
-            with col_opt:
+            col_opt1, col_opt2 = st.columns(2)
+            with col_opt1:
+                clean_sync_cand = st.checkbox(
+                    "☑️ Korvaa salkun koko sisältö (poista myydyt osakkeet)",
+                    value=True,
+                    key="chk_clean_sync_real",
+                    help="Jos valittu, salkku peilataan 100% Nordnetin CSV:stä ja aiemmin myydyt osakkeet poistuvat.",
+                )
                 sync_p13_cand = st.checkbox(
-                    "☑️ Synkronoi samalla P13 Live Candidate -seurantasalkkuun (portfolio_P13_Live_Candidate_state.json)",
+                    "☑️ Synkronoi samalla P13 Live Candidate -seurantasalkkuun",
                     value=True,
                     key="chk_sync_p13_real",
                     help="Päivittää P13-varjosalkun vastaamaan todellisia Nordnet-omistuksia ja hankintahintoja.",
                 )
-            with col_btn:
-                if st.button("🚀 Tuo ja Päivitä Reaalisalkku", type="primary", use_container_width=True):
-                    res = pm.import_from_csv_bytes(file_bytes, sync_p13=sync_p13_cand)
-                    try:
-                        archive_path = DATA_DIR / "nordnet_latest_import.csv"
-                        archive_path.write_bytes(file_bytes)
-                    except Exception:
-                        pass
+            with col_opt2:
+                inline_cash = st.number_input(
+                    "Päivitä samalla vapaa käteinen (€):",
+                    min_value=0.0,
+                    max_value=1_000_000.0,
+                    value=float(cash_balance),
+                    step=50.0,
+                    key="inline_cash_input",
+                    help="Nordnetin CSV-vienti sisältää vain osakkeet. Voit päivittää tilin käteissaldon tässä samalla!",
+                )
 
-                    p13_msg = " ja synkronoitiin P13 Live Candidate" if res.get("p13_synced") else ""
-                    st.success(f"🎉 **Onnistui!** Tuotiin {res['count']} positiota{p13_msg} tiedostoon `tiuku_portfolio.json`.")
-                    time.sleep(1)
-                    st.rerun()
+            if st.button("🚀 Tuo ja Päivitä Reaalisalkku", type="primary", use_container_width=True):
+                res = pm.import_from_csv_bytes(file_bytes, sync_p13=sync_p13_cand, preserve_hodl=not clean_sync_cand)
+                pm.set_cash_balance(inline_cash)
+                try:
+                    archive_path = DATA_DIR / "nordnet_latest_import.csv"
+                    archive_path.write_bytes(file_bytes)
+                except Exception:
+                    pass
+
+                p13_msg = " ja synkronoitiin P13 Live Candidate" if res.get("p13_synced") else ""
+                st.success(f"🎉 **Onnistui!** Salkku päivitetty ({res['count']} positiota{p13_msg}, käteinen {inline_cash:,.2f} €).")
+                time.sleep(0.5)
+                st.rerun()
 
         except Exception as e:
             st.error(f"❌ Virhe CSV-tiedoston tulkinnassa: {e}")
@@ -3865,7 +3916,11 @@ def _fragment_view_manual(active_menu: str, selected_portfolio: str):
 
 # Execute fragment renderer
 _active_portfolio = st.session_state.get("selected_portfolio", "P1_Base")
-if auto_refresh:
+if menu == "🏦 Reaalisalkku (Nordnet Live)":
+    # Render Real Portfolio view directly without auto-refresh timer fragment,
+    # ensuring file uploads and number inputs are never reset by a periodic timer.
+    render_dashboard_views(menu)
+elif auto_refresh:
     interval_val = int(refresh_interval) if refresh_interval else 30
     if interval_val <= 10:
         _fragment_view_10(menu, _active_portfolio)
