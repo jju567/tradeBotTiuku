@@ -227,3 +227,37 @@ class TestNordnetCSVImporter:
         assert "NOKIA.HE" in holdings
         assert holdings["NOKIA.HE"]["quantity"] == 100
         assert "NESTE.HE" in holdings  # HODL preserved
+
+    # ----- Bytes and Preview tests -------------------------------------------
+
+    def test_import_csv_bytes_utf8(self):
+        content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\nNeste\t50\t25,40\n"
+        raw_bytes = content.encode("utf-8")
+        holdings, count = NordnetCSVImporter.import_csv_bytes(raw_bytes, {})
+        assert count == 2
+        assert "NOKIA.HE" in holdings
+        assert holdings["NOKIA.HE"]["quantity"] == 100
+        assert holdings["NOKIA.HE"]["avg_price"] == pytest.approx(3.60)
+
+    def test_import_csv_bytes_utf16le(self):
+        content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\n"
+        raw_bytes = content.encode("utf-16le")
+        holdings, count = NordnetCSVImporter.import_csv_bytes(raw_bytes, {})
+        assert count == 1
+        assert "NOKIA.HE" in holdings
+
+    def test_preview_csv_bytes(self):
+        content = "Nimi\tMäärä\tKeskikurssi\nNokia\t100\t3,60\n"
+        existing = {
+            "SAMPO.HE": {"quantity": 20, "avg_price": 40.0, "hodl": False},
+            "FARON.HE": {"quantity": 1000, "avg_price": 1.5, "hodl": True},
+        }
+        raw_bytes = content.encode("utf-8")
+        preview = NordnetCSVImporter.preview_csv_bytes(raw_bytes, existing)
+
+        assert preview["total_rows"] == 1
+        assert len(preview["parsed_positions"]) == 1
+        assert preview["parsed_positions"][0]["symbol"] == "NOKIA.HE"
+        assert preview["parsed_positions"][0]["is_new"] is True
+        assert "SAMPO.HE" in preview["removed_symbols"]
+        assert "FARON.HE" in preview["hodl_preserved_symbols"]

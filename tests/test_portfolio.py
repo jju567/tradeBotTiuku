@@ -201,3 +201,90 @@ class TestSyncValuation:
         mgr.sync_valuation(nordnet_data)
         history = json.loads(hf.read_text(encoding="utf-8"))
         assert history[0]["total_equity"] == pytest.approx(12345.0)
+
+
+# ---------------------------------------------------------------------------
+# import_from_csv_bytes & UI helpers
+# ---------------------------------------------------------------------------
+
+
+class TestPortfolioManagerCSVBytes:
+    def test_import_from_csv_bytes_updates_portfolio(self, tmp_portfolio):
+        pf, hf = tmp_portfolio
+        mgr = PortfolioManager(portfolio_file=pf, history_file=hf)
+        raw_csv = "Nimi\tMäärä\tKeskikurssi\nNokia\t150\t3,80\nNeste\t40\t26,50\n".encode("utf-8")
+
+        result = mgr.import_from_csv_bytes(raw_csv)
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert "NOKIA.HE" in result["holdings"]
+        assert result["holdings"]["NOKIA.HE"]["quantity"] == 150
+        assert result["holdings"]["NOKIA.HE"]["avg_price"] == pytest.approx(3.80)
+
+        # Check persistence
+        reloaded = json.loads(pf.read_text(encoding="utf-8"))
+        assert "NOKIA.HE" in reloaded["holdings"]
+
+    def test_preview_csv_bytes_does_not_modify_state(self, tmp_portfolio):
+        pf, hf = tmp_portfolio
+        mgr = PortfolioManager(portfolio_file=pf, history_file=hf)
+        orig_holdings = dict(mgr.portfolio_state["holdings"])
+        raw_csv = "Nimi\tMäärä\tKeskikurssi\nNokia\t999\t1,00\n".encode("utf-8")
+
+        preview = mgr.preview_csv_bytes(raw_csv)
+        assert preview["total_rows"] == 1
+        assert preview["parsed_positions"][0]["symbol"] == "NOKIA.HE"
+        # State must remain unchanged
+        assert mgr.portfolio_state["holdings"] == orig_holdings
+
+    def test_toggle_hodl_and_remove_holding(self, tmp_portfolio):
+        pf, hf = tmp_portfolio
+        mgr = PortfolioManager(portfolio_file=pf, history_file=hf)
+        mgr.set_holding("FARON.HE", 1000, 1.20)
+        assert mgr.portfolio_state["holdings"]["FARON.HE"].get("hodl", False) is False
+
+        # Toggle HODL on
+        new_val = mgr.toggle_hodl("FARON.HE")
+        assert new_val is True
+        assert mgr.portfolio_state["holdings"]["FARON.HE"]["hodl"] is True
+
+        # Toggle HODL off
+        new_val = mgr.toggle_hodl("FARON.HE")
+        assert new_val is False
+
+        # Remove holding
+        removed = mgr.remove_holding("FARON.HE")
+        assert removed is True
+        assert "FARON.HE" not in mgr.portfolio_state["holdings"]
+
+    def test_sync_to_p13_state(self, tmp_portfolio, tmp_path):
+        pf, hf = tmp_portfolio
+        mgr = PortfolioManager(portfolio_file=pf, history_file=hf)
+
+        p13_file = tmp_path / "portfolio_P13_Live_Candidate_state.json"
+        p13_init = {
+            "portfolio_id": "P13_Live_Candidate",
+            "starting_balance": 10000.0,
+            "positions": [
+                {
+                    "Ticker": "NOKIA.HE",
+                    "Shares": 50,
+                    "Buy Price": 3.0,
+                    "Capital Invested": 150.0,
+                    "Strategy": "Profile B",
+                }
+            ],
+        }
+        p13_file.write_text(json.dumps(p13_init), encoding="utf-8")
+
+        raw_csv = "Nimi\tMäärä\tKeskikurssi\nNokia\t200\t4,10\nViafin Service\t50\t20,00\n".encode("utf-8")
+        result = mgr.import_from_csv_bytes(raw_csv, sync_p13=True, p13_state_path=p13_file)
+        assert result["p13_synced"] is True
+
+        p13_updated = json.loads(p13_file.read_text(encoding="utf-8"))
+        tickers = {p["Ticker"]: p for p in p13_updated["positions"]}
+        assert "NOKIA.HE" in tickers
+        assert tickers["NOKIA.HE"]["Shares"] == 200
+        assert tickers["NOKIA.HE"]["Buy Price"] == pytest.approx(4.10)
+        assert "VIAFIN.HE" in tickers
+        assert tickers["VIAFIN.HE"]["Shares"] == 50

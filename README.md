@@ -101,7 +101,9 @@
 ---
 
 ### 4. 💼 Salkunhallinta, Kulusuojaus & Markkinavahti
-- **📥 Nordnet CSV-Salkuntuonti**: Tuo omistukset, kappalemäärät ja keskihinnat suoraan Nordnetin CSV-/sivutaulukkotiedostosta (`--import-csv`).
+- **📥 Nordnet CSV-Salkuntuonti (UI & CLI)**: Tuo omistukset, kappalemäärät ja keskihinnat suoraan Nordnetin CSV-/sivutaulukkotiedostosta.
+  - **Dashboard UI**: Päävalikosta löytyvä **🏦 Reaalisalkku (Nordnet Live)** -hallintakeskus sekä sivupalkin nopea **📥 Nordnet CSV-pikatuonti** mahdollistavat tiedoston pudottamisen suoraan selaimeen. Sisältää automaattisen esikatselun, myytyjen osakkeiden poiston, HODL-lukitusten (`FARON.HE` jne.) suojan, käteis- ja pääomaeditorin sekä valinnaisen automaattisen synkronoinnin `P13_Live_Candidate`-seurantaan.
+  - **CLI**: Tuonti komentoriviltä komennolla `python main.py --import-csv tiedosto.csv`.
 - **🛡️ Nordnet Palkkiotasot & Markkinakohtainen Kulusuojaus**:
   - **OMX Helsinki (`.HE`)**: Kotimaan Taso 3 minimipalkkio 7,00 € / 0,15 %.
   - **Ulkomaiset pörssit (Saksa `.DE`, Lontoo `.L`, USA)**: Ulkomaankaupan minimipalkkio 15,00 € / 0,15 %.
@@ -172,6 +174,15 @@ python batch_processor.py --limit 10 --web-check
 ```
 
 ### 3. Salkun Päivittäminen & Nordnet CSV-Sisäänluku
+Salkun voi päivittää kätevästi suoraan Streamlit-dashboardista tai komentoriviltä:
+
+**Vaihtoehto A: Dashboard UI (Suositeltu)**
+1. Avaa Dashboard (`streamlit run dashboard.py`).
+2. Siirry valikosta sivulle **🏦 Reaalisalkku (Nordnet Live)** tai avaa sivupalkin **📥 Nordnet CSV-pikatuonti**.
+3. Pudota Nordnetistä ladattu `.csv`- tai `.txt`-vientitiedosto selaimeen.
+4. Tarkista automaattinen esikatselu ja paina **🚀 Tuo ja Päivitä Reaalisalkku**. Voit samalla synkronoida omistukset suoraan `P13 Live Candidate` -varjosalkkuun!
+
+**Vaihtoehto B: Komentorivi (CLI)**
 ```bash
 # Tuo salkku Nordnetin vientitiedostosta:
 python main.py --import-csv "data/Osaketaulukko_salkku.csv"

@@ -133,7 +133,28 @@ class PortfolioManager:
 
         self.save_state()
 
-    def import_from_csv(self, csv_filepath: Path) -> Tuple[Dict[str, Any], int]:
+    def remove_holding(self, symbol: str) -> bool:
+        """Removes a single holding from the portfolio."""
+        symbol = symbol.upper()
+        if "holdings" in self.portfolio_state and symbol in self.portfolio_state["holdings"]:
+            del self.portfolio_state["holdings"][symbol]
+            self.save_state()
+            logger.info(f"Removed holding {symbol} from portfolio.")
+            return True
+        return False
+
+    def toggle_hodl(self, symbol: str) -> bool:
+        """Toggles the HODL lock flag for a holding."""
+        symbol = symbol.upper()
+        if "holdings" in self.portfolio_state and symbol in self.portfolio_state["holdings"]:
+            current = self.portfolio_state["holdings"][symbol].get("hodl", False)
+            self.portfolio_state["holdings"][symbol]["hodl"] = not current
+            self.save_state()
+            logger.info(f"Toggled HODL for {symbol} to {not current}")
+            return not current
+        return False
+
+    def import_from_csv(self, csv_filepath: Path, sync_p13: bool = False, p13_state_path: Optional[Path] = None) -> Tuple[Dict[str, Any], int]:
         """Imports holdings from a Nordnet CSV export file."""
         from utils.csv_importer import NordnetCSVImporter
         existing = self.portfolio_state.get("holdings", {})
@@ -141,7 +162,133 @@ class PortfolioManager:
         self.portfolio_state["holdings"] = updated_holdings
         self.save_state()
         logger.info(f"Successfully imported {count} holdings from {csv_filepath}")
+
+        if sync_p13:
+            p13_file = p13_state_path or (config.DATA_DIR / "portfolios" / "portfolio_P13_Live_Candidate_state.json")
+            self._sync_to_p13_state(p13_file, updated_holdings)
+
         return updated_holdings, count
+
+    def import_from_csv_bytes(
+        self,
+        content_bytes: bytes,
+        sync_p13: bool = False,
+        p13_state_path: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """Imports holdings directly from raw CSV bytes (e.g. from UI file uploader).
+
+        Parses using NordnetCSVImporter, updates self.portfolio_state, and optionally
+        syncs with P13 Live Candidate state.
+        """
+        from utils.csv_importer import NordnetCSVImporter
+        if not content_bytes:
+            raise ValueError("CSV-tiedoston sisältö on tyhjä.")
+
+        existing = dict(self.portfolio_state.get("holdings", {}))
+        preview = NordnetCSVImporter.preview_csv_bytes(content_bytes, existing)
+        updated_holdings = preview["updated_holdings"]
+        count = preview["total_rows"]
+
+        self.portfolio_state["holdings"] = updated_holdings
+        self.save_state()
+        logger.info(f"Successfully imported {count} holdings from CSV bytes")
+
+        added = [r["symbol"] for r in preview["parsed_positions"] if r.get("is_new")]
+        updated = [r["symbol"] for r in preview["parsed_positions"] if not r.get("is_new")]
+        removed = preview["removed_symbols"]
+        hodl_preserved = preview["hodl_preserved_symbols"]
+
+        p13_synced = False
+        if sync_p13:
+            p13_file = p13_state_path or (config.DATA_DIR / "portfolios" / "portfolio_P13_Live_Candidate_state.json")
+            p13_synced = self._sync_to_p13_state(p13_file, updated_holdings)
+
+        return {
+            "success": True,
+            "count": count,
+            "holdings": updated_holdings,
+            "added": added,
+            "updated": updated,
+            "removed": removed,
+            "hodl_preserved": hodl_preserved,
+            "p13_synced": p13_synced,
+            "parsed_positions": preview["parsed_positions"],
+        }
+
+    def preview_csv_bytes(self, content_bytes: bytes) -> Dict[str, Any]:
+        """Previews parsed holdings from raw CSV bytes without modifying state."""
+        from utils.csv_importer import NordnetCSVImporter
+        if not content_bytes:
+            raise ValueError("CSV-tiedoston sisältö on tyhjä.")
+        existing = dict(self.portfolio_state.get("holdings", {}))
+        return NordnetCSVImporter.preview_csv_bytes(content_bytes, existing)
+
+    def _sync_to_p13_state(self, p13_file: Path, updated_holdings: Dict[str, Any]) -> bool:
+        """Syncs imported holdings into P13 Live Candidate state file."""
+        p13_path = Path(p13_file)
+        if not p13_path.exists():
+            logger.warning(f"P13 state file not found at {p13_path}; skipping P13 sync.")
+            return False
+        try:
+            with open(p13_path, "r", encoding="utf-8") as f:
+                p13_data = json.load(f)
+
+            existing_p13_positions = p13_data.get("positions", [])
+            pos_by_ticker = {p.get("Ticker", "").upper(): p for p in existing_p13_positions if p.get("Ticker")}
+
+            new_p13_positions = []
+            today_str = datetime.now().strftime("%Y-%m-%d")
+
+            for sym, h in updated_holdings.items():
+                sym_up = sym.upper()
+                if sym_up in pos_by_ticker:
+                    pos = dict(pos_by_ticker[sym_up])
+                    pos["Shares"] = float(h.get("quantity", 0))
+                    pos["Buy Price"] = float(h.get("avg_price", 0.0))
+                    pos["Capital Invested"] = round(pos["Shares"] * pos["Buy Price"], 2)
+                    pos["last_evaluated_date"] = today_str
+                    if h.get("hodl"):
+                        pos["hodl"] = True
+                    new_p13_positions.append(pos)
+                else:
+                    shares = float(h.get("quantity", 0))
+                    buy_price = float(h.get("avg_price", 0.0))
+                    is_se = sym_up.endswith(".ST")
+                    is_fi = sym_up.endswith(".HE")
+                    mkt = "SE" if is_se else ("FI" if is_fi else "US")
+                    curr = "SEK" if is_se else ("EUR" if is_fi else "USD")
+                    sub_strat = (
+                        "core_nordic_midcap_quality" if is_fi
+                        else ("satellite_nordic_microcap_catalyst" if is_se else "satellite_us_microcap_growth")
+                    )
+
+                    new_pos = {
+                        "Ticker": sym_up,
+                        "Buy Date": today_str,
+                        "Buy Price": buy_price,
+                        "Shares": shares,
+                        "Capital Invested": round(shares * buy_price, 2),
+                        "Strategy": "Profile B",
+                        "Currency": curr,
+                        "market": mkt,
+                        "current_price": buy_price,
+                        "highest_price_seen": buy_price,
+                        "Sub_Strategy": sub_strat,
+                        "Execution_Verified": True,
+                        "Note": "Imported from Nordnet CSV",
+                    }
+                    if h.get("hodl"):
+                        new_pos["hodl"] = True
+                    new_p13_positions.append(new_pos)
+
+            p13_data["positions"] = new_p13_positions
+            p13_data["updated_at"] = datetime.now().isoformat()
+            _atomic_write_json(p13_path, p13_data)
+            logger.info(f"Successfully synced {len(new_p13_positions)} positions into P13 state file {p13_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to sync P13 state: {e}")
+            return False
 
     def sync_valuation(self, nordnet_data: Dict[str, Any]) -> Dict[str, Any]:
         """Merges live price valuation with local portfolio holdings."""

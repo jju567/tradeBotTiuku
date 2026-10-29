@@ -17,6 +17,8 @@ KNOWN_NORDNET_NAMES = {
     "l&g cyber security": "ISPY.L",
     "nordnet norge": "NN_NORGE",
     "nordnet sverige": "NN_SVERIGE",
+    "nordnet suomi": "NN_SUOMI",
+    "nordnet tanska": "NN_TANSKA",
     "nokia": "NOKIA.HE",
     "neste": "NESTE.HE",
     "kone": "KNEBV.HE",
@@ -45,6 +47,15 @@ KNOWN_NORDNET_NAMES = {
     "kempower": "KEMPOWR.HE",
     "anora": "ANORA.HE",
     "verkkokauppa": "VERK.HE",
+    "viafin service": "VIAFIN.HE",
+    "viafin": "VIAFIN.HE",
+    "micro systemation": "MSAB-B.ST",
+    "msab": "MSAB-B.ST",
+    "eq": "EQV1V.HE",
+    "enento": "ENENTO.HE",
+    "betsson": "BETCO.ST",
+    "bico group": "BICO.ST",
+    "bioarctic": "BIOA-B.ST",
     "apple": "AAPL",
     "microsoft": "MSFT",
 }
@@ -89,55 +100,59 @@ def map_name_to_symbol(name: str, existing_holdings: Dict[str, Any]) -> str:
 _HEADER_KEYWORDS = ("nimi", "antal", "määrä", "instrument", "name", "quantity", "gak", "keskikurssi")
 
 
+def read_bytes_lines(content_bytes: bytes) -> List[str]:
+    """Tries reading raw CSV bytes using common Nordnet export encodings (UTF-16LE, UTF-16, UTF-8-BOM, UTF-8, CP1252).
+
+    Validates that decoded content looks like a Nordnet portfolio export by
+    checking for known header keywords in the first two lines.
+    """
+    encodings = ["utf-16", "utf-16le", "utf-8-sig", "utf-8", "cp1252"]
+    for enc in encodings:
+        try:
+            content = content_bytes.decode(enc)
+            if not content or "\x00" in content:
+                continue
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            if not lines:
+                continue
+            header_text = " ".join(lines[:2]).lower()
+            if any(kw in header_text for kw in _HEADER_KEYWORDS):
+                logger.info(f"Successfully decoded CSV bytes using encoding '{enc}'")
+                return lines
+        except Exception:
+            continue
+
+    logger.warning("Could not auto-detect encoding for CSV bytes. Falling back to UTF-8 with replacement.")
+    content = content_bytes.decode("utf-8", errors="replace")
+    return [line.strip() for line in content.splitlines() if line.strip()]
+
+
 def read_file_lines(filepath: Path) -> List[str]:
     """Tries reading file using common Nordnet export encodings (UTF-16LE, UTF-16, UTF-8-BOM, UTF-8, CP1252).
 
     Validates that the decoded content looks like a Nordnet portfolio export by
     checking for known header keywords in the first two lines.
     """
-    encodings = ["utf-16", "utf-16le", "utf-8-sig", "utf-8", "cp1252"]
-    for enc in encodings:
-        try:
-            with open(filepath, "r", encoding=enc) as f:
-                content = f.read()
-            if not content or "\x00" in content:
-                continue
-            lines = [line.strip() for line in content.splitlines() if line.strip()]
-            if not lines:
-                continue
-            # Check first two lines (header may be on line 1 or 2 in some exports)
-            header_text = " ".join(lines[:2]).lower()
-            if any(kw in header_text for kw in _HEADER_KEYWORDS):
-                logger.info(f"Successfully decoded CSV using encoding '{enc}'")
-                return lines
-        except Exception:
-            continue
-
-    # Last-resort fallback: UTF-8 with replacement characters
-    logger.warning(f"Could not auto-detect encoding for {filepath}. Falling back to UTF-8 with replacement.")
-    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        return [line.strip() for line in f if line.strip()]
+    try:
+        with open(filepath, "rb") as f:
+            raw_bytes = f.read()
+        return read_bytes_lines(raw_bytes)
+    except Exception as e:
+        logger.warning(f"Error reading bytes from {filepath}: {e}. Falling back to line-by-line UTF-8.")
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            return [line.strip() for line in f if line.strip()]
 
 
 class NordnetCSVImporter:
     """Parses Nordnet portfolio export files (UTF-16/UTF-8, tab or semicolon separated) and updates holdings."""
 
     @staticmethod
-    def import_csv(filepath: Path, existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
-        """Parses Nordnet CSV export file and returns a holdings dict that mirrors the CSV exactly.
-
-        Behaviour:
-        - Positions present in the CSV are added/updated with fresh quantity and avg_price.
-        - Positions that are NOT in the CSV (i.e. sold since last export) are removed.
-        - HODL-locked positions (``hodl: True``) are always preserved regardless of whether
-          they appear in the CSV, so long-term locked positions survive a full re-import.
-        - ``target_weight``, ``hodl``, and ``note`` from existing holdings are carried over
-          for symbols that appear in the CSV.
+    def parse_lines(lines: List[str], existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int, List[Dict[str, Any]]]:
+        """Core parsing logic for decoded CSV lines.
+        
+        Returns:
+            Tuple of (updated_holdings, imported_count, parsed_rows_detail)
         """
-        if not filepath.exists():
-            raise FileNotFoundError(f"Portfolio CSV file not found: {filepath}")
-
-        lines = read_file_lines(filepath)
         if not lines:
             raise ValueError("CSV file is empty.")
 
@@ -168,6 +183,7 @@ class NordnetCSVImporter:
             logger.info(f"Preserved {len(hodl_preserved)} HODL-locked position(s) outside CSV scope: {', '.join(hodl_preserved)}")
 
         imported_count = 0
+        parsed_rows_detail: List[Dict[str, Any]] = []
 
         for row in reader:
             # Normalize field names (strip whitespace from header keys)
@@ -224,6 +240,15 @@ class NordnetCSVImporter:
 
             updated_holdings[symbol] = holding_data
             imported_count += 1
+            parsed_rows_detail.append({
+                "symbol": symbol,
+                "name": raw_name,
+                "quantity": holding_data["quantity"],
+                "avg_price": holding_data["avg_price"],
+                "target_weight": holding_data["target_weight"],
+                "is_hodl": hodl_flag,
+                "is_new": symbol not in existing_holdings,
+            })
             logger.info(f"Imported holding {symbol} ({raw_name}): {qty} pcs @ {avg_price:.2f} EUR")
 
         # Log positions that were removed because they were absent from the CSV
@@ -231,4 +256,38 @@ class NordnetCSVImporter:
         if removed:
             logger.info(f"Removed {len(removed)} position(s) not present in CSV (likely sold): {', '.join(removed)}")
 
-        return updated_holdings, imported_count
+        return updated_holdings, imported_count, parsed_rows_detail
+
+    @staticmethod
+    def import_csv(filepath: Path, existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+        """Parses Nordnet CSV export file and returns a holdings dict that mirrors the CSV exactly."""
+        if not filepath.exists():
+            raise FileNotFoundError(f"Portfolio CSV file not found: {filepath}")
+
+        lines = read_file_lines(filepath)
+        updated_holdings, count, _ = NordnetCSVImporter.parse_lines(lines, existing_holdings)
+        return updated_holdings, count
+
+    @staticmethod
+    def import_csv_bytes(content_bytes: bytes, existing_holdings: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+        """Parses raw Nordnet CSV export bytes directly and returns a holdings dict."""
+        lines = read_bytes_lines(content_bytes)
+        updated_holdings, count, _ = NordnetCSVImporter.parse_lines(lines, existing_holdings)
+        return updated_holdings, count
+
+    @staticmethod
+    def preview_csv_bytes(content_bytes: bytes, existing_holdings: Dict[str, Any]) -> Dict[str, Any]:
+        """Previews parsed holdings from raw CSV bytes without modifying state."""
+        lines = read_bytes_lines(content_bytes)
+        updated_holdings, count, rows = NordnetCSVImporter.parse_lines(lines, existing_holdings)
+        found_symbols = {r["symbol"] for r in rows}
+        removed = [s for s in existing_holdings.keys() if s not in updated_holdings]
+        hodl_kept = [s for s in updated_holdings.keys() if updated_holdings[s].get("hodl") and s not in found_symbols]
+
+        return {
+            "parsed_positions": rows,
+            "total_rows": count,
+            "removed_symbols": removed,
+            "hodl_preserved_symbols": hodl_kept,
+            "updated_holdings": updated_holdings,
+        }

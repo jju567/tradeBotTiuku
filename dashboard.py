@@ -1020,6 +1020,7 @@ with st.sidebar:
     menu = st.radio(
         "Navigation",
         [
+            "🏦 Reaalisalkku (Nordnet Live)",
             "💰 Paper Trading Portfolio",
             "📊 Live Screener Results",
             "👀 Turnaround Watchlist",
@@ -1027,6 +1028,32 @@ with st.sidebar:
         ],
         index=0,
     )
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # NORDNET CSV QUICK UPLOADER (SIDEBAR)
+    # ------------------------------------------------------------------
+    with st.expander("📥 Nordnet CSV-pikatuonti", expanded=False):
+        st.caption("Päivitä salkku nopeasti Nordnetin vientitiedostosta:")
+        side_csv_file = st.file_uploader(
+            "Valitse CSV/TXT",
+            type=["csv", "txt", "tsv"],
+            key="sidebar_csv_file",
+            help="Tuo Nordnetin salkkuraportti (.csv tai .txt)",
+        )
+        side_sync_p13 = st.checkbox("Synkronoi myös P13 Live", value=True, key="side_sync_p13")
+        if side_csv_file is not None:
+            if st.button("🚀 Tuo salkku heti", key="side_btn_import", use_container_width=True):
+                try:
+                    from core.portfolio import PortfolioManager
+                    pm_side = PortfolioManager()
+                    res_side = pm_side.import_from_csv_bytes(side_csv_file.getvalue(), sync_p13=side_sync_p13)
+                    st.success(f"✅ Tuotiin {res_side['count']} omistusta!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as ex_side:
+                    st.error(f"❌ Tuontivirhe: {ex_side}")
 
     st.divider()
 
@@ -1423,6 +1450,348 @@ with st.sidebar:
 
 
 # ----------------------------------------------------------------------
+# VIEW 0: REAL LIVE PORTFOLIO & NORDNET CSV INTEGRATION
+# ----------------------------------------------------------------------
+def render_real_portfolio_view():
+    """Renders the Real Live Nordnet Account view, CSV uploader, valuations, and state editor."""
+    st.markdown('<div class="main-header">🏦 Reaalisalkku & Nordnet Live -hallinta</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sub-header">Oikean Nordnet-tilin positioiden seuranta, CSV-salkuntuonti, käteisvarojen hallinta ja synkronointi P13 Live Candidate -seurantaan.</div>',
+        unsafe_allow_html=True,
+    )
+
+    from core.portfolio import PortfolioManager
+    pm = PortfolioManager()
+    state = pm.load_state()
+
+    holdings = state.get("holdings", {})
+    cash_balance = float(state.get("cash_balance", 0.0))
+    equity_override = state.get("total_equity_override")
+    currency = state.get("currency", "EUR")
+
+    # Fetch live quotes for holdings
+    tickers_tuple = tuple(holdings.keys())
+    live_quotes = fetch_positions_live_data(tickers_tuple) if tickers_tuple else {}
+
+    # Build holdings details & valuations
+    positions_data = []
+    total_market_val = 0.0
+    total_invested_val = 0.0
+    hodl_count = 0
+
+    for sym, h in holdings.items():
+        qty = float(h.get("quantity", 0))
+        avg_p = float(h.get("avg_price", 0.0))
+        invested = qty * avg_p
+        total_invested_val += invested
+        is_hodl = bool(h.get("hodl", False))
+        if is_hodl:
+            hodl_count += 1
+
+        quote = live_quotes.get(sym, {})
+        curr_price = float(quote.get("current_price", avg_p)) if quote.get("status") == "SUCCESS" else avg_p
+        mkt_val = qty * curr_price
+        total_market_val += mkt_val
+
+        pnl_eur = mkt_val - invested
+        pnl_pct = ((curr_price - avg_p) / avg_p * 100.0) if avg_p > 0 else 0.0
+
+        positions_data.append({
+            "Symboli": sym,
+            "Nimi": h.get("name", sym),
+            "Määrä": int(qty) if qty.is_integer() else qty,
+            "Keskikurssi": avg_p,
+            "Markkinahinta": curr_price,
+            "Markkina-arvo": mkt_val,
+            "Tuotto (€)": pnl_eur,
+            "Tuotto (%)": pnl_pct,
+            "Tavoitepaino (%)": float(h.get("target_weight", 0.10)) * 100.0,
+            "HODL": "🔒 Kyllä" if is_hodl else "Ei",
+            "is_hodl": is_hodl,
+            "Muistiinpano": h.get("note", ""),
+        })
+
+    total_calculated_equity = cash_balance + total_market_val
+    effective_total_equity = float(equity_override) if equity_override is not None else total_calculated_equity
+    total_pnl_eur = total_market_val - total_invested_val
+    total_pnl_pct = (total_pnl_eur / total_invested_val * 100.0) if total_invested_val > 0 else 0.0
+
+    # Calculate actual weights
+    for p in positions_data:
+        p["Paino (%)"] = (p["Markkina-arvo"] / effective_total_equity * 100.0) if effective_total_equity > 0 else 0.0
+
+    # 1. Top KPI Metrics
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    with kpi1:
+        override_note = " (Nordnet)" if equity_override is not None else " (Laskettu)"
+        st.metric(
+            label="Salkun Kokonaisarvo",
+            value=f"{effective_total_equity:,.2f} €",
+            delta=override_note,
+            help="Nordnetin kokonaispääoma. Jos override on asetettu, painolaskelmat käyttävät sitä yfinancen sijaan.",
+        )
+    with kpi2:
+        cash_pct = (cash_balance / effective_total_equity * 100.0) if effective_total_equity > 0 else 0.0
+        st.metric(
+            label="Vapaa Käteinen",
+            value=f"{cash_balance:,.2f} €",
+            delta=f"{cash_pct:.1f} % salkusta",
+        )
+    with kpi3:
+        stocks_pct = (total_market_val / effective_total_equity * 100.0) if effective_total_equity > 0 else 0.0
+        st.metric(
+            label="Osakesalkun Arvo",
+            value=f"{total_market_val:,.2f} €",
+            delta=f"{stocks_pct:.1f} % salkusta",
+        )
+    with kpi4:
+        st.metric(
+            label="Avoin Tuotto (€)",
+            value=f"{total_pnl_eur:+,.2f} €",
+            delta=f"{total_pnl_pct:+.1f} %",
+        )
+    with kpi5:
+        st.metric(
+            label="Positiot",
+            value=f"{len(positions_data)} kpl",
+            delta=f"🔒 {hodl_count} HODL",
+        )
+
+    st.markdown("---")
+
+    # 2. Nordnet CSV-Tuonti & Esikatselu
+    st.subheader("📥 1. Nordnet CSV-salkuntuonti")
+    st.caption(
+        "Tuo omistukset, kappalemäärät ja keskikurssit suoraan Nordnetin vientitiedostosta. "
+        "Systeemi tunnistaa automaattisesti eri merkistökoodaukset (UTF-16, UTF-8, CP1252) ja suomalaiset lukumuodot."
+    )
+
+    with st.expander("ℹ️ Ohje: Miten lataat tiedoston Nordnetistä?", expanded=False):
+        st.markdown(
+            """
+            1. Kirjaudu Nordnetiin ([nordnet.fi](https://www.nordnet.fi)).
+            2. Mene sivulle **Salkku** (tai **Salkkuraportti**).
+            3. Etsi taulukon ylä- tai alalaidasta painike **Vie Exceliin** tai **Lataa CSV**.
+            4. Tallenna tiedosto tietokoneellesi ja lataa / raahaa se alla olevaan kenttään.
+            5. *Vinkki*: Myydyt osakkeet poistuvat automaattisesti salkusta, mutta **HODL**-merkityt osakkeet (kuten `FARON.HE`) säilyvät aina!
+            """
+        )
+
+    uploaded_csv = st.file_uploader(
+        "Valitse tai raahaa Nordnetin CSV/TXT-tiedosto:",
+        type=["csv", "txt", "tsv"],
+        key="main_real_csv_uploader",
+        help="Nordnetin salkkuraportti (.csv tai .txt)",
+    )
+
+    if uploaded_csv is not None:
+        file_bytes = uploaded_csv.getvalue()
+        try:
+            preview = pm.preview_csv_bytes(file_bytes)
+            parsed_rows = preview["parsed_positions"]
+            total_found = preview["total_rows"]
+            removed_syms = preview["removed_symbols"]
+            hodl_syms = preview["hodl_preserved_symbols"]
+
+            st.markdown(f"#### 🔍 Esikatselu ({total_found} positiota tunnistettu)")
+
+            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            with col_stat1:
+                st.success(f"✅ **Tunnistetut omistukset:** {total_found} kpl")
+            with col_stat2:
+                if removed_syms:
+                    st.warning(f"⚠️ **Poistuvat (Nordnetissä myydyt):** {', '.join(removed_syms)}")
+                else:
+                    st.info("ℹ️ Ei poistuvia positioita.")
+            with col_stat3:
+                if hodl_syms:
+                    st.info(f"🔒 **Säilyvät HODL-positiot:** {', '.join(hodl_syms)}")
+                else:
+                    st.caption("Ei erillisiä HODL-positioita CSV:n ulkopuolella.")
+
+            if parsed_rows:
+                df_prev = pd.DataFrame(parsed_rows)
+                df_prev.rename(columns={
+                    "symbol": "Ticker",
+                    "name": "Nordnet Nimi",
+                    "quantity": "Määrä",
+                    "avg_price": "Keskikurssi (€)",
+                    "target_weight": "Tavoitepaino",
+                    "is_hodl": "HODL",
+                    "is_new": "Uusi Positio",
+                }, inplace=True)
+                st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+            col_opt, col_btn = st.columns([2, 1])
+            with col_opt:
+                sync_p13_cand = st.checkbox(
+                    "☑️ Synkronoi samalla P13 Live Candidate -seurantasalkkuun (portfolio_P13_Live_Candidate_state.json)",
+                    value=True,
+                    key="chk_sync_p13_real",
+                    help="Päivittää P13-varjosalkun vastaamaan todellisia Nordnet-omistuksia ja hankintahintoja.",
+                )
+            with col_btn:
+                if st.button("🚀 Tuo ja Päivitä Reaalisalkku", type="primary", use_container_width=True):
+                    res = pm.import_from_csv_bytes(file_bytes, sync_p13=sync_p13_cand)
+                    try:
+                        archive_path = DATA_DIR / "nordnet_latest_import.csv"
+                        archive_path.write_bytes(file_bytes)
+                    except Exception:
+                        pass
+
+                    p13_msg = " ja synkronoitiin P13 Live Candidate" if res.get("p13_synced") else ""
+                    st.success(f"🎉 **Onnistui!** Tuotiin {res['count']} positiota{p13_msg} tiedostoon `tiuku_portfolio.json`.")
+                    time.sleep(1)
+                    st.rerun()
+
+        except Exception as e:
+            st.error(f"❌ Virhe CSV-tiedoston tulkinnassa: {e}")
+            logger.exception("Error previewing CSV upload")
+
+    st.markdown("---")
+
+    # 3. Käteisvarojen & Kokonaispääoman Hallinta
+    st.subheader("💰 2. Käteisen ja Kokonaispääoman Hallinta")
+    st.caption("Päivitä Nordnetin ilmoittama vapaa käteissaldo tai aseta salkun todellinen kokonaisarvo (override).")
+
+    col_cash_card, col_eq_card = st.columns(2)
+    with col_cash_card:
+        with st.container(border=True):
+            st.markdown("##### 💶 Vapaa Käteinen (EUR)")
+            new_cash_input = st.number_input(
+                "Käteissaldo (€):",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=float(cash_balance),
+                step=50.0,
+                key="input_cash_balance",
+            )
+            if st.button("💾 Tallenna Käteissaldo", key="btn_save_cash", use_container_width=True):
+                pm.set_cash_balance(new_cash_input)
+                st.success(f"✅ Vapaa käteinen päivitetty: {new_cash_input:,.2f} €")
+                time.sleep(0.5)
+                st.rerun()
+
+    with col_eq_card:
+        with st.container(border=True):
+            st.markdown("##### 🏛️ Kokonaispääoma (Nordnet Override)")
+            default_eq = float(equity_override) if equity_override is not None else float(total_calculated_equity)
+            new_eq_input = st.number_input(
+                "Salkun kokonaisarvo (€):",
+                min_value=0.0,
+                max_value=5_000_000.0,
+                value=default_eq,
+                step=100.0,
+                key="input_equity_override",
+                help="Asettaa tarkan Nordnetin ilmoittaman kokonaispääoman, jolloin salkkupainot ja ostoehdotukset eivät vääristy.",
+            )
+            col_eq_btn1, col_eq_btn2 = st.columns(2)
+            with col_eq_btn1:
+                if st.button("💾 Tallenna Override", key="btn_save_eq", use_container_width=True):
+                    pm.set_equity_override(new_eq_input)
+                    st.success(f"✅ Kokonaispääoma-override tallennettu: {new_eq_input:,.2f} €")
+                    time.sleep(0.5)
+                    st.rerun()
+            with col_eq_btn2:
+                if equity_override is not None:
+                    if st.button("🔄 Nollaa Override", key="btn_reset_eq", use_container_width=True):
+                        if "total_equity_override" in pm.portfolio_state:
+                            del pm.portfolio_state["total_equity_override"]
+                            pm.save_state()
+                        st.info("Kokonaispääoma lasketaan nyt yfinancen markkina-arvojen summana.")
+                        time.sleep(0.5)
+                        st.rerun()
+
+    st.markdown("---")
+
+    # 4. Nykyiset Reaalisalkun Positiot
+    st.subheader("📋 3. Nykyiset Reaalitilin Omistukset (tiuku_portfolio.json)")
+    st.caption("Reaaliaikaiset kurssit ja omistusten arvot.")
+
+    if positions_data:
+        df_display = pd.DataFrame(positions_data)
+        format_dict = {
+            "Määrä": "{:,}",
+            "Keskikurssi": "{:.4f} €",
+            "Markkinahinta": "{:.4f} €",
+            "Markkina-arvo": "{:,.2f} €",
+            "Tuotto (€)": "{:+,.2f} €",
+            "Tuotto (%)": "{:+.2f} %",
+            "Paino (%)": "{:.1f} %",
+            "Tavoitepaino (%)": "{:.1f} %",
+        }
+        cols_to_show = ["Symboli", "Nimi", "Määrä", "Keskikurssi", "Markkinahinta", "Markkina-arvo", "Tuotto (€)", "Tuotto (%)", "Paino (%)", "HODL", "Muistiinpano"]
+        st.dataframe(
+            df_display[cols_to_show].style.format(format_dict, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        with st.expander("⚙️ Positioiden hallinta (HODL-lukitus, manuaalinen muokkaus, poisto)", expanded=False):
+            col_act1, col_act2, col_act3 = st.columns(3)
+            with col_act1:
+                st.markdown("**🔒 Vaihda HODL-lukitus:**")
+                holding_keys = list(holdings.keys())
+                sel_hodl_sym = st.selectbox("Valitse positio:", holding_keys, key="sel_hodl_sym")
+                is_currently_hodl = holdings.get(sel_hodl_sym, {}).get("hodl", False)
+                btn_lbl = "🔓 Avaa HODL-lukitus" if is_currently_hodl else "🔒 Lukitse HODL-tilaksi"
+                if st.button(btn_lbl, key="btn_toggle_hodl", use_container_width=True):
+                    new_st = pm.toggle_hodl(sel_hodl_sym)
+                    st.success(f"{sel_hodl_sym} HODL-tila: {'🔒 Päällä' if new_st else 'Pois'}")
+                    time.sleep(0.5)
+                    st.rerun()
+
+            with col_act2:
+                st.markdown("**🗑️ Poista positio salkusta:**")
+                sel_del_sym = st.selectbox("Valitse poistettava:", holding_keys, key="sel_del_sym")
+                if st.button("Poista positio", type="secondary", key="btn_del_holding", use_container_width=True):
+                    pm.remove_holding(sel_del_sym)
+                    st.warning(f"Poistettu positio {sel_del_sym}")
+                    time.sleep(0.5)
+                    st.rerun()
+
+            with col_act3:
+                st.markdown("**➕ Lisää tai päivitä käsin:**")
+                new_sym = st.text_input("Ticker (esim. NOKIA.HE):", key="man_sym").upper().strip()
+                new_q = st.number_input("Määrä (kpl):", min_value=0, value=100, step=1, key="man_qty")
+                new_p = st.number_input("Keskikurssi (€):", min_value=0.0, value=5.0, step=0.1, key="man_price")
+                new_hodl = st.checkbox("🔒 HODL-lukittu", value=False, key="man_hodl")
+                if st.button("Tallenna positio", key="btn_save_manual", use_container_width=True):
+                    if new_sym:
+                        pm.set_holding(new_sym, new_q, new_p, hodl=new_hodl)
+                        st.success(f"Positio {new_sym} tallennettu!")
+                        time.sleep(0.5)
+                        st.rerun()
+
+    else:
+        st.info("Salkussa ei ole vielä tallennettuja positioita. Tuo Nordnet CSV tai lisää positio yllä.")
+
+    st.markdown("---")
+
+    # 5. Varmuuskopiot ja Vienti
+    st.subheader("💾 4. Varmuuskopiot ja Vienti")
+    col_dl1, col_dl2 = st.columns(2)
+    with col_dl1:
+        st.download_button(
+            label="📥 Lataa tiuku_portfolio.json",
+            data=json.dumps(state, indent=2, ensure_ascii=False),
+            file_name=f"tiuku_portfolio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with col_dl2:
+        if positions_data:
+            csv_buf = pd.DataFrame(positions_data).to_csv(index=False, sep=";", decimal=",")
+            st.download_button(
+                label="📥 Lataa omistukset CSV-muodossa",
+                data=csv_buf,
+                file_name=f"tiuku_holdings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+
+# ----------------------------------------------------------------------
 # DYNAMIC FRAGMENT RENDERER (Silent in-place auto-refresh without page reload)
 # ----------------------------------------------------------------------
 def render_dashboard_views(active_menu: str):
@@ -1450,9 +1819,15 @@ def render_dashboard_views(active_menu: str):
         st.progress(pct)
 
     # ------------------------------------------------------------------
+    # VIEW 0: REAL LIVE PORTFOLIO & NORDNET CSV
+    # ------------------------------------------------------------------
+    if active_menu == "🏦 Reaalisalkku (Nordnet Live)":
+        render_real_portfolio_view()
+
+    # ------------------------------------------------------------------
     # VIEW 1: LIVE SCREENER RESULTS
     # ------------------------------------------------------------------
-    if active_menu == "📊 Live Screener Results":
+    elif active_menu == "📊 Live Screener Results":
         st.markdown('<div class="main-header">📊 Dual-Lens Screener Batch Results</div>', unsafe_allow_html=True)
         st.markdown('<div class="sub-header">Evaluates micro/small-caps through Profile A (Compounder Growth) and Profile B (Value Turnaround) with Anti-Dilution checks.</div>', unsafe_allow_html=True)
 
@@ -1762,6 +2137,12 @@ def render_dashboard_views(active_menu: str):
                 f"Dead Money: **{portfolio_meta.get('dead_money_days', 180)}d** | "
                 f"Min ADV: **{portfolio_meta.get('min_adv_20d', portfolio_meta.get('min_adv', 50000)):,.0f} €** | "
                 f"Alueet: **{', '.join(portfolio_meta.get('regions', ['FI', 'SE', 'US']))}**{filter_note}"
+            )
+
+        if selected_portfolio == "P13_Live_Candidate":
+            st.success(
+                "🏦 **P13 Live Candidate**: Haluatko tuoda oikean Nordnet-tilisi omistukset ja hankintahinnat CSV:nä? "
+                "Käytä sivupalkin **📥 Nordnet CSV-pikatuontia** tai siirry päävalikosta **🏦 Reaalisalkku (Nordnet Live)** -näkymään."
             )
 
         tab1, tab_top_picks, tab_inst, tab2, tab3, tab4, tab5 = st.tabs([
