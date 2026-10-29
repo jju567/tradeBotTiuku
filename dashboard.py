@@ -1034,7 +1034,7 @@ with st.sidebar:
     # ------------------------------------------------------------------
     # NORDNET CSV QUICK UPLOADER (SIDEBAR)
     # ------------------------------------------------------------------
-    with st.expander("📥 Nordnet CSV-pikatuonti", expanded=False):
+    with st.expander("📥 Nordnet CSV-pikatuonti", expanded=True):
         st.caption("Päivitä salkku nopeasti Nordnetin vientitiedostosta:")
         side_csv_file = st.file_uploader(
             "Valitse CSV/TXT",
@@ -1044,13 +1044,25 @@ with st.sidebar:
         )
         side_sync_p13 = st.checkbox("Synkronoi myös P13 Live", value=True, key="side_sync_p13")
         if side_csv_file is not None:
+            from core.portfolio import PortfolioManager
+            pm_side = PortfolioManager()
+            side_bytes = side_csv_file.getvalue()
+            try:
+                side_prev = pm_side.preview_csv_bytes(side_bytes, preserve_hodl=False)
+                st.markdown(f"**🔍 Esikatselu ({side_prev['total_rows']} kpl):**")
+                for pos in side_prev["parsed_positions"]:
+                    st.markdown(f"• **{pos['symbol']}**: `{pos['quantity']} kpl` @ `{pos['avg_price']:.4f} €`")
+                if side_prev["removed_symbols"]:
+                    st.caption(f"🗑️ Poistuvat: {', '.join(side_prev['removed_symbols'])}")
+            except Exception as e_prev:
+                st.caption(f"Esikatseluvirhe: {e_prev}")
+
+            side_clean_sync = st.checkbox("Korvaa koko salkku (poista myydyt)", value=True, key="side_clean_sync")
             if st.button("🚀 Tuo salkku heti", key="side_btn_import", use_container_width=True):
                 try:
-                    from core.portfolio import PortfolioManager
-                    pm_side = PortfolioManager()
-                    res_side = pm_side.import_from_csv_bytes(side_csv_file.getvalue(), sync_p13=side_sync_p13)
+                    res_side = pm_side.import_from_csv_bytes(side_bytes, sync_p13=side_sync_p13, preserve_hodl=not side_clean_sync)
                     st.success(f"✅ Tuotiin {res_side['count']} omistusta!")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     st.rerun()
                 except Exception as ex_side:
                     st.error(f"❌ Tuontivirhe: {ex_side}")
