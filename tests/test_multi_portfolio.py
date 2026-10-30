@@ -49,18 +49,18 @@ def test_portfolios_yaml_structure():
         assert "strategy" in cfg
         assert "slots" in cfg
         assert "start_cash" in cfg
-        assert cfg["start_cash"] == 10000
+        assert cfg["start_cash"] == 7900
 
     # Specific checks for P10_Micro_Sniper
     p10 = portfolios["P10_Micro_Sniper"]
     assert p10["slots"] == 5
-    assert p10["slot_size"] == 2000
+    assert p10["slot_size"] == 1580
 
     # Specific checks for P11_Meta_Consensus
     p11 = portfolios["P11_Meta_Consensus"]
     assert p11["strategy"] == "Meta_Consensus"
     assert p11["slots"] == 5
-    assert p11["slot_size"] == 2000
+    assert p11["slot_size"] == 1580
     assert p11["min_conviction_score"] == 8
     assert p11["min_exit_conviction_score"] == 6
     assert "Institutional" in p11["required_tags"]
@@ -69,7 +69,7 @@ def test_portfolios_yaml_structure():
     p12 = portfolios["P12_Momentum_Breakout"]
     assert p12["strategy"] == "Momentum_Breakout"
     assert p12["slots"] == 5
-    assert p12["slot_size"] == 2000
+    assert p12["slot_size"] == 1580
     assert p12["volume_surge_multiplier"] == 3.0
     assert p12["min_price_change_pct"] == 2.0
     assert p12["min_adv_20d"] == 500000
@@ -80,8 +80,8 @@ def test_portfolios_yaml_structure():
     # Specific checks for P13_Live_Candidate (70% Mid-Cap Core + 30% Micro-Cap Satellite)
     assert "P13_Live_Candidate" in portfolios
     p13 = portfolios["P13_Live_Candidate"]
-    assert p13["description"] == "Live 10k € OST Hybrid: 70% Nordic Mid-Cap Core + 30% US/Nordic Micro-Cap Satellite"
-    assert p13["start_cash"] == 10000
+    assert "70% Nordic Mid-Cap Core + 30% US/Nordic Micro-Cap Satellite" in p13["description"]
+    assert p13["start_cash"] == 7900
     assert p13.get("ignore_hodl_positions") is True
     assert "sub_strategies" in p13
     assert "core_nordic_midcap_quality" in p13["sub_strategies"]
@@ -90,22 +90,22 @@ def test_portfolios_yaml_structure():
     assert "satellite_p12_momentum" not in p13["sub_strategies"]
 
     core_sub = p13["sub_strategies"]["core_nordic_midcap_quality"]
-    assert core_sub["allocated_capital"] == 7000
+    assert core_sub["allocated_capital"] == 5530
     assert core_sub["slots"] == 3
-    assert core_sub["slot_sizes"] == [2350, 2350, 2300]
+    assert core_sub["slot_sizes"] == [1850, 1850, 1830]
     assert core_sub["universe_filter"] == "Nordic_MidCap_Compounder"
 
     us_sub = p13["sub_strategies"]["satellite_us_microcap_growth"]
-    assert us_sub["allocated_capital"] == 1500
+    assert us_sub["allocated_capital"] == 1185
     assert us_sub["slots"] == 1
-    assert us_sub["slot_sizes"] == [1500]
+    assert us_sub["slot_sizes"] == [1185]
     assert us_sub["universe_filter"] == "US_MicroCap_Growth"
     assert any("Dividend_Yield: 0.0" in r for r in us_sub["rules"])
 
     nordic_sub = p13["sub_strategies"]["satellite_nordic_microcap_catalyst"]
-    assert nordic_sub["allocated_capital"] == 1500
+    assert nordic_sub["allocated_capital"] == 1185
     assert nordic_sub["slots"] == 1
-    assert nordic_sub["slot_sizes"] == [1500]
+    assert nordic_sub["slot_sizes"] == [1185]
     assert nordic_sub["universe_filter"] == "Nordic_MicroCap_Catalyst"
 
     assert p13["execution_constraints"]["allowed_order_types"] == ["LIMIT"]
@@ -118,7 +118,7 @@ def test_portfolios_yaml_structure():
     # Also check PortfolioConfig.from_dict mapping
     cfg13 = PortfolioConfig.from_dict("P13_Live_Candidate", p13)
     assert cfg13.portfolio_id == "P13_Live_Candidate"
-    assert cfg13.start_cash == 10000.0
+    assert cfg13.start_cash == 7900.0
     assert cfg13.slots == 5  # 3 core + 1 US + 1 Nordic
     assert cfg13.order_type == "LIMIT"
     assert cfg13.limit_buffer_pct == pytest.approx(0.002)
