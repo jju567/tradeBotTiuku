@@ -91,7 +91,7 @@ class PortfolioManager:
         self.portfolio_state["cash_balance"] = round(cash_amount, 2)
         self.save_state()
         logger.info(f"Updated cash balance to {cash_amount:.2f} EUR")
-        if sync_p13:
+        if sync_p13 and self.portfolio_file == config.TIUKU_PORTFOLIO_FILE:
             p13_file = config.DATA_DIR / "portfolios" / "portfolio_P13_Live_Candidate_state.json"
             if p13_file.exists():
                 try:

@@ -137,8 +137,8 @@ portfolios:
     max_rsi_14: 80.0               # Estä osto jos RSI14 > 80 (Overbought filter)
 
   P13_Live_Candidate:
-    description: "Live 10k € OST Hybrid: 70% Nordic Mid-Cap Core + 30% US/Nordic Micro-Cap Satellite"
-    start_cash: 10000
+    description: "Live 7.9k € OST Hybrid: 70% Nordic Mid-Cap Core + 30% US/Nordic Micro-Cap Satellite"
+    start_cash: 7900
     ignore_hodl_positions: true # Never touch holdings where hodl=True (e.g., FARON.HE)
     partial_take_profit: true
     take_profit_threshold_pct: 0.25
@@ -146,9 +146,9 @@ portfolios:
     partial_trailing_stop_pct: 0.15
     sub_strategies:
       core_nordic_midcap_quality:
-        allocated_capital: 7000
+        allocated_capital: 5530
         slots: 3
-        slot_sizes: [2350, 2350, 2300]
+        slot_sizes: [1850, 1850, 1830]
         universe_filter: "Nordic_MidCap_Compounder"
         rules:
           - "Exit_On: Quarterly_Fundamental_Breakdown"
@@ -157,9 +157,9 @@ portfolios:
           - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% Trailing_Stop"
 
       satellite_us_microcap_growth:
-        allocated_capital: 1500
+        allocated_capital: 1185
         slots: 1
-        slot_sizes: [1500]
+        slot_sizes: [1185]
         universe_filter: "US_MicroCap_Growth"
         rules:
           - "Dividend_Yield: 0.0"
@@ -169,9 +169,9 @@ portfolios:
           - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% Trailing_Stop"
 
       satellite_nordic_microcap_catalyst:
-        allocated_capital: 1500
+        allocated_capital: 1185
         slots: 1
-        slot_sizes: [1500]
+        slot_sizes: [1185]
         universe_filter: "Nordic_MicroCap_Catalyst"
         rules:
           - "Stop_Loss: -12.0% (or 2.5x ATR)"
