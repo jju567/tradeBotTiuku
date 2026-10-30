@@ -3101,8 +3101,8 @@ def render_dashboard_views(active_menu: str):
             with col_ctrl1:
                 weekly_smoothing = st.toggle(
                     "🗓️ Viikkoaggregointi (Weekly Smoothing)",
-                    value=True,
-                    help="Aggregoi salkkujen pääoman viikkotasolle (perjantain sulkemiset) päivittäisen mikroheilahtelun ja satunnaiskohinan poistamiseksi.",
+                    value=False,
+                    help="Aggregoi salkkujen pääoman viikkotasolle (perjantain sulkemiset) päivittäisen mikroheilahtelun poistamiseksi. Huom: Vaatii vähintään 20 havaintoviikkoa.",
                 )
             with col_ctrl2:
                 roll_window = st.select_slider(
@@ -3268,14 +3268,16 @@ def render_dashboard_views(active_menu: str):
                 # DATA SUFFICIENCY GUARD: Block misleading large Null E[max] estimates on tiny samples
                 req_obs = dsr_report.get("min_required_observations", 20)
                 days_needed = dsr_report.get("days_needed", 20)
+                unit_str = "havaintoviikkoa" if weekly_smoothing else "havaintopäivää"
+                period_str = "viikkoa" if weekly_smoothing else "päivää"
                 st.warning(
-                    f"⏳ **Datan riittävyysportti aktiivinen (Otoskoko: {actual_t} / {req_obs} havaintopäivää)**\n\n"
+                    f"⏳ **Datan riittävyysportti aktiivinen (Otoskoko: {actual_t} / {req_obs} {unit_str})**\n\n"
                     f"Tilastollisen monitestauskorjauksen (Deflated Sharpe Ratio / Bonferroni) luotettava arviointi edellyttää "
-                    f"vähintään **{req_obs} tuottohavaintoa** per salkku. "
+                    f"vähintään **{req_obs} {unit_str}** per salkku. "
                     f"Pienellä otoskoolla ($T < 20$) Sharpe-estimaattorin varianssi kasvaa räjähdysmäisesti "
                     f"($\\sigma_0 = \\sqrt{{252/T}}$), jolloin toistetun otannan odotettu maksimi ($Null\\ E[\\max]$) antaisi "
                     f"matemaattisesti vääristyneitä ja harhaanjohtavia suurlukuja.\n\n"
-                    f"➡️ **Tarvitaan vielä {days_needed} päivää lisää salkkuhistoriaa**, ennen kuin DSR-merkitsevyysanalyysi aktivoituu. "
+                    f"➡️ **Tarvitaan vielä {days_needed} {period_str} lisää salkkuhistoriaa**, ennen kuin DSR-merkitsevyysanalyysi aktivoituu. "
                     f"*(Standardi 1 vuoden satunnaishuippu 10 strategialle normaalijakaumassa: $Null\\ E[\\max] \\approx {e_max:.2f}$)*."
                 )
             else:
