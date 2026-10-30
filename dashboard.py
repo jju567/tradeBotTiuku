@@ -1100,13 +1100,19 @@ with st.sidebar:
         except Exception as e:
             logger.debug(f"Failed to load {PORTFOLIOS_CONFIG_YAML}: {e}")
 
+    # Prioritize P13_Live_Candidate as the primary default portfolio at index 0
+    if "P13_Live_Candidate" in portfolio_options:
+        portfolio_options = ["P13_Live_Candidate"] + [p for p in portfolio_options if p != "P13_Live_Candidate"]
+
+    default_portfolio = "P13_Live_Candidate" if "P13_Live_Candidate" in portfolio_options else (portfolio_options[0] if portfolio_options else "P13_Live_Candidate")
+
     # Initialize session state keys for portfolio selection
     if "selected_portfolio" not in st.session_state:
-        st.session_state["selected_portfolio"] = portfolio_options[0] if portfolio_options else "P1_Base"
+        st.session_state["selected_portfolio"] = default_portfolio
     if "main_selected_portfolio" not in st.session_state:
-        st.session_state["main_selected_portfolio"] = st.session_state["selected_portfolio"]
+        st.session_state["main_selected_portfolio"] = default_portfolio
     if "pill_selected_portfolio" not in st.session_state:
-        st.session_state["pill_selected_portfolio"] = st.session_state["selected_portfolio"]
+        st.session_state["pill_selected_portfolio"] = default_portfolio
 
     def _on_sidebar_portfolio_change():
         v = st.session_state.get("selected_portfolio")
@@ -2116,8 +2122,8 @@ def render_dashboard_views(active_menu: str):
         st.markdown('<div class="sub-header">Multi-Portfolio Walk-Forward Live Testing, parameterized position sizing, and Tri-Layer Exit enforcement.</div>', unsafe_allow_html=True)
 
         # Available portfolios and metadata
-        p_options = portfolio_options if portfolio_options else ["P1_Base"]
-        selected_portfolio = st.session_state.get("selected_portfolio", p_options[0])
+        p_options = portfolio_options if portfolio_options else ["P13_Live_Candidate"]
+        selected_portfolio = st.session_state.get("selected_portfolio", "P13_Live_Candidate")
         if "main_selected_portfolio" not in st.session_state:
             st.session_state["main_selected_portfolio"] = selected_portfolio
         if "pill_selected_portfolio" not in st.session_state:
@@ -3945,7 +3951,7 @@ def _fragment_view_manual(active_menu: str, selected_portfolio: str):
 
 
 # Execute fragment renderer
-_active_portfolio = st.session_state.get("selected_portfolio", "P1_Base")
+_active_portfolio = st.session_state.get("selected_portfolio", "P13_Live_Candidate")
 if menu == "🏦 Reaalisalkku (Nordnet Live)":
     # Render Real Portfolio view directly without auto-refresh timer fragment,
     # ensuring file uploads and number inputs are never reset by a periodic timer.
