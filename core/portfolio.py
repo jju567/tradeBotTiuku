@@ -254,6 +254,9 @@ class PortfolioManager:
 
             for sym, h in updated_holdings.items():
                 sym_up = sym.upper()
+                # Skip HODL positions (e.g. FARON) so they don't pollute P13 algorithmic trading portfolio
+                if h.get("hodl") or sym_up in ("FARON.HE", "FARON"):
+                    continue
                 if sym_up in pos_by_ticker:
                     pos = dict(pos_by_ticker[sym_up])
                     pos["Shares"] = float(h.get("quantity", 0))
