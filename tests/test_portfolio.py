@@ -288,3 +288,4 @@ class TestPortfolioManagerCSVBytes:
         assert tickers["NOKIA.HE"]["Buy Price"] == pytest.approx(4.10)
         assert "VIAFIN.HE" in tickers
         assert tickers["VIAFIN.HE"]["Shares"] == 50
+        assert p13_updated["cash_balance"] == pytest.approx(mgr.portfolio_state.get("cash_balance", 0.0))

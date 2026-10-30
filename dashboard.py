@@ -2401,9 +2401,8 @@ def render_dashboard_views(active_menu: str):
                     market_val_eur = pos_mkt_val * fx_to_eur
                     pnl_abs_eur = pos_pnl_abs * fx_to_eur
 
-                    if not is_hodl:
-                        total_invested += invested_eur
-                        total_market_val += market_val_eur
+                    total_invested += invested_eur
+                    total_market_val += market_val_eur
 
                     enriched_rows.append({
                         "ticker": t_sym,
@@ -2427,7 +2426,7 @@ def render_dashboard_views(active_menu: str):
 
                 df_enriched = pd.DataFrame(enriched_rows)
 
-                # Portfolio KPI calculations (Normalized to EUR, excluding isolated HODL positions)
+                # Portfolio KPI calculations (Normalized to EUR, including all holdings)
                 unrealized_pnl = total_market_val - total_invested
                 unrealized_pnl_pct = (unrealized_pnl / total_invested * 100.0) if total_invested > 0 else 0.0
                 total_equity = free_cash + total_market_val

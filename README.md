@@ -102,7 +102,7 @@
 
 ### 4. 💼 Salkunhallinta, Kulusuojaus & Markkinavahti
 - **📥 Nordnet CSV-Salkuntuonti (UI & CLI)**: Tuo omistukset, kappalemäärät ja keskihinnat suoraan Nordnetin CSV-/sivutaulukkotiedostosta.
-  - **Dashboard UI**: Päävalikosta löytyvä **🏦 Reaalisalkku (Nordnet Live)** -hallintakeskus sekä sivupalkin nopea **📥 Nordnet CSV-pikatuonti** mahdollistavat tiedoston pudottamisen suoraan selaimeen. Sisältää automaattisen esikatselun, myytyjen osakkeiden poiston, HODL-lukitusten (`FARON.HE` jne.) suojan, käteis- ja pääomaeditorin sekä valinnaisen automaattisen synkronoinnin `P13_Live_Candidate`-seurantaan.
+  - **Dashboard UI**: Päävalikosta löytyvä **🏦 Reaalisalkku (Nordnet Live)** -hallintakeskus sekä sivupalkin nopea **📥 Nordnet CSV-pikatuonti** mahdollistavat tiedoston pudottamisen suoraan selaimeen. Sisältää automaattisen esikatselun, myytyjen osakkeiden poiston, HODL-lukitusten (`FARON.HE` jne.) suojan, käteis- ja pääomaeditorin sekä automaattisen kaksisuuntaisen synkronoinnin (positiot, HODL-arvot ja vapaa käteinen) `P13_Live_Candidate`-seurantaan. P13-kokonaisarvoon lasketaan mukaan kaikki positiot (myös HODL) käteisen lisäksi.
   - **CLI**: Tuonti komentoriviltä komennolla `python main.py --import-csv tiedosto.csv`.
 - **🛡️ Nordnet Palkkiotasot & Markkinakohtainen Kulusuojaus**:
   - **OMX Helsinki (`.HE`)**: Kotimaan Taso 3 minimipalkkio 7,00 € / 0,15 %.

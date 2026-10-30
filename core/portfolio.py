@@ -86,11 +86,23 @@ class PortfolioManager:
         except Exception as e:
             logger.error(f"Failed to save portfolio state: {e}")
 
-    def set_cash_balance(self, cash_amount: float) -> None:
-        """Updates the cash balance in EUR."""
+    def set_cash_balance(self, cash_amount: float, sync_p13: bool = True) -> None:
+        """Updates the cash balance in EUR and optionally syncs to P13 Live Candidate."""
         self.portfolio_state["cash_balance"] = round(cash_amount, 2)
         self.save_state()
         logger.info(f"Updated cash balance to {cash_amount:.2f} EUR")
+        if sync_p13:
+            p13_file = config.DATA_DIR / "portfolios" / "portfolio_P13_Live_Candidate_state.json"
+            if p13_file.exists():
+                try:
+                    with open(p13_file, "r", encoding="utf-8") as f:
+                        p13_data = json.load(f)
+                    p13_data["cash_balance"] = round(cash_amount, 2)
+                    p13_data["updated_at"] = datetime.now().isoformat()
+                    _atomic_write_json(p13_file, p13_data)
+                    logger.info(f"Synced cash balance {cash_amount:.2f} EUR to P13 state file {p13_file}")
+                except Exception as e:
+                    logger.warning(f"Could not sync cash balance to P13: {e}")
 
     def set_equity_override(self, total_equity: float) -> None:
         """Sets a known total equity override from Nordnet.
@@ -283,6 +295,8 @@ class PortfolioManager:
                     new_p13_positions.append(new_pos)
 
             p13_data["positions"] = new_p13_positions
+            if "cash_balance" in self.portfolio_state:
+                p13_data["cash_balance"] = float(self.portfolio_state["cash_balance"])
             p13_data["updated_at"] = datetime.now().isoformat()
             _atomic_write_json(p13_path, p13_data)
             logger.info(f"Successfully synced {len(new_p13_positions)} positions into P13 state file {p13_path}")
