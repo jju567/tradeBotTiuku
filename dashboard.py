@@ -535,7 +535,7 @@ def record_portfolio_snapshot(
     total_equity: float,
     cash_balance: float,
     stock_value: float,
-    starting_balance: float = 10_000.0,
+    starting_balance: float = 7900.0,
     history_file: Path = PORTFOLIO_HISTORY_JSON,
     has_positions: Optional[bool] = None,
 ) -> None:
@@ -610,7 +610,7 @@ def record_portfolio_snapshot(
 def compute_live_portfolio_history(
     positions_tuple: tuple,
     free_cash: float,
-    starting_capital: float = 10_000.0,
+    starting_capital: float = 7900.0,
     timeframe: str = "Viimeiset 7 päivää",
 ) -> pd.DataFrame:
     """
@@ -695,7 +695,7 @@ def compute_live_portfolio_history(
 def render_portfolio_equity_chart(
     df_pos: pd.DataFrame = None,
     free_cash: float = 0.0,
-    starting_capital: float = 10_000.0,
+    starting_capital: float = 7900.0,
     history_file: Path = PORTFOLIO_HISTORY_JSON,
 ):
     """
@@ -2244,16 +2244,17 @@ def render_dashboard_views(active_menu: str):
         ])
 
         with tab1:
-            starting_capital = 10_000.0
-            free_cash = 10_000.0
+            cfg_start = float(portfolio_meta.get("start_cash", 7900.0)) if portfolio_meta else 7900.0
+            starting_capital = cfg_start
+            free_cash = cfg_start
             raw_positions = []
 
             if port_state_file.exists():
                 try:
                     with open(port_state_file, "r", encoding="utf-8") as f_acc:
                         acc_data = json.load(f_acc)
-                        starting_capital = float(acc_data.get("starting_balance", 10_000.0))
-                        free_cash = float(acc_data.get("cash_balance", 10_000.0))
+                        starting_capital = float(acc_data.get("starting_balance", cfg_start))
+                        free_cash = float(acc_data.get("cash_balance", cfg_start))
                         raw_positions = acc_data.get("positions", [])
                 except Exception:
                     pass
@@ -2267,9 +2268,8 @@ def render_dashboard_views(active_menu: str):
                 # Show the portfolio as empty — do NOT fall back to the shared
                 # legacy paper_account.json / open_positions.csv which would make
                 # every portfolio show the same data.
-                start_cash = portfolio_meta.get("start_cash", 10_000.0) if portfolio_meta else 10_000.0
-                starting_capital = start_cash
-                free_cash = start_cash
+                starting_capital = cfg_start
+                free_cash = cfg_start
                 df_pos = pd.DataFrame()
                 st.warning(
                     f"⏳ Salkun `{selected_portfolio}` tiedostoa ei löydy vielä — "
@@ -3405,8 +3405,9 @@ def render_dashboard_views(active_menu: str):
             p13_mfe_df = p13_audit.get("mfe_mae_df", pd.DataFrame())
             p13_pm = p13_audit.get("ai_post_mortem", {})
 
-            p13_eq = float(p13_snap.get("total_p13_equity_eur", 10000.0) or 10000.0)
-            p13_ret_pct = ((p13_eq - 10000.0) / 10000.0) * 100.0
+            p13_start = float(p13_snap.get("starting_balance", 7900.0) or 7900.0)
+            p13_eq = float(p13_snap.get("total_p13_equity_eur", p13_start) or p13_start)
+            p13_ret_pct = ((p13_eq - p13_start) / p13_start) * 100.0 if p13_start > 0 else 0.0
             p13_cash = float(p13_snap.get("cash_balance", 0.0) or 0.0)
 
             k_col1, k_col2, k_col3, k_col4, k_col5 = st.columns(5)
