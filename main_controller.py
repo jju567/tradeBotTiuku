@@ -660,6 +660,13 @@ class PortfolioInstance:
         """Sets current cash balance and saves state atomically."""
         self.cash_balance = float(cash_eur)
         self.save_state()
+        if self.config.portfolio_id == "P13_Live_Candidate":
+            try:
+                from core.portfolio import PortfolioManager
+                pm = PortfolioManager()
+                pm.set_cash_balance(self.cash_balance, sync_p13=False)
+            except Exception as e:
+                logger.warning(f"Failed to sync cash balance to tiuku_portfolio.json: {e}")
 
     def save_state(self) -> None:
         """Saves current state to JSON file atomically."""
