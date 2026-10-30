@@ -1568,7 +1568,7 @@ def analyze_p13_real_market_and_counterfactual(
     latest_snap = shadow_entries[-1].get("portfolio_snapshot", {}) if shadow_entries else {
         "cash_balance": float(state_data.get("cash_balance", 0.0)),
         "non_hodl_stock_value_eur": 0.0,
-        "total_p13_equity_eur": float(state_data.get("cash_balance", 10000.0)),
+        "total_p13_equity_eur": float(state_data.get("cash_balance", 7900.0)),
     }
     latest_regime = shadow_entries[-1].get("regime", {}) if shadow_entries else {}
 
@@ -1606,9 +1606,10 @@ def generate_p13_ai_post_mortem_and_devils_advocate(
     mfe_df: pd.DataFrame = p13_report.get("mfe_mae_df", pd.DataFrame())
     cand_df: pd.DataFrame = cf_sum.get("candidates_df", pd.DataFrame())
 
-    total_eq = float(snap.get("total_p13_equity_eur", 10000.0) or 10000.0)
+    start_capital = float(snap.get("starting_balance", 7900.0) or 7900.0)
+    total_eq = float(snap.get("total_p13_equity_eur", start_capital) or start_capital)
     cash_bal = float(snap.get("cash_balance", 0.0) or 0.0)
-    net_ret_pct = round(((total_eq - 10000.0) / 10000.0) * 100.0, 2)
+    net_ret_pct = round(((total_eq - start_capital) / start_capital) * 100.0, 2) if start_capital > 0 else 0.0
     cash_weight_pct = round((cash_bal / total_eq) * 100.0, 1) if total_eq > 0 else 0.0
 
     fill_rate = float(exec_sum.get("fill_rate_pct", 0.0))

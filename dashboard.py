@@ -3614,7 +3614,7 @@ def render_dashboard_views(active_menu: str):
                     df_eq["total_equity"] = pd.to_numeric(df_eq["total_equity"], errors="coerce")
                     df_eq = df_eq.dropna(subset=["timestamp", "total_equity"]).sort_values("timestamp")
                     # Filter out corrupted / zero-drop glitch data points (e.g. total_equity < 40% of typical starting balance)
-                    df_eq = df_eq[df_eq["total_equity"] >= 4000.0]
+                    df_eq = df_eq[df_eq["total_equity"] >= (7900.0 * 0.40)]
                     if df_eq.empty:
                         continue
                     df_eq["timestamp"] = df_eq["timestamp"].dt.tz_convert(HELSINKI_TZ)
