@@ -2228,6 +2228,27 @@ def render_dashboard_views(active_menu: str):
             )
 
         if selected_portfolio == "P13_Live_Candidate":
+            # Check for isolated HODL positions in tiuku_portfolio.json so user always sees they are safe
+            hodl_items = []
+            if TIUKU_PORTFOLIO_FILE.exists():
+                try:
+                    with open(TIUKU_PORTFOLIO_FILE, "r", encoding="utf-8") as _tf:
+                        _tdata = json.load(_tf)
+                        for _sym, _h in _tdata.get("holdings", {}).items():
+                            if _h.get("hodl"):
+                                hodl_items.append((_sym, _h))
+                except Exception:
+                    pass
+
+            if hodl_items:
+                with st.expander("🔒 Eristetyt HODL-omistukset (Reaalisalkku)", expanded=True):
+                    for _sym, _h in hodl_items:
+                        st.markdown(
+                            f"• **{_sym}** ({_h.get('name', _sym)}): **{_h.get('quantity', 0):,} kpl** @ {_h.get('avg_price', 0):.4f} € "
+                            f"— *{_h.get('note', 'HODL')}* &nbsp; "
+                            f"(Turvassa reaalisalkussa, eristetty pois P13:n 7 900 € kaupankäyntipääomasta)."
+                        )
+
             st.success(
                 "🏦 **P13 Live Candidate**: Haluatko tuoda oikean Nordnet-tilisi omistukset ja hankintahinnat CSV:nä? "
                 "Käytä sivupalkin **📥 Nordnet CSV-pikatuontia** tai siirry päävalikosta **🏦 Reaalisalkku (Nordnet Live)** -näkymään."
