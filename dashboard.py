@@ -43,6 +43,7 @@ PORTFOLIO_HISTORY_JSON = DATA_DIR / "portfolio_history.json"
 PORTFOLIOS_DIR = DATA_DIR / "portfolios"
 PORTFOLIOS_CONFIG_YAML = BASE_DIR / "portfolios_config.yaml"
 OPERATIONAL_METRICS_JSON = DATA_DIR / "operational_metrics.json"
+TIUKU_PORTFOLIO_FILE = BASE_DIR / "tiuku_portfolio.json"
 
 # Page Configuration
 st.set_page_config(
