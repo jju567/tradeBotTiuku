@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
@@ -9,36 +11,38 @@ import config
 
 logger = logging.getLogger(__name__)
 
+_WRITE_LOCK = threading.Lock()
+
 
 def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
-    """Writes JSON atomically via a PID-scoped temporary file and os.replace."""
+    """Writes JSON atomically via a thread-safe, uniquely-named temporary file, fsync, and os.replace."""
     target_path = Path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except Exception:
-                pass
-        for attempt in range(5):
-            try:
-                os.replace(tmp_path, target_path)
-                break
-            except Exception:
-                if attempt < 4:
-                    time.sleep(0.05 * (attempt + 1))
-                else:
-                    raise
-    except Exception:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except Exception:
-                pass
-        raise
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp")
+    with _WRITE_LOCK:
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, target_path)
+                    break
+                except Exception:
+                    if attempt < 4:
+                        time.sleep(0.05 * (attempt + 1))
+                    else:
+                        raise
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
 
 class PortfolioManager:
@@ -166,14 +170,16 @@ class PortfolioManager:
             return not current
         return False
 
-    def import_from_csv(self, csv_filepath: Path, sync_p13: bool = False, p13_state_path: Optional[Path] = None, preserve_hodl: bool = True) -> Tuple[Dict[str, Any], int]:
+    def import_from_csv(self, csv_filepath: Path, sync_p13: bool = False, p13_state_path: Optional[Path] = None, preserve_hodl: bool = True, cash_balance: Optional[float] = None) -> Tuple[Dict[str, Any], int]:
         """Imports holdings from a Nordnet CSV export file."""
         from utils.csv_importer import NordnetCSVImporter
         existing = self.portfolio_state.get("holdings", {})
         updated_holdings, count = NordnetCSVImporter.import_csv(csv_filepath, existing, preserve_hodl=preserve_hodl)
         self.portfolio_state["holdings"] = updated_holdings
+        if cash_balance is not None:
+            self.portfolio_state["cash_balance"] = round(float(cash_balance), 2)
         self.save_state()
-        logger.info(f"Successfully imported {count} holdings from {csv_filepath}")
+        logger.info(f"Successfully imported {count} holdings from {csv_filepath} (cash: {self.portfolio_state.get('cash_balance')})")
 
         if sync_p13:
             p13_file = p13_state_path or (config.DATA_DIR / "portfolios" / "portfolio_P13_Live_Candidate_state.json")
@@ -187,6 +193,7 @@ class PortfolioManager:
         sync_p13: bool = False,
         p13_state_path: Optional[Path] = None,
         preserve_hodl: bool = True,
+        cash_balance: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Imports holdings directly from raw CSV bytes (e.g. from UI file uploader).
 
@@ -203,8 +210,11 @@ class PortfolioManager:
         count = preview["total_rows"]
 
         self.portfolio_state["holdings"] = updated_holdings
+        if cash_balance is not None:
+            self.portfolio_state["cash_balance"] = round(float(cash_balance), 2)
+
         self.save_state()
-        logger.info(f"Successfully imported {count} holdings from CSV bytes")
+        logger.info(f"Successfully imported {count} holdings from CSV bytes (cash: {self.portfolio_state.get('cash_balance')})")
 
         added = [r["symbol"] for r in preview["parsed_positions"] if r.get("is_new")]
         updated = [r["symbol"] for r in preview["parsed_positions"] if not r.get("is_new")]

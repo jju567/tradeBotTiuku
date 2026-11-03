@@ -471,27 +471,41 @@ def fetch_ticker_history(ticker: str, period: str = "3mo") -> tuple:
         return pd.DataFrame(), t_clean
 
 
+import threading
+import uuid
+
+_DASHBOARD_WRITE_LOCK = threading.Lock()
+
+
 def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = False) -> None:
-    """Writes JSON atomically via a PID-scoped temporary file and os.replace."""
+    """Writes JSON atomically via a thread-safe, uniquely-named temporary file and os.replace."""
     target_path = Path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except Exception:
-                pass
-        os.replace(tmp_path, target_path)
-    except Exception:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except Exception:
-                pass
-        raise
+    tmp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp")
+    with _DASHBOARD_WRITE_LOCK:
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=ensure_ascii)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, target_path)
+                    break
+                except Exception:
+                    if attempt < 4:
+                        time.sleep(0.05 * (attempt + 1))
+                    else:
+                        raise
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
 
 def _safe_load_json_list(target_path: Path, retries: int = 3) -> Optional[List[Dict[str, Any]]]:
@@ -1058,11 +1072,26 @@ with st.sidebar:
             except Exception as e_prev:
                 st.caption(f"Esikatseluvirhe: {e_prev}")
 
+            side_curr_cash = float(pm_side.portfolio_state.get("cash_balance", 0.0))
+            side_cash_input = st.number_input(
+                "Vapaa käteinen (€):",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=side_curr_cash,
+                step=50.0,
+                key="side_cash_balance_input",
+                help="Nordnetin 'Käytettävissä'-saldo. Päivitetään samalla kertaa salkkuun.",
+            )
             side_clean_sync = st.checkbox("Korvaa koko salkku (poista myydyt)", value=True, key="side_clean_sync")
             if st.button("🚀 Tuo salkku heti", key="side_btn_import", use_container_width=True):
                 try:
-                    res_side = pm_side.import_from_csv_bytes(side_bytes, sync_p13=side_sync_p13, preserve_hodl=not side_clean_sync)
-                    st.success(f"✅ Tuotiin {res_side['count']} omistusta!")
+                    res_side = pm_side.import_from_csv_bytes(
+                        side_bytes,
+                        sync_p13=side_sync_p13,
+                        preserve_hodl=not side_clean_sync,
+                        cash_balance=side_cash_input,
+                    )
+                    st.success(f"✅ Tuotiin {res_side['count']} omistusta, käteinen {side_cash_input:,.2f} €!")
                     time.sleep(0.5)
                     st.rerun()
                 except Exception as ex_side:
@@ -1720,8 +1749,7 @@ def render_real_portfolio_view():
                 )
 
             if st.button("🚀 Tuo ja Päivitä Reaalisalkku", type="primary", use_container_width=True):
-                res = pm.import_from_csv_bytes(file_bytes, sync_p13=sync_p13_cand, preserve_hodl=not clean_sync_cand)
-                pm.set_cash_balance(inline_cash)
+                res = pm.import_from_csv_bytes(file_bytes, sync_p13=sync_p13_cand, preserve_hodl=not clean_sync_cand, cash_balance=inline_cash)
                 try:
                     archive_path = DATA_DIR / "nordnet_latest_import.csv"
                     archive_path.write_bytes(file_bytes)
@@ -1741,55 +1769,60 @@ def render_real_portfolio_view():
 
     # 3. Käteisvarojen & Kokonaispääoman Hallinta
     st.subheader("💰 2. Käteisen ja Kokonaispääoman Hallinta")
-    st.caption("Päivitä Nordnetin ilmoittama vapaa käteissaldo tai aseta salkun todellinen kokonaisarvo (override).")
+    st.caption("Aseta Nordnet-tilisi vapaa käteinen ('Käytettävissä'). Kokonaispääoma lasketaan oletuksena automaattisesti käteisen ja osakkeiden summana.")
 
     col_cash_card, col_eq_card = st.columns(2)
     with col_cash_card:
         with st.container(border=True):
-            st.markdown("##### 💶 Vapaa Käteinen (EUR)")
+            st.markdown("##### 💶 Vapaa Käteinen (Nordnet: *Käytettävissä*)")
+            st.caption("Ostovoima uusille ostoehdotuksille. Synkronoituu automaattisesti P13 Live Candidate -salkkuun.")
             new_cash_input = st.number_input(
-                "Käteissaldo (€):",
+                "Vapaa käteissaldo (€):",
                 min_value=0.0,
                 max_value=1_000_000.0,
                 value=float(cash_balance),
                 step=50.0,
                 key="input_cash_balance",
+                help="Nordnet-tilin 'Käytettävissä' oleva käteinen (esim. 6 091,00 €).",
             )
-            if st.button("💾 Tallenna Käteissaldo", key="btn_save_cash", use_container_width=True):
+            if st.button("💾 Tallenna Käteissaldo", key="btn_save_cash", use_container_width=True, type="primary"):
                 pm.set_cash_balance(new_cash_input)
-                st.success(f"✅ Vapaa käteinen päivitetty: {new_cash_input:,.2f} €")
+                st.success(f"✅ Vapaa käteinen päivitetty: {new_cash_input:,.2f} € (synkronoitu myös P13 Liveen)")
                 time.sleep(0.5)
                 st.rerun()
 
     with col_eq_card:
         with st.container(border=True):
-            st.markdown("##### 🏛️ Kokonaispääoma (Nordnet Override)")
-            default_eq = float(equity_override) if equity_override is not None else float(total_calculated_equity)
-            new_eq_input = st.number_input(
-                "Salkun kokonaisarvo (€):",
-                min_value=0.0,
-                max_value=5_000_000.0,
-                value=default_eq,
-                step=100.0,
-                key="input_equity_override",
-                help="Asettaa tarkan Nordnetin ilmoittaman kokonaispääoman, jolloin salkkupainot ja ostoehdotukset eivät vääristy.",
-            )
-            col_eq_btn1, col_eq_btn2 = st.columns(2)
-            with col_eq_btn1:
-                if st.button("💾 Tallenna Override", key="btn_save_eq", use_container_width=True):
-                    pm.set_equity_override(new_eq_input)
-                    st.success(f"✅ Kokonaispääoma-override tallennettu: {new_eq_input:,.2f} €")
+            st.markdown("##### 🏛️ Salkun Kokonaispääoma")
+            if equity_override is not None:
+                st.warning(f"⚠️ **Manuaalinen override aktiivinen:** `{equity_override:,.2f} €`")
+                st.caption("Kokonaisarvo on lukittu kiinteäksi. Se ei muutu automaattisesti kurssien tai käteisen muuttuessa.")
+                if st.button("🔄 Poista Override (Palaa Automaattiseen)", key="btn_reset_eq", use_container_width=True):
+                    if "total_equity_override" in pm.portfolio_state:
+                        del pm.portfolio_state["total_equity_override"]
+                        pm.save_state()
+                    st.info("Kokonaispääoma lasketaan nyt automaattisesti reaaliaikaisten kurssien ja käteisen summana.")
                     time.sleep(0.5)
                     st.rerun()
-            with col_eq_btn2:
-                if equity_override is not None:
-                    if st.button("🔄 Nollaa Override", key="btn_reset_eq", use_container_width=True):
-                        if "total_equity_override" in pm.portfolio_state:
-                            del pm.portfolio_state["total_equity_override"]
-                            pm.save_state()
-                        st.info("Kokonaispääoma lasketaan nyt yfinancen markkina-arvojen summana.")
-                        time.sleep(0.5)
-                        st.rerun()
+            else:
+                st.success(f"🟢 **Automaattinen laskenta:** `{total_calculated_equity:,.2f} €`")
+                st.caption(f"Lasketaan suoraan: Käteinen ({cash_balance:,.2f} €) + Osakkeet ({total_market_val:,.2f} €). Pysyy automaattisesti synkassa.")
+
+            with st.expander("⚙️ Aseta kiinteä kokonaisarvo (Override - valinnainen)", expanded=False):
+                st.caption("Käytä tätä vain, jos Nordnetin ilmoittama kokonaisarvo eroaa merkittävästi yfinance-kursseista.")
+                new_eq_input = st.number_input(
+                    "Manuaalinen salkun kokonaisarvo (€):",
+                    min_value=0.0,
+                    max_value=5_000_000.0,
+                    value=float(equity_override if equity_override is not None else total_calculated_equity),
+                    step=100.0,
+                    key="input_equity_override",
+                )
+                if st.button("💾 Lukitse Kokonaispääoma (Override)", key="btn_save_eq", use_container_width=True):
+                    pm.set_equity_override(new_eq_input)
+                    st.success(f"✅ Kokonaispääoma-override asetettu: {new_eq_input:,.2f} €")
+                    time.sleep(0.5)
+                    st.rerun()
 
     st.markdown("---")
 
