@@ -110,8 +110,10 @@ def test_get_hard_financials_negative_ocf_runway_calculation(mock_ticker):
     assert metrics["cash_and_equivalents"] == 12_000_000.0
     assert metrics["total_debt"] == 2_000_000.0
     assert metrics["net_cash"] == 10_000_000.0
+    assert metrics["adjusted_cash"] == 10_000_000.0
     assert metrics["operating_cash_flow_ttm"] == -6_000_000.0
-    assert metrics["cash_runway_months"] == 24.0
+    assert metrics["cash_runway_years"] == 1.67
+    assert metrics["cash_runway_months"] == 20.0
     assert metrics["revenue_growth_yoy_pct"] == -20.0
     assert metrics["status"] == "OK"
 

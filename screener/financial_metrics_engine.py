@@ -38,7 +38,18 @@ logger = logging.getLogger(__name__)
 # Rivinimet joita yfinance käyttää eri raporteissa (versiot/markkinat vaihtelevat)
 _DEBT_KEYS = ["Total Debt", "TotalDebt"]
 _LT_DEBT_KEYS = ["Long Term Debt", "LongTermDebt", "Long Term Debt Noncurrent", "Long Term Debt And Capital Lease Obligation"]
-_CUR_DEBT_KEYS = ["Current Debt", "CurrentDebt", "Current Debt And Capital Lease Obligation"]
+_CUR_DEBT_KEYS = ["Current Debt", "CurrentDebt", "Current Debt And Capital Lease Obligation", "Short Term Debt", "ShortTermDebt"]
+_CUR_DEBT_ONLY_KEYS = ["Current Debt", "CurrentDebt", "Short Term Debt", "ShortTermDebt"]
+_LEASE_OBLIGATION_KEYS = ["Current Capital Lease Obligation", "CurrentCapitalLeaseObligation", "Capital Lease Obligation Current"]
+_CUR_DEBT_COMBINED_KEYS = ["Current Debt And Capital Lease Obligation", "CurrentDebtAndCapitalLeaseObligation"]
+_SHARE_COUNT_KEYS = [
+    "Ordinary Shares Number",
+    "OrdinarySharesNumber",
+    "Share Issued",
+    "ShareIssued",
+    "Common Stock Shares Outstanding",
+    "CommonStockSharesOutstanding",
+]
 _CASH_KEYS = [
     "Cash And Cash Equivalents",
     "CashAndCashEquivalents",
@@ -263,6 +274,87 @@ def calculate_relative_ev_ebit(
     return res
 
 
+def check_share_dilution(
+    t: Any,
+    info: Dict[str, Any],
+    bs_a: Optional[pd.DataFrame],
+    bs_q: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
+    """
+    Checks for recent share dilution / secondary offerings over a 1-2 year window.
+    Compares current shares outstanding against historical balance sheet share counts.
+    
+    If shares outstanding grew by > 5.0%, flags as DILUTION_WARNING_RECENT_ISSUE.
+    """
+    res: Dict[str, Any] = {
+        "shares_outstanding_current": None,
+        "shares_outstanding_historical": None,
+        "share_dilution_pct": None,
+        "has_share_dilution": False,
+        "dilution_flag": None,
+    }
+    
+    # 1. Current shares from info or fast_info or latest balance sheet
+    shares_curr = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+    if shares_curr is None or shares_curr <= 0:
+        fast_info = getattr(t, "fast_info", None)
+        if fast_info:
+            shares_curr = getattr(fast_info, "shares", None) or getattr(fast_info, "shares_outstanding", None)
+            
+    if (shares_curr is None or shares_curr <= 0) and bs_q is not None and not bs_q.empty:
+        shares_curr = _extract_metric_from_df(bs_q, _SHARE_COUNT_KEYS)
+    if (shares_curr is None or shares_curr <= 0) and bs_a is not None and not bs_a.empty:
+        shares_curr = _extract_metric_from_df(bs_a, _SHARE_COUNT_KEYS)
+        
+    if shares_curr is None or shares_curr <= 0:
+        return res
+        
+    res["shares_outstanding_current"] = float(shares_curr)
+    
+    # 2. Historical shares from annual balance sheet (1-2 years ago)
+    shares_past_candidates: list[float] = []
+    if bs_a is not None and not bs_a.empty:
+        for key in _SHARE_COUNT_KEYS:
+            if key in bs_a.index:
+                try:
+                    s = bs_a.loc[key].dropna()
+                    if len(s) >= 2 and float(s.iloc[1]) > 0:
+                        shares_past_candidates.append(float(s.iloc[1]))
+                    if len(s) >= 3 and float(s.iloc[2]) > 0:
+                        shares_past_candidates.append(float(s.iloc[2]))
+                    if len(s) >= 1 and float(s.iloc[0]) > 0 and float(s.iloc[0]) < float(shares_curr):
+                        shares_past_candidates.append(float(s.iloc[0]))
+                    if shares_past_candidates:
+                        break
+                except Exception:
+                    continue
+
+    if not shares_past_candidates and bs_q is not None and not bs_q.empty:
+        for key in _SHARE_COUNT_KEYS:
+            if key in bs_q.index:
+                try:
+                    s = bs_q.loc[key].dropna()
+                    if len(s) >= 4 and float(s.iloc[3]) > 0:
+                        shares_past_candidates.append(float(s.iloc[3]))
+                    elif len(s) >= 2 and float(s.iloc[1]) > 0:
+                        shares_past_candidates.append(float(s.iloc[1]))
+                    if shares_past_candidates:
+                        break
+                except Exception:
+                    continue
+
+    if shares_past_candidates:
+        shares_past = min(shares_past_candidates)
+        res["shares_outstanding_historical"] = float(shares_past)
+        dilution_pct = ((float(shares_curr) - float(shares_past)) / float(shares_past)) * 100.0
+        res["share_dilution_pct"] = round(dilution_pct, 2)
+        if dilution_pct > 5.0:
+            res["has_share_dilution"] = True
+            res["dilution_flag"] = "DILUTION_WARNING_RECENT_ISSUE"
+
+    return res
+
+
 def get_hard_financials(ticker: str) -> Dict[str, Any]:
     """
     Laskee deterministiset selviytymis- ja kasvutunnusluvut annetulle tickerille.
@@ -341,7 +433,19 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "free_cash_flow": None,
         "has_positive_cash_flow": False,
         "cash_flow_viable": False,
+        "adjusted_cash": None,
+        "current_debt": None,
+        "current_capital_lease_obligation": None,
         "cash_runway_months": None,
+        "cash_runway_years": None,
+        "runway_status": "RUNWAY_OK",
+        "shares_outstanding_current": None,
+        "shares_outstanding_historical": None,
+        "share_dilution_pct": None,
+        "has_share_dilution": False,
+        "audit_flags": [],
+        "audit_flag": None,
+        "audit_warning": None,
         "total_revenue_current": None,
         "total_revenue_previous": None,
         "revenue_current": None,
@@ -432,6 +536,42 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         result["cash_and_equivalents"] = cash
         result["total_debt"] = debt
 
+        # Lyhytaikaiset korolliset velat ja vuokravastuut Adjusted Cash -laskentaa varten
+        cur_debt_val = 0.0
+        lease_ob_val = 0.0
+
+        c_debt = _extract_metric_from_df(bs_q, _CUR_DEBT_ONLY_KEYS)
+        if c_debt is None:
+            c_debt = _extract_metric_from_df(bs_a, _CUR_DEBT_ONLY_KEYS)
+
+        l_ob = _extract_metric_from_df(bs_q, _LEASE_OBLIGATION_KEYS)
+        if l_ob is None:
+            l_ob = _extract_metric_from_df(bs_a, _LEASE_OBLIGATION_KEYS)
+
+        if c_debt is not None:
+            cur_debt_val = float(c_debt)
+            if l_ob is not None:
+                lease_ob_val = float(l_ob)
+        else:
+            comb_debt = _extract_metric_from_df(bs_q, _CUR_DEBT_COMBINED_KEYS)
+            if comb_debt is None:
+                comb_debt = _extract_metric_from_df(bs_a, _CUR_DEBT_COMBINED_KEYS)
+            if comb_debt is not None:
+                cur_debt_val = float(comb_debt)
+                lease_ob_val = 0.0
+            elif l_ob is not None:
+                lease_ob_val = float(l_ob)
+            elif debt is not None:
+                cur_debt_val = float(debt)
+
+        cash_val = float(cash) if cash is not None else 0.0
+        adjusted_cash_raw = cash_val - cur_debt_val - lease_ob_val
+        adjusted_cash = max(0.0, adjusted_cash_raw)
+
+        result["adjusted_cash"] = round(adjusted_cash, 2)
+        result["current_debt"] = round(cur_debt_val, 2)
+        result["current_capital_lease_obligation"] = round(lease_ob_val, 2)
+
         if cash is not None and debt is not None:
             result["net_cash"] = round(cash - debt, 2)
         elif cash is not None and debt is None:
@@ -499,27 +639,44 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         result["cash_flow_viable"] = has_positive_cash_flow
 
         # ---- 3. Cash Runway & Cash Burn Gate ----
-        # Yhtiöllä TÄYTYY olla positiivinen operatiivinen kassavirta (OCF > 0) tai
-        # positiivinen vapaa kassavirta (FCF > 0), jotta se katsotaan kestäväksi.
-        # Jos OCF ja FCF ovat molemmat <= 0, yhtiö polttaa kassaa (cash burner).
-        if has_positive_cash_flow:
+        # 1. Jos TTM OCF on positiivinen, Runway on "Infinite" (maksipisteet).
+        # 2. Jos TTM OCF on negatiivinen, laske Runway_Years = Adjusted_Cash / abs(TTM_OperatingCashFlow).
+        # 3. Jos Runway_Years < 1.0 (kassa riittää alle vuoden), yhtiö hylätään suoraan (Status: REJECTED_LOW_RUNWAY).
+        if ocf_val is not None and ocf_val > 0.0:
+            result["cash_runway_years"] = "Infinite"
             result["cash_runway_months"] = "Infinite"
+            result["runway_status"] = "RUNWAY_OK"
             result["data_quality"]["cash_burner"] = False
-        else:
+        elif ocf_val is not None and ocf_val < 0.0:
             result["data_quality"]["cash_burner"] = True
-            annual_burn = max(
-                abs(ocf_val) if ocf_val is not None and isinstance(ocf_val, (int, float)) and ocf_val < 0.0 else 0.0,
-                abs(fcf) if fcf is not None and isinstance(fcf, (int, float)) and fcf < 0.0 else 0.0,
-            )
-            if cash is not None and annual_burn > 0.0:
-                monthly_burn = annual_burn / 12.0
-                calc_runway = round(cash / monthly_burn, 1) if monthly_burn > 0.0 else 0.0
-                # Kassanpolttajille asetetaan enimmäiskatto (24 kk) varhaisen vaiheen harhojen karsimiseksi
-                result["cash_runway_months"] = min(calc_runway, 24.0)
-                result["errors"].append("NEGATIVE_CASH_FLOW: Operating and free cash flows are non-positive.")
+            runway_years = round(adjusted_cash / abs(ocf_val), 2)
+            runway_months = round(runway_years * 12.0, 1)
+            result["cash_runway_years"] = runway_years
+            result["cash_runway_months"] = runway_months
+            if runway_years < 1.0:
+                result["status"] = "REJECTED_LOW_RUNWAY"
+                result["runway_status"] = "REJECTED_LOW_RUNWAY"
+                result["errors"].append(
+                    f"REJECTED_LOW_RUNWAY: Cash runway {runway_years:.2f} years (< 1.0 year) with negative TTM OCF ({ocf_val:,.0f})."
+                )
             else:
+                result["runway_status"] = "RUNWAY_OK"
+                result["errors"].append(
+                    f"NEGATIVE_CASH_FLOW: TTM OCF is negative ({ocf_val:,.0f}), runway is {runway_years:.1f} years ({runway_months:.0f} mo)."
+                )
+        else:
+            if has_positive_cash_flow:
+                result["cash_runway_years"] = "Infinite"
+                result["cash_runway_months"] = "Infinite"
+                result["runway_status"] = "RUNWAY_OK"
+                result["data_quality"]["cash_burner"] = False
+            else:
+                result["data_quality"]["cash_burner"] = True
+                result["cash_runway_years"] = 0.0
                 result["cash_runway_months"] = 0.0
-                result["errors"].append("ZERO_OR_MISSING_CASH_FLOW: No positive cash flow detected.")
+                result["status"] = "REJECTED_LOW_RUNWAY"
+                result["runway_status"] = "REJECTED_LOW_RUNWAY"
+                result["errors"].append("ZERO_OR_MISSING_CASH_FLOW: No positive operating cash flow detected.")
 
         # ---- 4. Liikevaihto ja YoY-kasvu ----
         inc_q = _get_first_valid_df(t, ["quarterly_financials", "quarterly_income_stmt"])
@@ -770,11 +927,23 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             result["ev_ebit_premium_pct"] = rel_val.get("ev_ebit_premium_pct")
             result["is_historically_expensive"] = rel_val.get("is_historically_expensive", False)
             result["historical_ev_ebit_years_count"] = rel_val.get("historical_ev_ebit_years_count", 0)
+
+            # 8. Osakeanti- ja diluutiolippu (Share Dilution Flag)
+            dil_res = check_share_dilution(t=t, info=info, bs_a=bs_a, bs_q=bs_q)
+            result["shares_outstanding_current"] = dil_res.get("shares_outstanding_current")
+            result["shares_outstanding_historical"] = dil_res.get("shares_outstanding_historical")
+            result["share_dilution_pct"] = dil_res.get("share_dilution_pct")
+            result["has_share_dilution"] = dil_res.get("has_share_dilution", False)
+            if dil_res.get("has_share_dilution") and dil_res.get("dilution_flag"):
+                d_flag = dil_res["dilution_flag"]
+                if d_flag not in result["audit_flags"]:
+                    result["audit_flags"].append(d_flag)
+                result["audit_flag"] = d_flag
         except Exception as e_extra:
             logger.debug(f"Tiered metrics extraction skipped for {cleaned_ticker}: {e_extra}")
 
         has_any_data = (cash is not None or ocf_val is not None or rev_curr is not None)
-        if result.get("status") != "REJECTED_LOW_LIQUIDITY":
+        if result.get("status") not in ("REJECTED_LOW_LIQUIDITY", "REJECTED_LOW_RUNWAY"):
             result["status"] = "OK" if has_any_data else "PARTIAL" 
 
     except Exception as e:
@@ -824,6 +993,16 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
         "reasons": List[str]
     }
     """
+    runway_status = hard_facts.get("runway_status")
+    if runway_status == "REJECTED_LOW_RUNWAY" or hard_facts.get("status") == "REJECTED_LOW_RUNWAY":
+        return {
+            "is_profile_a": False,
+            "is_profile_b": False,
+            "signal": "REJECT",
+            "profile": "NONE",
+            "reasons": ["REJECTED_LOW_RUNWAY: Cash runway < 1.0 year with negative TTM operating cash flow"],
+        }
+
     rev_yoy = hard_facts.get("revenue_growth_yoy_pct") if hard_facts.get("revenue_growth_yoy_pct") is not None else hard_facts.get("revenue_yoy")
     gm_pct = hard_facts.get("gross_margin_pct") if hard_facts.get("gross_margin_pct") is not None else hard_facts.get("gross_margin")
     net_cash = hard_facts.get("net_cash")
@@ -993,3 +1172,182 @@ if __name__ == "__main__":
     print(json.dumps(facts, indent=2, default=str))
     print("\n--- LLM-PROMPTIIN INJEKTOITAVA MUOTO ---\n")
     print(format_for_llm_prompt(facts))
+
+
+def audit_candidates_data(candidates: Any) -> Any:
+    """
+    Audits candidate data before final scoring and EOD action list generation.
+
+    1. Duplicate Detector (Kopioituvien lukujen hälytin):
+       - Tracks exact revenue_growth and ebit_margin (rounded to 4 decimals, ignoring 0 and None).
+       - If multiple candidates with different tickers share the exact same metric, flags all of them with:
+         'DATA_DUPLICATE_WARNING'.
+
+    2. Outlier Guard (Ääriarvovahti):
+       - If revenue_growth > 1.0 (or > 100%), roe > 1.0 (or > 100%), or abs(ebit_margin) > 1.0 (or > 100%),
+         flags with 'MANUAL_REVIEW_OUTLIER'.
+
+    3. Dilution Guard (Osakeanti-lippu):
+       - Flags 'DILUTION_WARNING_RECENT_ISSUE' if recent share dilution > 5%.
+
+    Populates candidate['audit_flags'], candidate['audit_warning'], and propagates to
+    candidate['entry_hard_facts'] / candidate['hard_facts'].
+    """
+    if not candidates:
+        return candidates
+
+    cand_list: list[Dict[str, Any]] = []
+    if isinstance(candidates, dict):
+        for sub_cands in candidates.values():
+            if isinstance(sub_cands, list):
+                cand_list.extend(sub_cands)
+    elif isinstance(candidates, list):
+        cand_list = candidates
+
+    rev_map: Dict[float, list[Dict[str, Any]]] = {}
+    ebit_map: Dict[float, list[Dict[str, Any]]] = {}
+
+    for cand in cand_list:
+        if not isinstance(cand, dict):
+            continue
+
+        c_flags = list(cand.get("audit_flags", []))
+        hard_facts = cand.get("hard_facts") or cand.get("entry_hard_facts") or {}
+        if not isinstance(hard_facts, dict):
+            hard_facts = {}
+
+        # Merge existing flags from hard_facts if present
+        for f in hard_facts.get("audit_flags", []):
+            if f not in c_flags:
+                c_flags.append(f)
+        if hard_facts.get("audit_flag") and hard_facts["audit_flag"] not in c_flags:
+            c_flags.append(hard_facts["audit_flag"])
+
+        # Check dilution flag
+        if hard_facts.get("has_share_dilution") or hard_facts.get("dilution_flag") == "DILUTION_WARNING_RECENT_ISSUE":
+            if "DILUTION_WARNING_RECENT_ISSUE" not in c_flags:
+                c_flags.append("DILUTION_WARNING_RECENT_ISSUE")
+
+        cand["audit_flags"] = c_flags
+
+        # Extract metrics
+        rev_raw = (
+            cand.get("revenue_growth")
+            if cand.get("revenue_growth") is not None
+            else cand.get("rev_yoy")
+            if cand.get("rev_yoy") is not None
+            else cand.get("revenue_growth_yoy_pct")
+            if cand.get("revenue_growth_yoy_pct") is not None
+            else hard_facts.get("revenue_growth_yoy_pct")
+            if hard_facts.get("revenue_growth_yoy_pct") is not None
+            else hard_facts.get("rev_yoy")
+        )
+        ebit_raw = (
+            cand.get("ebit_margin")
+            if cand.get("ebit_margin") is not None
+            else hard_facts.get("ebit_margin")
+            if hard_facts.get("ebit_margin") is not None
+            else hard_facts.get("operating_margin")
+        )
+        roe_raw = (
+            cand.get("roe")
+            if cand.get("roe") is not None
+            else hard_facts.get("roe")
+            if hard_facts.get("roe") is not None
+            else hard_facts.get("return_on_equity")
+        )
+
+        # 1. Collect for Duplicate Detector
+        try:
+            if rev_raw is not None:
+                rev_f = float(rev_raw)
+                rev_round = round(rev_f, 4)
+                if rev_round != 0.0:
+                    rev_map.setdefault(rev_round, []).append(cand)
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            if ebit_raw is not None:
+                ebit_f = float(ebit_raw)
+                ebit_round = round(ebit_f, 4)
+                if ebit_round != 0.0:
+                    ebit_map.setdefault(ebit_round, []).append(cand)
+        except (ValueError, TypeError):
+            pass
+
+        # 2. Outlier Guard
+        is_outlier = False
+        try:
+            if rev_raw is not None:
+                rf = float(rev_raw)
+                if (rf > 100.0) or (0.0 < rf <= 5.0 and rf > 1.0):
+                    is_outlier = True
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            if roe_raw is not None:
+                roef = float(roe_raw)
+                if (roef > 100.0) or (0.0 < roef <= 5.0 and roef > 1.0):
+                    is_outlier = True
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            if ebit_raw is not None:
+                ef = float(ebit_raw)
+                if (abs(ef) > 100.0) or (abs(ef) <= 5.0 and abs(ef) > 1.0):
+                    is_outlier = True
+        except (ValueError, TypeError):
+            pass
+
+        if is_outlier:
+            if "MANUAL_REVIEW_OUTLIER" not in cand["audit_flags"]:
+                cand["audit_flags"].append("MANUAL_REVIEW_OUTLIER")
+
+    # Evaluate duplicates across distinct tickers
+    for metric_val, matched_cands in rev_map.items():
+        distinct_tickers = {c.get("ticker") for c in matched_cands if c.get("ticker")}
+        if len(distinct_tickers) > 1:
+            for c in matched_cands:
+                if "DATA_DUPLICATE_WARNING" not in c["audit_flags"]:
+                    c["audit_flags"].append("DATA_DUPLICATE_WARNING")
+
+    for metric_val, matched_cands in ebit_map.items():
+        distinct_tickers = {c.get("ticker") for c in matched_cands if c.get("ticker")}
+        if len(distinct_tickers) > 1:
+            for c in matched_cands:
+                if "DATA_DUPLICATE_WARNING" not in c["audit_flags"]:
+                    c["audit_flags"].append("DATA_DUPLICATE_WARNING")
+
+    # Generate human-readable audit_warning and sync back to hard facts
+    for cand in cand_list:
+        if not isinstance(cand, dict):
+            continue
+        flags = list(dict.fromkeys(cand.get("audit_flags", [])))
+        cand["audit_flags"] = flags
+        cand["audit_flag"] = flags[0] if flags else None
+
+        if flags:
+            reasons = []
+            if "DATA_DUPLICATE_WARNING" in flags:
+                reasons.append("Data kopioitunut kahden osakkeen välillä")
+            if "MANUAL_REVIEW_OUTLIER" in flags:
+                reasons.append("Ääriarvo havaittu (Kasvu/ROE/EBIT > 100%)")
+            if "DILUTION_WARNING_RECENT_ISSUE" in flags:
+                reasons.append("Merkittävä osakediluutio/anti (> 5% kasvu)")
+            for f in flags:
+                if f not in ["DATA_DUPLICATE_WARNING", "MANUAL_REVIEW_OUTLIER", "DILUTION_WARNING_RECENT_ISSUE"]:
+                    reasons.append(f)
+            cand["audit_warning"] = "⚠️ HUOM: Vaatii manuaalisen tarkistuksen - " + "; ".join(reasons)
+        else:
+            cand["audit_warning"] = None
+
+        for hf_key in ("hard_facts", "entry_hard_facts"):
+            if isinstance(cand.get(hf_key), dict):
+                cand[hf_key]["audit_flags"] = cand["audit_flags"]
+                cand[hf_key]["audit_flag"] = cand["audit_flag"]
+                cand[hf_key]["audit_warning"] = cand["audit_warning"]
+
+    return candidates

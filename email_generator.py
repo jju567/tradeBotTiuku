@@ -53,6 +53,8 @@ class EODActionOrder:
     estimated_total_eur: float = 0.0
     initial_stop_loss_price: str = "N/A"
     thesis_catalyst: str = ""
+    audit_flags: list[str] = field(default_factory=list)
+    audit_warning: Optional[str] = None
 
     def formatted_limit_price(self) -> str:
         return f"{self.exact_limit_price:.2f} {self.currency}"
@@ -166,6 +168,8 @@ def build_eod_action_orders(
                     estimated_total_eur=est_eur,
                     initial_stop_loss_price=stop_str,
                     thesis_catalyst=thesis,
+                    audit_flags=list(details.get("audit_flags") or []),
+                    audit_warning=details.get("audit_warning"),
                 )
             )
 
@@ -384,6 +388,8 @@ def format_eod_action_list_text(
             lines.append(f"     ESTIMATED_TOTAL_EUR:     {b.formatted_estimated_eur()}")
             lines.append(f"     INITIAL_STOP_LOSS_PRICE: {b.initial_stop_loss_price}")
             lines.append(f"     THESIS / CATALYST:       {b.thesis_catalyst}")
+            if b.audit_flags:
+                lines.append(f"     ⚠️ AUDIT-VAROITUS:       {b.audit_warning or ', '.join(b.audit_flags)}")
             lines.append("")
 
     # 2. FULL EXITS
@@ -442,9 +448,17 @@ def format_eod_action_list_html(
 
         rows = ""
         for o in orders:
+            warn_badge = ""
+            if o.audit_flags:
+                warn_text = o.audit_warning or f"⚠️ HUOM: Vaatii manuaalisen tarkistuksen ({', '.join(o.audit_flags)})"
+                warn_badge = f"""
+                <div style="background:#fffbeb;border:1px solid #fef3c7;border-left:3px solid #f59e0b;color:#92400e;padding:4px 8px;border-radius:4px;margin-top:4px;font-size:0.75rem;font-weight:600;">
+                  {warn_text}
+                </div>
+                """
             rows += f"""
             <tr style="border-bottom:1px solid #e2e8f0;">
-              <td style="padding:10px 12px;font-weight:700;color:#0f172a;font-size:1.05rem;">{o.ticker}</td>
+              <td style="padding:10px 12px;font-weight:700;color:#0f172a;font-size:1.05rem;">{o.ticker}{warn_badge}</td>
               <td style="padding:10px 12px;font-size:0.85rem;color:#475569;"><code>{o.sub_strategy}</code></td>
               <td style="padding:10px 12px;font-size:0.85rem;"><span style="background:{badge_color};color:#ffffff;padding:2px 8px;border-radius:4px;font-weight:600;">{o.order_type}</span></td>
               <td style="padding:10px 12px;font-weight:700;color:#0f172a;text-align:right;">{o.formatted_limit_price()}</td>

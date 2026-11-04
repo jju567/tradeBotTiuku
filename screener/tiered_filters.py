@@ -332,6 +332,8 @@ def matches_us_microcap_growth(
         reasons.append(f"EBIT margin {float(ebit_margin):.2f} < -0.40 (operating loss deeper than -40%)")
 
     # 3d. Mandatory Cash Runway / Cash Flow Viability Gate for ALL US_MicroCap_Growth candidates
+    if hard_facts.get("runway_status") == "REJECTED_LOW_RUNWAY" or hard_facts.get("status") == "REJECTED_LOW_RUNWAY":
+        reasons.append("REJECTED_LOW_RUNWAY: Cash runway < 1.0 year with negative TTM operating cash flow")
     runway = hard_facts.get("cash_runway_months")
     runway_12m = False
     if runway is not None:
@@ -427,6 +429,8 @@ def matches_nordic_microcap_catalyst(
     is_prof_b = hard_facts.get("is_profile_b", False)
     is_turnaround = (nlp_verdict in ["WATCH_TURNAROUND", "STRONG BUY"] or meta.get("is_turnaround", False))
 
+    if hard_facts.get("runway_status") == "REJECTED_LOW_RUNWAY" or hard_facts.get("status") == "REJECTED_LOW_RUNWAY":
+        reasons.append("REJECTED_LOW_RUNWAY: Cash runway < 1.0 year with negative TTM operating cash flow")
     runway = hard_facts.get("cash_runway_months")
     runway_ok = False
     if runway is not None:

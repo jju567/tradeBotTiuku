@@ -65,7 +65,7 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env")
 
 from email_notifier import send_portfolio_alert, send_run_summary_email
-from screener.financial_metrics_engine import evaluate_profiles, get_hard_financials
+from screener.financial_metrics_engine import audit_candidates_data, evaluate_profiles, get_hard_financials
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
 from screener.portfolio_manager import evaluate_position
 from screener.web_verifier import (
@@ -2127,6 +2127,13 @@ class MasterLiveTradingDaemon:
                 )
                 continue
 
+            if hard_facts.get("runway_status") == "REJECTED_LOW_RUNWAY" or hard_facts.get("status") == "REJECTED_LOW_RUNWAY":
+                logger.info(
+                    f"[{portfolio.config.portfolio_id}] 🛑 [LOW RUNWAY GUARD] Skipping {ticker}: "
+                    f"Cash runway < 1.0 year with negative TTM operating cash flow."
+                )
+                continue
+
             # Step 1.3: Calculate candidate_score with Capping / Winsorizing against extreme outliers
             capped_roe = min(max(float(roe_pct or 0.0), 0.0), 40.0)
             capped_ebit = min(max(float(ebit_margin_pct or 0.0), 0.0), 35.0)
@@ -2203,6 +2210,16 @@ class MasterLiveTradingDaemon:
             if hard_facts.get("ev_ebit_premium_pct") is not None:
                 entry_hard_facts["ev_ebit_premium_pct"] = hard_facts.get("ev_ebit_premium_pct")
             entry_hard_facts["is_historically_expensive"] = bool(hard_facts.get("is_historically_expensive", False))
+            if hard_facts.get("adjusted_cash") is not None:
+                entry_hard_facts["adjusted_cash"] = hard_facts.get("adjusted_cash")
+            if hard_facts.get("cash_runway_years") is not None:
+                entry_hard_facts["cash_runway_years"] = hard_facts.get("cash_runway_years")
+            if hard_facts.get("share_dilution_pct") is not None:
+                entry_hard_facts["share_dilution_pct"] = hard_facts.get("share_dilution_pct")
+            if hard_facts.get("audit_flags"):
+                entry_hard_facts["audit_flags"] = hard_facts.get("audit_flags")
+            if hard_facts.get("audit_warning"):
+                entry_hard_facts["audit_warning"] = hard_facts.get("audit_warning")
 
             valid_candidates.append({
                 "ticker": ticker,
@@ -2218,8 +2235,11 @@ class MasterLiveTradingDaemon:
                 "fx_acc_to_local": fx_acc_to_local,
                 "adv_local": adv_local,
                 "max_adv_allowed": max_adv_allowed,
+                "audit_flags": list(hard_facts.get("audit_flags", [])),
+                "audit_warning": hard_facts.get("audit_warning"),
             })
 
+        valid_candidates = audit_candidates_data(valid_candidates)
         valid_candidates.sort(key=lambda x: (x["score"], x["adv_eur"]), reverse=True)
         return valid_candidates
 
@@ -2404,6 +2424,8 @@ class MasterLiveTradingDaemon:
                         "Estimated_FX_Fee_EUR": est_fx_fee_eur,
                         "Broker_Fee_EUR": broker_fee_eur,
                         "Execution_Verified": False,
+                        "Audit_Flags": cand.get("audit_flags", []),
+                        "Audit_Warning": cand.get("audit_warning"),
                     }
                     portfolio.positions.append(new_pos)
                     positions_by_sub[sub_name].append(new_pos)
@@ -2432,6 +2454,8 @@ class MasterLiveTradingDaemon:
                                 "buy_price": f"{cand_price:.2f} {ticker_curr}",
                                 "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
                                 "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
+                                "audit_flags": cand.get("audit_flags", []),
+                                "audit_warning": cand.get("audit_warning"),
                             },
                         })
 
