@@ -267,6 +267,7 @@ def test_swedish_stock_buy_fx_conversion(temp_daemon_env):
     with patch("main_controller.get_hard_financials", return_value={}), \
          patch("main_controller.evaluate_profiles", side_effect=mock_eval_profiles), \
          patch.object(daemon, "fetch_live_price", return_value=250.0), \
+         patch("screener.currency_utils.get_live_fx_rates", return_value={"EURUSD": 1.08, "EURSEK": 11.30}), \
          patch("main_controller.get_live_fx_rates", return_value={"EURUSD": 1.08, "EURSEK": 11.30}):
 
         new_buys = daemon.execute_market_screening()
@@ -296,11 +297,12 @@ def test_reentry_cooldown_prevents_whipsaw(temp_daemon_env):
     daemon, tmp_path = temp_daemon_env
     daemon.account.cash_balance = 10_000.0
 
-    # Simulate stock sold today in trade_history.csv
+    from datetime import datetime, timezone
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     daemon.append_trade_history({
         "Ticker": "JUST_SOLD",
         "Buy Date": "2026-09-01",
-        "Sell Date": "2026-09-21",
+        "Sell Date": today_str,
         "Buy Price": 10.0,
         "Sell Price": 12.0,
         "Shares": 100,

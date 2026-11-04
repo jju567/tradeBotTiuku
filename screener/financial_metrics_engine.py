@@ -54,6 +54,15 @@ _OCF_KEYS = [
 ]
 _REVENUE_KEYS = ["Total Revenue", "TotalRevenue", "Operating Revenue", "Revenue"]
 _GROSS_PROFIT_KEYS = ["Gross Profit", "GrossProfit", "Gross Margin"]
+_CAPEX_KEYS = [
+    "Capital Expenditure",
+    "CapitalExpenditure",
+    "CapitalExpenditures",
+    "Capital Expenditure Reported",
+    "Purchase Of PPE",
+    "Payments For Property Plant And Equipment",
+    "Purchase Of Property Plant And Equipment",
+]
 
 
 def _get_first_valid_df(obj: Any, attr_names: list[str]) -> Optional[pd.DataFrame]:
@@ -116,6 +125,54 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
     jotta downstream-koodi/prompti voi aina luottaa rakenteeseen).
     """
     cleaned_ticker = ticker.strip().upper()
+
+    # Estä tietovuoto (State Leakage): alustetaan kaikki muuttujat eksplisiittisesti
+    t = None
+    bs_q = None
+    bs_a = None
+    cf_q = None
+    cf_a = None
+    inc_q = None
+    inc_a = None
+    cash = None
+    debt = None
+    lt_q = None
+    cur_q = None
+    lt_a = None
+    cur_a = None
+    calc_debt = None
+    ocf_val = None
+    capex = None
+    fcf = None
+    rev_curr = None
+    rev_prev = None
+    gp_val = None
+    gm_pct = None
+    latest_dt = None
+    age_days = None
+    is_fresh = True
+    info = None
+    fast_info = None
+    roe = None
+    ebit_m = None
+    ebitda = None
+    nd_ebitda = None
+    div_y = None
+    div_r = None
+    trail_div_r = None
+    div_paid = None
+    exch = None
+    country_val = None
+    mcap = None
+    bid_px = None
+    ask_px = None
+    earn_ts = None
+    earn_dt_obj = None
+    d_to_earn = None
+    ins_pct = None
+    net_ins = None
+    has_positive_cash_flow = False
+
     result: Dict[str, Any] = {
         "ticker": cleaned_ticker,
         "as_of": datetime.now(timezone.utc).isoformat(),
@@ -123,6 +180,9 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "cash_and_equivalents": None,
         "total_debt": None,
         "operating_cash_flow_ttm": None,
+        "free_cash_flow": None,
+        "has_positive_cash_flow": False,
+        "cash_flow_viable": False,
         "cash_runway_months": None,
         "total_revenue_current": None,
         "total_revenue_previous": None,
@@ -133,7 +193,6 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         "gross_margin_pct": None,
         "roe": None,
         "ebit_margin": None,
-        "free_cash_flow": None,
         "ebitda": None,
         "net_debt_to_ebitda": None,
         "dividend_yield": None,
@@ -155,11 +214,11 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             "ocf_source": None,   # "ttm_quarterly" | "latest_annual" | None
             "debt_source": None,  # "total_debt_field" | "lt_plus_current" | "zero_debt_inferred" | None
             "is_fresh": True,     # True if statement age <= 120 days
+            "cash_burner": False, # True if operating/free cash flow <= 0
         },
         "errors": [],
         "status": "ERROR",
     }
-
 
     try:
         t = yf.Ticker(cleaned_ticker)
@@ -220,11 +279,10 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         elif cash is not None and debt is None:
             result["errors"].append("total_debt not found; net_cash left as None to avoid false optimism")
 
-        # ---- 2. Kassavirtaraportti (Cash Flow) ----
+        # ---- 2. Kassavirtaraportti (Cash Flow) & Vapaa Kassavirta (FCF) ----
         cf_q = _get_first_valid_df(t, ["quarterly_cashflow"])
         cf_a = _get_first_valid_df(t, ["cashflow"])
 
-        ocf_val = None
         # Yritetään ensin 4 kvartaalin TTM-summaa
         if cf_q is not None and not cf_q.empty:
             for key in _OCF_KEYS:
@@ -252,22 +310,58 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                         result["data_quality"]["ocf_source"] = f"annualized_{len(series)}q"
                         break
 
-        result["operating_cash_flow_ttm"] = ocf_val
+        # Capex & Vapaa kassavirta (FCF)
+        capex = _extract_metric_from_df(cf_a, _CAPEX_KEYS)
+        if capex is None:
+            capex = _extract_metric_from_df(cf_q, _CAPEX_KEYS)
 
-        # ---- 3. Cash Runway ----
-        # Positiivinen tai nolla OCF -> yhtiö ei polta kassaa operatiivisesti -> Infinite
-        # Negatiivinen OCF -> lasketaan kuukausissa jäljellä oleva kassa
-        if cash is not None and ocf_val is not None:
-            if ocf_val >= 0:
-                result["cash_runway_months"] = "Infinite"
-            else:
-                monthly_burn = abs(ocf_val) / 12.0
-                if monthly_burn > 0:
-                    result["cash_runway_months"] = round(cash / monthly_burn, 1)
-                else:
-                    result["cash_runway_months"] = "Infinite"
+        if ocf_val is not None and capex is not None:
+            fcf = ocf_val - abs(capex)
+
+        # Fallback info-metatiedoista
+        try:
+            info = getattr(t, "info", None)
+            if not isinstance(info, dict):
+                info = {}
+            fast_info = getattr(t, "fast_info", None)
+            raw_fcf = info.get("freeCashflow") if isinstance(info, dict) else None
+            if fcf is None and raw_fcf is not None and isinstance(raw_fcf, (int, float)):
+                fcf = float(raw_fcf)
+        except Exception:
+            info = {}
+            fast_info = None
+
+        has_pos_ocf = (ocf_val is not None and isinstance(ocf_val, (int, float)) and ocf_val > 0.0)
+        has_pos_fcf = (fcf is not None and isinstance(fcf, (int, float)) and fcf > 0.0)
+        has_positive_cash_flow = (has_pos_ocf or has_pos_fcf)
+
+        result["operating_cash_flow_ttm"] = ocf_val
+        result["free_cash_flow"] = fcf
+        result["has_positive_cash_flow"] = has_positive_cash_flow
+        result["cash_flow_viable"] = has_positive_cash_flow
+
+        # ---- 3. Cash Runway & Cash Burn Gate ----
+        # Yhtiöllä TÄYTYY olla positiivinen operatiivinen kassavirta (OCF > 0) tai
+        # positiivinen vapaa kassavirta (FCF > 0), jotta se katsotaan kestäväksi.
+        # Jos OCF ja FCF ovat molemmat <= 0, yhtiö polttaa kassaa (cash burner).
+        if has_positive_cash_flow:
+            result["cash_runway_months"] = "Infinite"
+            result["data_quality"]["cash_burner"] = False
         else:
-            result["errors"].append("cash_runway_months not computed: missing cash or OCF")
+            result["data_quality"]["cash_burner"] = True
+            annual_burn = max(
+                abs(ocf_val) if ocf_val is not None and isinstance(ocf_val, (int, float)) and ocf_val < 0.0 else 0.0,
+                abs(fcf) if fcf is not None and isinstance(fcf, (int, float)) and fcf < 0.0 else 0.0,
+            )
+            if cash is not None and annual_burn > 0.0:
+                monthly_burn = annual_burn / 12.0
+                calc_runway = round(cash / monthly_burn, 1) if monthly_burn > 0.0 else 0.0
+                # Kassanpolttajille asetetaan enimmäiskatto (24 kk) varhaisen vaiheen harhojen karsimiseksi
+                result["cash_runway_months"] = min(calc_runway, 24.0)
+                result["errors"].append("NEGATIVE_CASH_FLOW: Operating and free cash flows are non-positive.")
+            else:
+                result["cash_runway_months"] = 0.0
+                result["errors"].append("ZERO_OR_MISSING_CASH_FLOW: No positive cash flow detected.")
 
         # ---- 4. Liikevaihto ja YoY-kasvu ----
         inc_q = _get_first_valid_df(t, ["quarterly_financials", "quarterly_income_stmt"])
@@ -496,11 +590,16 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
     Profile A (Quality Growth):
       - revenue_growth_yoy > 20%
       - gross_margin > 40% (or gross profit proves scalability)
-      - Survival Check: Either operating_cash_flow > 0 OR cash_runway_months > 18
+      - Absolute Cash Flow Rule: Must have positive operating cash flow (OCF > 0)
+        or positive free cash flow (FCF > 0). Early-stage cash burners cannot qualify
+        on runway alone!
+      - Survival Check: (OCF > 0 or FCF > 0) AND (OCF > 0 OR cash_runway_months > 18)
 
     Profile B (Deep Value & Anti-Shrinking):
       - net_cash > 0
-      - Anti-Shrinking: Reject if revenue YoY < 0 AND (ocf is negative or not improving)
+      - Absolute Cash Flow Rule: Must have positive operating cash flow (OCF > 0)
+        or positive free cash flow (FCF > 0). Cash-burning early-stage R&D firms
+        are rejected.
 
     Returns:
     {
@@ -511,11 +610,17 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
         "reasons": List[str]
     }
     """
-    rev_yoy = hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy")
-    gm_pct = hard_facts.get("gross_margin_pct") or hard_facts.get("gross_margin")
+    rev_yoy = hard_facts.get("revenue_growth_yoy_pct") if hard_facts.get("revenue_growth_yoy_pct") is not None else hard_facts.get("revenue_yoy")
+    gm_pct = hard_facts.get("gross_margin_pct") if hard_facts.get("gross_margin_pct") is not None else hard_facts.get("gross_margin")
     net_cash = hard_facts.get("net_cash")
-    ocf = hard_facts.get("operating_cash_flow_ttm") or hard_facts.get("ocf")
+    ocf = hard_facts.get("operating_cash_flow_ttm") if hard_facts.get("operating_cash_flow_ttm") is not None else hard_facts.get("ocf")
+    fcf = hard_facts.get("free_cash_flow") if hard_facts.get("free_cash_flow") is not None else hard_facts.get("fcf")
     runway = hard_facts.get("cash_runway_months")
+
+    # Positiivisen kassavirran ehdoton tarkistus (OCF > 0 tai FCF > 0)
+    has_pos_cf = bool(hard_facts.get("has_positive_cash_flow", False)) or (
+        (ocf is not None and float(ocf) > 0.0) or (fcf is not None and float(fcf) > 0.0)
+    )
 
     # Parse numeric runway
     runway_num = float("inf")
@@ -523,7 +628,7 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(runway, (int, float)):
             runway_num = float(runway)
         elif str(runway).strip().lower() == "infinite":
-            runway_num = float("inf")
+            runway_num = float("inf") if has_pos_cf else 0.0
         else:
             try:
                 runway_num = float(runway)
@@ -534,9 +639,9 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
     is_profile_a = False
     reasons_a: List[str] = []
 
-    growth_ok = (rev_yoy is not None and rev_yoy > 20.0)
-    margin_ok = (gm_pct is not None and gm_pct > 40.0)
-    survival_ok = (ocf is not None and ocf > 0) or (runway_num > 18.0)
+    growth_ok = (rev_yoy is not None and float(rev_yoy) > 20.0)
+    margin_ok = (gm_pct is not None and float(gm_pct) > 40.0)
+    survival_ok = has_pos_cf and ((ocf is not None and float(ocf) > 0.0) or (runway_num > 18.0))
 
     if growth_ok and margin_ok and survival_ok:
         is_profile_a = True
@@ -546,20 +651,24 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
         if not margin_ok:
             reasons_a.append(f"Gross margin {gm_pct}% <= 40%")
         if not survival_ok:
-            reasons_a.append(f"Survival check failed: OCF={ocf}, Runway={runway}m <= 18m")
+            if not has_pos_cf:
+                reasons_a.append(f"Survival check failed: Non-positive cash flow (OCF={ocf}, FCF={fcf}) - cash burners rejected from Profile A")
+            else:
+                reasons_a.append(f"Survival check failed: OCF={ocf}, Runway={runway}m <= 18m")
 
     # 2. Profile B: Deep Value & Anti-Shrinking
     is_profile_b = False
     reasons_b: List[str] = []
 
-    if net_cash is not None and net_cash > 0:
-        is_shrinking = (rev_yoy is not None and rev_yoy < 0.0)
-        # Anti-shrinking rule: if revenue is shrinking, company must demonstrate positive operating cash flow
+    if net_cash is not None and float(net_cash) > 0:
+        is_shrinking = (rev_yoy is not None and float(rev_yoy) < 0.0)
         if is_shrinking:
-            if ocf is not None and ocf > 0.0:
+            if ocf is not None and float(ocf) > 0.0:
                 is_profile_b = True
             else:
                 reasons_b.append("Anti-Shrinking rule triggered: Revenue shrinking without positive OCF")
+        elif not has_pos_cf:
+            reasons_b.append(f"Rejected: Negative or missing cash flow (OCF={ocf}, FCF={fcf}) - cash burners not allowed in Profile B")
         else:
             is_profile_b = True
     else:
@@ -586,6 +695,31 @@ def evaluate_profiles(hard_facts: Dict[str, Any]) -> Dict[str, Any]:
         "profile": profile,
         "reasons": (reasons_a + reasons_b) if not is_profile_a and not is_profile_b else (reasons_b if not is_profile_b else (reasons_a if not is_profile_a else [])),
     }
+
+
+def get_hard_financials_batch(tickers: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Batch processor for multiple tickers with strict state isolation.
+    Guarantees that each ticker starts with fresh zeroed/None variables,
+    preventing any state leakage between consecutive tickers.
+    """
+    batch_results: Dict[str, Dict[str, Any]] = {}
+    for raw_ticker in tickers:
+        clean_t = str(raw_ticker).strip().upper()
+        if not clean_t:
+            continue
+        try:
+            batch_results[clean_t] = get_hard_financials(clean_t)
+        except Exception as e:
+            logger.warning(f"Error in batch processing for {clean_t}: {e}")
+            batch_results[clean_t] = {
+                "ticker": clean_t,
+                "status": "ERROR",
+                "errors": [str(e)],
+                "has_positive_cash_flow": False,
+                "cash_flow_viable": False,
+            }
+    return batch_results
 
 
 def format_for_llm_prompt(hard_facts: Dict[str, Any]) -> str:

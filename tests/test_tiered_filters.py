@@ -313,7 +313,7 @@ def test_unified_router():
     assert p_core is True
 
     meta_us = {"market": "US", "market_cap_usd": 100_000_000.0, "exchange": "NASDAQ"}
-    hf_us = {"exchange": "NASDAQ", "dividend_yield": 0.0, "revenue_growth_yoy_pct": 20.0}
+    hf_us = {"exchange": "NASDAQ", "dividend_yield": 0.0, "revenue_growth_yoy_pct": 20.0, "cash_runway_months": "Infinite"}
     p_us, _ = matches_universe_filter("USGROW", "US_MicroCap_Growth", hf_us, meta_us)
     assert p_us is True
 

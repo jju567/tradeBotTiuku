@@ -78,7 +78,9 @@
     - **Pääomakäyrä & Tulokset**: Laskee päivittäisen mark-to-market -pääoman ja tallentaa sen tiedostoon `data/oracle_equity_curve.csv` (`Date`, `Total_Equity`) sekä toteutuneet kaupat tiedostoon `data/oracle_trades.csv`.
 
 - **Vaihe 0: Deterministinen Tase- ja Kassavirtalaskenta (`screener/financial_metrics_engine.py`)**:
-  - Hakee taseen ja kassavirrat yfinancesta ja laskee kovat talousluvut (`net_cash`, `operating_cash_flow_ttm`, `cash_runway_months`, `revenue_growth_yoy_pct`) puhtaalla Pythonilla ennen LLM-kutsua.
+  - Hakee taseen ja kassavirrat yfinancesta ja laskee kovat talousluvut (`net_cash`, `operating_cash_flow_ttm`, `free_cash_flow`, `cash_runway_months`, `revenue_growth_yoy_pct`) puhtaalla Pythonilla ennen LLM-kutsua.
+  - **Tietovuotosuoja (State Isolation)**: Jokaisen yhtiön tunnuslukumuuttujat alustetaan ja nollataan eksplisiittisesti for-silmukan alussa, mikä takaa täyden eristyksen ja estää puuttuvien API-tietojen korvautumisen edellisen tickerin datalla.
+  - **Kassanpolttajasuoja (Cash Burner Guard & Cash Flow Viability)**: Vaatii yhtiöltä positiivisen operatiivisen kassavirran (OCF > 0) tai vapaan kassavirran (FCF > 0). Jatkuvasti tappiolliset ja kassaa polttavat varhaisen vaiheen teknologiayhtiöt (kuten BeammWave) liputetaan (`cash_burner = True`), niiden teoreettinen runway katkaistaan ja ne hylätään automaattisesti Profile A- ja Profile B -kärkisijoilta.
   - Sisältää **Data Freshness Guard** -tarkistuksen (enintään 120 päivää vanha tilinpäätös, `DATA_STALENESS_WARNING`), joka suojaa vanhentuneen datan pohjalta syntyviltä ostoilta.
   - Syöttää luvut tekoälylle lohkossa `[HARD FINANCIAL FACTS - DO NOT RECALCULATE]`, jolloin LLM ei hallusinoi laskutoimituksia ja keskittyy laadulliseen analyysiin.
 - **Vaihe 1: Fundamentti-NLP -analyysi (`screener/nlp_analyzer.py`)**:

@@ -1915,6 +1915,34 @@ class MasterLiveTradingDaemon:
             if ticker in held_tickers:
                 continue
 
+            # State leakage guard: Re-initialize all ticker candidate variables to default/None immediately
+            cand_price = None
+            hard_facts = {}
+            entry_hard_facts = {}
+            news_verdict = None
+            news_reason = None
+            roe_raw = None
+            roe_pct = None
+            ebit_raw = None
+            ebit_margin_pct = None
+            net_debt = None
+            net_cash = None
+            nd_ebitda = None
+            nd_val = None
+            rev_yoy_raw = None
+            rev_yoy_val = None
+            cash_runway_raw = None
+            cash_runway_val = None
+            cand_score = 0.0
+            spread_pct = None
+            days_to_earn = None
+            insider_sig = False
+            adv_local = 0.0
+            adv_eur = 0.0
+            max_adv_allowed = 0.0
+            shares_to_buy = 0
+            investable_cash_local = 0.0
+
             # Anti-whipsaw cooldown
             if ticker in cooldown_tickers:
                 days_since_exit = (today - cooldown_tickers[ticker]).days
@@ -2062,6 +2090,28 @@ class MasterLiveTradingDaemon:
 
             cash_runway_raw = hard_facts.get("cash_runway_months")
             cash_runway_val = round(float(cash_runway_raw), 2) if isinstance(cash_runway_raw, (int, float)) and not isinstance(cash_runway_raw, bool) else cash_runway_raw
+
+            cand_ocf = hard_facts.get("operating_cash_flow_ttm") if hard_facts.get("operating_cash_flow_ttm") is not None else hard_facts.get("ocf")
+            cand_fcf = hard_facts.get("free_cash_flow") if hard_facts.get("free_cash_flow") is not None else hard_facts.get("fcf")
+            is_cash_burner = (
+                hard_facts.get("data_quality", {}).get("cash_burner") is True
+                or hard_facts.get("cash_burner") is True
+                or (
+                    cand_ocf is not None and float(cand_ocf) <= 0.0
+                    and (cand_fcf is None or float(cand_fcf) <= 0.0)
+                )
+                or (
+                    cand_fcf is not None and float(cand_fcf) <= 0.0
+                    and (cand_ocf is None or float(cand_ocf) <= 0.0)
+                    and (cand_ocf is not None or cand_fcf is not None)
+                )
+            )
+            if is_cash_burner:
+                logger.info(
+                    f"[{portfolio.config.portfolio_id}] 🛑 [CASH BURNER GUARD] Skipping {ticker}: "
+                    f"Verified cash burner with non-positive cash flow (OCF={cand_ocf}, FCF={cand_fcf})."
+                )
+                continue
 
             # Step 1.3: Calculate candidate_score with Capping / Winsorizing against extreme outliers
             capped_roe = min(max(float(roe_pct or 0.0), 0.0), 40.0)

@@ -342,7 +342,11 @@ def matches_us_microcap_growth(
     fcf = hard_facts.get("free_cash_flow") if hard_facts.get("free_cash_flow") is not None else hard_facts.get("fcf")
     ocf_pos = (ocf is not None and float(ocf) > 0)
     fcf_pos = (fcf is not None and float(fcf) > 0)
-    runway_ok = (runway_12m or ocf_pos or fcf_pos)
+    is_neg_cf = (
+        (ocf is not None and float(ocf) <= 0.0)
+        and (fcf is not None and float(fcf) <= 0.0)
+    ) or (hard_facts.get("data_quality", {}).get("cash_burner") is True)
+    runway_ok = (runway_12m or ocf_pos or fcf_pos or hard_facts.get("is_profile_a", False)) and not is_neg_cf
 
     if not runway_ok:
         reasons.append(f"Cash runway insufficient ({runway}) without positive OCF/FCF (requires runway >= 12m or OCF/FCF > 0)")

@@ -166,7 +166,7 @@ class TestWebSearchVerifier(unittest.TestCase):
                 <item>
                     <title>Fresh News Today</title>
                     <description>Breaking update just today.</description>
-                    <pubDate>Fri, 16 Oct 2026 08:00:00 GMT</pubDate>
+                    <pubDate>Wed, 04 Nov 2026 08:00:00 GMT</pubDate>
                 </item>
                 <item>
                     <title>Old News Months Ago</title>
