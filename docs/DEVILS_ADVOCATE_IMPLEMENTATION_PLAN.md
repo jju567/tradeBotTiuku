@@ -285,18 +285,18 @@
 
 ## Koontitaulukko Toteutusjärjestyksestä (Checklist Koodibotille)
 
-- [ ] **TASK-01:** Vähennä 0,25 % FX-kulu `cash`-saldosta ja `Net PnL`:stä ostoissa ja myynneissä (`main_controller.py`).
-- [ ] **TASK-02:** Yhtenäistä markkinakohtaiset minimipalkkiot (`.HE` 9 €, ulkomaat 15 €) (`main_controller.py`, `institutional_backtester.py`).
-- [ ] **TASK-03:** Estä kulutehoton Partial Take-Profit alle 750 € jäännöspositioissa (`main_controller.py`).
-- [ ] **TASK-04:** Korjaa AOT/OY-alkupääoman skaalaus ja lisää luovutusvoittoverovaraus (`main_controller.py`).
-- [ ] **TASK-05:** Kytke `audit_p13_next_day_executions` perumaan `UNFILLED_GAP_UP`-haamuostot ja täsmäyttämään $T+1$ avauskurssit P13-tilaan (`main_controller.py`).
-- [ ] **TASK-06:** Muuta `FULL_EXIT` (Stop-Loss) -myynnit käyttämään `-3.5 %` suojalimiittiä `-0.2 %` sijaan (`email_generator.py`, `portfolios_config.yaml`).
-- [ ] **TASK-07:** Korjaa P12 Smart Limit (`vwap`) ja lisää päivänsisäisen `Low`/`Open`-tason Stop-Loss-tarkistus (`main_controller.py`).
-- [ ] **TASK-08:** Lisää kandidaattien paremmuusjärjestys (Ranking) salkkuihin P1–P10 ennen ostosilmukkaa (`main_controller.py`).
-- [ ] **TASK-09:** Poista `-8 % / -12 %` pakkostoppi Tri-Layer/Diamond Hands -salkuilta ja toteuta P13 `2.5x ATR` -stop (`main_controller.py`, `portfolios_config.yaml`).
-- [ ] **TASK-10:** Salli `WATCH_TURNAROUND`-yhtiöille negatiivinen TTM-kassavirta P13 Satelliitti 2:ssa, kun `runway >= 12 kk` ja katalyytti on vahvistettu (`screener/tiered_filters.py`, `main_controller.py`).
-- [ ] **TASK-11:** Korjaa `_sync_to_p13_state` luokittelemaan `.HE` micro-capit satelliittikoriin Core-midcap-korin sijaan (`core/portfolio.py`).
-- [ ] **TASK-12:** Korjaa 4Q TTM CapEx, priorisoi kvartaalikohtainen YoY-kasvu ja suojaa `zero_debt_inferred` korkeavelkaisilla yhtiöillä (`screener/financial_metrics_engine.py`).
-- [ ] **TASK-13:** Lisää pohjoismainen markkinaregiimisuodatin (`^OMXH25` / `^OMXSPI`) Nordic-ostoille (`main_controller.py`).
-- [ ] **TASK-14:** Laske käteispuskuri nykyisestä `total_equity`-arvosta ja aktivoi `-15 %` Max Drawdown -hälytys/jarru (`main_controller.py`).
-- [ ] **TASK-15:** Lisää NLP-hallusinaatiosuoja vieraiden tickereiden uutisotsikoille (`screener/nlp_analyzer.py`, `main_controller.py`).
+- [x] **TASK-01:** Vähennä 0,25 % FX-kulu `cash`-saldosta ja `Net PnL`:stä ostoissa ja myynneissä (`main_controller.py`).
+- [x] **TASK-02:** Yhtenäistä markkinakohtaiset minimipalkkiot (`.HE` 9 €, ulkomaat 15 €) (`main_controller.py`, `institutional_backtester.py`).
+- [x] **TASK-03:** Estä kulutehoton Partial Take-Profit alle 400 € jäännöspositioissa tai jos kulu > 2.5% (`main_controller.py`).
+- [x] **TASK-04:** Korjaa AOT/OY-alkupääoman skaalaus ja lisää luovutusvoittoverovaraus (`main_controller.py`).
+- [x] **TASK-05:** Kytke `audit_p13_next_day_executions` perumaan `UNFILLED_GAP_UP`-haamuostot ja täsmäyttämään $T+1$ avauskurssit P13-tilaan (`main_controller.py`).
+- [x] **TASK-06:** Muuta `FULL_EXIT` (Stop-Loss) -myynnit käyttämään `-1.5 %` / Bid suojalimiittiä `-0.2 %` sijaan (`email_generator.py`, `portfolios_config.yaml`).
+- [x] **TASK-07:** Korjaa P12 Smart Limit (`vwap`) ja lisää päivänsisäisen `Low`/`Open`-tason Stop-Loss-tarkistus (`main_controller.py`).
+- [x] **TASK-08:** Lisää kandidaattien paremmuusjärjestys (Ranking) salkkuihin P1–P10 ennen ostosilmukkaa (`main_controller.py`).
+- [x] **TASK-09:** Poista `-8 % / -12 %` pakkostoppi Tri-Layer/Diamond Hands -salkuilta ja toteuta P13 `2.5x ATR` -stop (`main_controller.py`, `portfolios_config.yaml`).
+- [x] **TASK-10:** Salli `WATCH_TURNAROUND`-yhtiöille negatiivinen TTM-kassavirta P13 Satelliitti 2:ssa, kun `runway >= 12 kk` ja katalyytti on vahvistettu (`screener/tiered_filters.py`, `main_controller.py`).
+- [x] **TASK-11:** Korjaa `_sync_to_p13_state` luokittelemaan `.HE` micro-capit satelliittikoriin Core-midcap-korin sijaan (`core/portfolio.py`).
+- [x] **TASK-12:** Korjaa 4Q TTM CapEx, priorisoi kvartaalikohtainen YoY-kasvu ja suojaa `zero_debt_inferred` korkeavelkaisilla yhtiöillä (`screener/financial_metrics_engine.py`).
+- [x] **TASK-13:** Lisää pohjoismainen markkinaregiimisuodatin (`^OMXH25` / `^OMXSPI`) Nordic-ostoille (`main_controller.py`).
+- [x] **TASK-14:** Laske käteispuskuri nykyisestä `total_equity`-arvosta ja aktivoi `-15 %` Max Drawdown -hälytys/jarru (`main_controller.py`).
+- [x] **TASK-15:** Lisää NLP-hallusinaatiosuoja vieraiden tickereiden uutisotsikoille (`screener/nlp_analyzer.py`, `main_controller.py`).

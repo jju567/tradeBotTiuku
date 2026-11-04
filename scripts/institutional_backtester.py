@@ -101,6 +101,8 @@ class InstitutionalBacktester:
         clean_universe_csv: str = "data/clean_microcap_universe.csv",
         benchmark_ticker: str = "^RUT",
         slippage_penalty_pct: float = 0.50,  # 0.5% round-trip penalty
+        position_size_eur: float = 1500.0,
+        use_realistic_broker_fees: bool = False,
         trailing_stop_pct: float = 20.0,
         atr_multiplier: float = 2.5,
         atr_period: int = 14,
@@ -112,6 +114,8 @@ class InstitutionalBacktester:
         self.clean_universe_csv = Path(clean_universe_csv)
         self.benchmark_ticker = benchmark_ticker.strip().upper()
         self.slippage_penalty_pct = slippage_penalty_pct
+        self.position_size_eur = position_size_eur
+        self.use_realistic_broker_fees = use_realistic_broker_fees
         self.trailing_stop_pct = trailing_stop_pct
         self.atr_multiplier = atr_multiplier
         self.atr_period = atr_period
@@ -263,9 +267,16 @@ class InstitutionalBacktester:
         else:
             exit_type = "STOP_LOSS"
 
-        # Calculate Gross Return and Net Return (after 0.5% slippage penalty)
+        # Calculate Gross Return and Net Return (after slippage and optional realistic broker/FX fees)
         gross_return_pct = round(((sell_price - buy_price) / buy_price) * 100.0, 2)
-        net_return_pct = round(gross_return_pct - self.slippage_penalty_pct, 2)
+        if self.use_realistic_broker_fees:
+            min_fee = 9.00 if ticker.endswith(".HE") else 15.00
+            broker_fee_pct = ((2 * min_fee) / self.position_size_eur) * 100.0
+            fx_fee_pct = 0.50 if not ticker.endswith(".HE") else 0.0
+            friction_pct = round(broker_fee_pct + fx_fee_pct + self.slippage_penalty_pct, 2)
+            net_return_pct = round(gross_return_pct - friction_pct, 2)
+        else:
+            net_return_pct = round(gross_return_pct - self.slippage_penalty_pct, 2)
 
         # Calculate Benchmark Return over identical window
         benchmark_ret = None

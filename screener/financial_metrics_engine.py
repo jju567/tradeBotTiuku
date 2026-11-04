@@ -525,13 +525,21 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                     "Total Assets", "TotalAssets", "Stockholders Equity",
                     "StockholdersEquity", "Total Stockholder Equity", "Common Stock Equity",
                 ]
+                tot_assets = _extract_metric_from_df(bs_q, ["Total Assets", "TotalAssets"]) or _extract_metric_from_df(bs_a, ["Total Assets", "TotalAssets"])
+                equity = _extract_metric_from_df(bs_q, ["Stockholders Equity", "StockholdersEquity", "Total Stockholder Equity", "Common Stock Equity"]) or _extract_metric_from_df(bs_a, ["Stockholders Equity", "StockholdersEquity", "Total Stockholder Equity", "Common Stock Equity"])
                 has_bs_structure = (
-                    _extract_metric_from_df(bs_q, _bs_check_keys) is not None
+                    tot_assets is not None or equity is not None
+                    or _extract_metric_from_df(bs_q, _bs_check_keys) is not None
                     or _extract_metric_from_df(bs_a, _bs_check_keys) is not None
                 )
+                liabilities_ratio = ((tot_assets - equity) / tot_assets) if (tot_assets and equity and tot_assets > 0) else 0.0
                 if cash is not None and has_bs_structure:
-                    debt = 0.0
-                    result["data_quality"]["debt_source"] = "zero_debt_inferred"
+                    if liabilities_ratio > 0.65:
+                        debt = None
+                        result["data_quality"]["debt_source"] = "debt_missing_high_liabilities"
+                    else:
+                        debt = 0.0
+                        result["data_quality"]["debt_source"] = "zero_debt_inferred"
 
         result["cash_and_equivalents"] = cash
         result["total_debt"] = debt
@@ -609,9 +617,20 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                         break
 
         # Capex & Vapaa kassavirta (FCF)
-        capex = _extract_metric_from_df(cf_a, _CAPEX_KEYS)
+        # TASK-12: If OCF is 4-quarter TTM, sum 4 quarters of CapEx to match time horizons
+        if result["data_quality"]["ocf_source"] == "ttm_quarterly" and cf_q is not None and not cf_q.empty:
+            for key in _CAPEX_KEYS:
+                if key in cf_q.index:
+                    series = cf_q.loc[key].dropna()
+                    if len(series) >= 4:
+                        capex = float(series.iloc[:4].sum())
+                        break
         if capex is None:
-            capex = _extract_metric_from_df(cf_q, _CAPEX_KEYS)
+            capex = _extract_metric_from_df(cf_a, _CAPEX_KEYS)
+        if capex is None and cf_q is not None and not cf_q.empty:
+            single_q_capex = _extract_metric_from_df(cf_q, _CAPEX_KEYS)
+            if single_q_capex is not None:
+                capex = single_q_capex * (4.0 if result["data_quality"]["ocf_source"] in ("ttm_quarterly", "latest_annual") else 1.0)
 
         if ocf_val is not None and capex is not None:
             fcf = ocf_val - abs(capex)
@@ -685,18 +704,8 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         rev_curr: Optional[float] = None
         rev_prev: Optional[float] = None
 
-        if inc_a is not None and not inc_a.empty:
-            for key in _REVENUE_KEYS:
-                if key in inc_a.index:
-                    series = inc_a.loc[key].dropna()
-                    if len(series) >= 1:
-                        rev_curr = float(series.iloc[0])
-                    if len(series) >= 2:
-                        rev_prev = float(series.iloc[1])
-                    if rev_curr is not None:
-                        break
-
-        if (rev_curr is None or rev_prev is None) and inc_q is not None and not inc_q.empty:
+        # TASK-12: Prioritize 8-quarter TTM comparison from quarterly statements to reflect fresh results
+        if inc_q is not None and not inc_q.empty:
             for key in _REVENUE_KEYS:
                 if key in inc_q.index:
                     series = inc_q.loc[key].dropna()
@@ -704,8 +713,20 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                         rev_curr = float(series.iloc[:4].sum())
                         rev_prev = float(series.iloc[4:8].sum())
                         break
-                    elif len(series) >= 4:
-                        rev_curr = float(series.iloc[:4].sum())
+                    elif len(series) >= 5:
+                        rev_curr = float(series.iloc[0])
+                        rev_prev = float(series.iloc[4])
+                        break
+
+        if (rev_curr is None or rev_prev is None) and inc_a is not None and not inc_a.empty:
+            for key in _REVENUE_KEYS:
+                if key in inc_a.index:
+                    series = inc_a.loc[key].dropna()
+                    if len(series) >= 1 and rev_curr is None:
+                        rev_curr = float(series.iloc[0])
+                    if len(series) >= 2 and rev_prev is None:
+                        rev_prev = float(series.iloc[1])
+                    if rev_curr is not None:
                         break
 
         result["total_revenue_current"] = rev_curr

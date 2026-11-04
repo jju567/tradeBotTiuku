@@ -283,10 +283,24 @@ class PortfolioManager:
                     is_fi = sym_up.endswith(".HE")
                     mkt = "SE" if is_se else ("FI" if is_fi else "US")
                     curr = "SEK" if is_se else ("EUR" if is_fi else "USD")
-                    sub_strat = (
-                        "core_nordic_midcap_quality" if is_fi
-                        else ("satellite_nordic_microcap_catalyst" if is_se else "satellite_us_microcap_growth")
-                    )
+                    # TASK-11: Check if ticker is in clean microcap universe to avoid mistagging Nordic micro-caps as Core Mid-Caps
+                    microcap_set = set()
+                    try:
+                        clean_u_file = Path(__file__).resolve().parent.parent / "data" / "clean_microcap_universe.csv"
+                        if clean_u_file.exists():
+                            import csv
+                            with open(clean_u_file, "r", encoding="utf-8") as f_cu:
+                                microcap_set = {r["ticker"].strip().upper() for r in csv.DictReader(f_cu) if "ticker" in r}
+                    except Exception:
+                        pass
+
+                    if is_fi or is_se:
+                        if sym_up in microcap_set:
+                            sub_strat = "satellite_nordic_microcap_catalyst"
+                        else:
+                            sub_strat = "core_nordic_midcap_quality" if is_fi else "satellite_nordic_microcap_catalyst"
+                    else:
+                        sub_strat = "satellite_us_microcap_growth"
 
                     new_pos = {
                         "Ticker": sym_up,
