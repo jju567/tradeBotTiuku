@@ -392,22 +392,25 @@ def format_eod_action_list_text(
                 lines.append(f"     ⚠️ AUDIT-VAROITUS:       {b.audit_warning or ', '.join(b.audit_flags)}")
             lines.append("")
 
-    # 2. FULL EXITS
+    # 2. SELL ACTIONS / FULL EXITS
     lines.append("-" * 80)
-    lines.append(f"🔴 FULL EXITS ({len(full_exits)}) — Stop-Loss / Fundamental Breakdown / Time-Stop")
+    lines.append(f"🔴 SELL ACTIONS ({len(full_exits)}) — Enter at 10:15 next morning as LIMIT orders (DO NOT SELL AT MARKET)")
     lines.append("-" * 80)
     if not full_exits:
-        lines.append("  (Ei täysiä myyntitoimeksiantoja)")
+        lines.append("  (Ei myyntitoimeksiantoja)")
     else:
+        lines.append("  ⚠️ HUOM: Syötä myynti LIMIT-toimeksiantona klo 10:15 suositellulla Limit-hinnalla (Päivän Bid tai Close -1.5%). Älä myy markkinahintaan!")
+        lines.append("")
         for idx, e in enumerate(full_exits, 1):
             lines.append(f"  {idx}. TICKER:                  {e.ticker}")
             lines.append(f"     SUB_STRATEGY:            {e.sub_strategy}")
-            lines.append(f"     ORDER_TYPE:              {e.order_type}")
-            lines.append(f"     EXACT_LIMIT_PRICE:       {e.formatted_limit_price()}")
+            lines.append(f"     ORDER_TYPE:              LIMIT (Seuraavan aamun klo 10:15 toteutus, älä myy markkinahintaan!)")
+            lines.append(f"     EXACT_LIMIT_PRICE:       {e.formatted_limit_price()} (Päätöspäivän Bid tai Close -1.5% joustovara)")
             lines.append(f"     SHARE_COUNT:             {e.share_count}")
             lines.append(f"     ESTIMATED_TOTAL_EUR:     {e.formatted_estimated_eur()}")
-            lines.append(f"     INITIAL_STOP_LOSS_PRICE: {e.initial_stop_loss_price}")
-            lines.append(f"     THESIS / CATALYST:       {e.thesis_catalyst}")
+            lines.append(f"     TRIGGER / EXIT_REASON:   {e.thesis_catalyst}")
+            if e.audit_flags:
+                lines.append(f"     ⚠️ AUDIT-VAROITUS:       {e.audit_warning or ', '.join(e.audit_flags)}")
             lines.append("")
 
     # 3. PARTIAL TAKE-PROFIT
@@ -544,10 +547,13 @@ def format_eod_action_list_html(
     </h3>
     {render_order_table(buys, "#16a34a", "Osto")}
 
-    <!-- Category 2: FULL EXITS -->
+    <!-- Category 2: FULL EXITS / SELL ACTIONS -->
     <h3 style="margin-top:24px;margin-bottom:8px;color:#dc2626;font-size:1.15rem;display:flex;align-items:center;">
-      🔴 FULL EXITS ({len(full_exits)}) &mdash; Stop-Loss / Fundamental Breakdown / Time-Stop
+      🔴 SELL ACTIONS ({len(full_exits)}) &mdash; LIMIT-toteutus klo 10:15
     </h3>
+    <div style="background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #ef4444;border-radius:6px;padding:12px 16px;margin:8px 0 12px 0;font-size:0.88rem;color:#991b1b;">
+      <strong>⚠️ TÄRKEÄ MYYNTIOHJE (SELL ACTIONS):</strong> Älä koskaan myy markkinahintaan (Market Order)! Syötä myynti <strong>LIMIT-toimeksiantona seuraavana aamuna klo 10:15</strong> käyttäen suositeltua Limit-hintaa (päätöspäivän Bid tai Close &minus; 1,5 % joustovaralla). Tämä suojaa epälikvideiltä aamun avaushuutokaupan hintapiikeiltä.
+    </div>
     {render_order_table(full_exits, "#dc2626", "Myynti")}
 
     <!-- Category 3: PARTIAL TAKE-PROFIT -->

@@ -154,7 +154,7 @@ portfolios:
           - "Exit_On: Quarterly_Fundamental_Breakdown"
           - "Catastrophic_Stop_Loss: -15.0% (or 2.5x ATR)"
           - "Partial_TP: Sell 50% at +25.0%"
-          - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% Trailing_Stop"
+          - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% EOD_Trailing_Stop"
 
       satellite_us_microcap_growth:
         allocated_capital: 1185
@@ -163,10 +163,10 @@ portfolios:
         universe_filter: "US_MicroCap_Growth"
         rules:
           - "Dividend_Yield: 0.0"
-          - "Stop_Loss: -12.0% (or 2.5x ATR)" # Widened from -8% to survive micro-cap noise
+          - "Exit_On: EOD_Trailing_Stop (-15.0% from highest close, no intraday stops)"
           - "Time_Stop: 45 trading days if PnL < +5.0%"
           - "Partial_TP: Sell 50% at +25.0%"
-          - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% Trailing_Stop"
+          - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% EOD_Trailing_Stop"
 
       satellite_nordic_microcap_catalyst:
         allocated_capital: 1185
@@ -174,10 +174,10 @@ portfolios:
         slot_sizes: [1185]
         universe_filter: "Nordic_MicroCap_Catalyst"
         rules:
-          - "Stop_Loss: -12.0% (or 2.5x ATR)"
+          - "Exit_On: EOD_Trailing_Stop (-15.0% from highest close, no intraday stops)"
           - "Time_Stop: 45 trading days if PnL < +5.0%"
           - "Partial_TP: Sell 50% at +25.0%"
-          - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% Trailing_Stop"
+          - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% EOD_Trailing_Stop"
 
     execution_constraints:
       allowed_order_types: ["LIMIT"]

@@ -647,6 +647,9 @@ class PortfolioInstance:
                 "Strategy": "HODL" if hodl else self.config.strategy,
                 "Currency": curr,
                 "Peak Price": price_f,
+                "highest_close": price_f,
+                "Highest Close": price_f,
+                "stop_threshold": round(price_f * 0.85, 4),
             }
             if hodl:
                 new_pos["hodl"] = True
@@ -813,6 +816,7 @@ class MarketDataEngine:
         self.universe_df: pd.DataFrame = pd.DataFrame()
         self.fx_rates: Dict[str, float] = {"EURUSD": 1.08, "EURSEK": 11.30}
         self.prices_cache: Dict[str, float] = {}
+        self.bids_cache: Dict[str, float] = {}
         self.hard_facts_cache: Dict[str, Dict[str, Any]] = {}
         self.eval_profiles_cache: Dict[str, Dict[str, Any]] = {}
         self.news_radar_cache: Dict[str, Tuple[str, str]] = {}
@@ -988,6 +992,12 @@ class MarketDataEngine:
             info = getattr(t, "fast_info", None)
             if info and hasattr(info, "last_price") and info.last_price:
                 cur_price = float(info.last_price)
+            try:
+                t_info = getattr(t, "info", None)
+                if isinstance(t_info, dict) and t_info.get("bid"):
+                    self.bids_cache[ticker] = float(t_info["bid"])
+            except Exception:
+                pass
             hist = t.history(period="1mo")
             if not hist.empty:
                 valid = hist["Close"].dropna()
@@ -1477,14 +1487,30 @@ class MasterLiveTradingDaemon:
                 retained_positions.append(pos)
                 continue
 
-            cur_peak = float(pos.get("Peak Price") or pos.get("peak_price") or pos.get("highest_price_seen") or buy_price)
-            if current_price > cur_peak:
-                cur_peak = current_price
-                pos["Peak Price"] = cur_peak
-                if "peak_price" in pos:
-                    pos["peak_price"] = cur_peak
-                if "highest_price_seen" in pos:
-                    pos["highest_price_seen"] = cur_peak
+            # Trailing EOD Peak tracking (Closing price only, no intraday spikes)
+            highest_close = float(
+                pos.get("highest_close")
+                or pos.get("Highest Close")
+                or pos.get("Peak Price")
+                or pos.get("peak_price")
+                or pos.get("highest_price_seen")
+                or buy_price
+            )
+            if current_price > highest_close:
+                highest_close = current_price
+            pos["highest_close"] = round(highest_close, 4)
+            pos["Highest Close"] = round(highest_close, 4)
+            pos["Peak Price"] = round(highest_close, 4)
+            if "peak_price" in pos:
+                pos["peak_price"] = round(highest_close, 4)
+            if "highest_price_seen" in pos:
+                pos["highest_price_seen"] = round(highest_close, 4)
+            cur_peak = highest_close
+
+            # EOD Stop-Loss threshold: -15.0% from highest close
+            stop_threshold = round(highest_close * (1.0 - 0.15), 4)
+            pos["stop_threshold"] = stop_threshold
+            pos["eod_stop_threshold"] = stop_threshold
 
             # --- Task 2: Partial Take-Profit (+25% gain triggers 50% partial sale into cash) ---
             if portfolio.config.partial_take_profit:
@@ -1655,10 +1681,9 @@ class MasterLiveTradingDaemon:
                         action = "SELL"
                         reason = f"RUNNER_BREAKEVEN_STOP (Current {current_price:.2f} < Entry {buy_price:.2f})"
                     else:
-                        drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
-                        if drawdown_from_peak >= portfolio.config.partial_trailing_stop_pct:
+                        if current_price <= stop_threshold:
                             action = "SELL"
-                            reason = f"PARTIAL_RUNNER_TRAILING_STOP (Peak {cur_peak:.2f} -> {current_price:.2f}, -{drawdown_from_peak*100:.1f}% >= -{portfolio.config.partial_trailing_stop_pct*100:.1f}%)"
+                            reason = f"PARTIAL_RUNNER_TRAILING_STOP / EOD_TRAILING_STOP (Close {current_price:.2f} <= Stop {stop_threshold:.2f}, -15.0% from Peak Close {highest_close:.2f})"
                 elif action != "SELL":
                     loss_from_buy = (buy_price - current_price) / buy_price if buy_price > 0 else 0.0
 
@@ -1699,10 +1724,10 @@ class MasterLiveTradingDaemon:
                                 reason = f"QUARTERLY_FUNDAMENTAL_BREAKDOWN ({', '.join(breakdown_reasons)})"
 
                     elif sub_strat in ["satellite_us_microcap_growth", "satellite_nordic_microcap_catalyst"]:
-                        # Satellite: Stop-Loss -12.0% and Time-Stop: 45 trading days (or 63 calendar days) if PnL < +5.0%
-                        if loss_from_buy >= 0.12:
+                        # Satellite: EOD Trailing Stop (-15.0% from highest close)
+                        if current_price <= stop_threshold:
                             action = "SELL"
-                            reason = f"STOP_LOSS_SATELLITE (Loss -{loss_from_buy*100:.1f}% >= -12.0%)"
+                            reason = f"EOD_TRAILING_STOP (Close {current_price:.2f} <= Stop {stop_threshold:.2f}, -15.0% from Peak Close {highest_close:.2f})"
                         elif news_verdict == "REJECT":
                             action = "SELL"
                             reason = f"LLM_NEWS_REJECT ({news_reason})"
@@ -1789,9 +1814,16 @@ class MasterLiveTradingDaemon:
                 portfolio.append_trade(trade_record)
                 closed_count += 1
 
+                # Calculate recommended Limit price for SELL at 10:15 next morning (Bid or Close * 0.985)
+                bid_px = getattr(self.market_engine, "bids_cache", {}).get(ticker)
+                if bid_px and isinstance(bid_px, (int, float)) and bid_px > 0 and (0.90 * current_price <= bid_px <= 1.05 * current_price):
+                    sell_limit_px = round(float(bid_px), 4)
+                    limit_note = f"Päätöspäivän Bid ({bid_px:.2f})"
+                else:
+                    sell_limit_px = round(current_price * 0.985, 4)
+                    limit_note = "Close * 0.985 (-1.5% joustovara)"
+
                 if portfolio.config.sub_strategies or portfolio.config.portfolio_id == "P13_Live_Candidate":
-                    limit_buf = getattr(portfolio.config, "limit_buffer_pct", 0.002) or 0.002
-                    sell_limit_px = round(current_price * (1.0 - limit_buf), 4)
                     est_fx_fee_eur = round(gross_sale_value * fx_to_acc * 0.0025, 2) if str(ticker_curr).upper() != "EUR" else 0.0
                     broker_fee_eur = round(transaction_fee * fx_to_acc, 2)
                     portfolio.pending_execution_audits.append({
@@ -1821,6 +1853,11 @@ class MasterLiveTradingDaemon:
                             "reason": reason,
                             "shares": shares,
                             "sell_price": f"{current_price:.2f} {ticker_curr}",
+                            "limit_price": sell_limit_px,
+                            "limit_note": limit_note,
+                            "highest_close": highest_close,
+                            "stop_threshold": stop_threshold,
+                            "sub_strategy": pos.get("Sub_Strategy") or pos.get("sub_strategy"),
                             "net_pnl": f"{net_pnl:+.2f} {ticker_curr}",
                             "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
                         },
@@ -2415,6 +2452,9 @@ class MasterLiveTradingDaemon:
                         "Universe_Filter": u_filter,
                         "Currency": ticker_curr,
                         "Peak Price": cand_price,
+                        "highest_close": cand_price,
+                        "Highest Close": cand_price,
+                        "stop_threshold": round(cand_price * 0.85, 4),
                         "Order Type": "LIMIT",
                         "Limit Price": target_limit,
                         "Time In Force": getattr(cfg, "time_in_force", "FOK_15MIN"),
