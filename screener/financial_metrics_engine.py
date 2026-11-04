@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
+import statistics
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Union, List
 import yfinance as yf
@@ -63,6 +64,18 @@ _CAPEX_KEYS = [
     "Payments For Property Plant And Equipment",
     "Purchase Of Property Plant And Equipment",
 ]
+
+_EBIT_KEYS = [
+    "Operating Income",
+    "OperatingIncome",
+    "Operating Profit",
+    "OperatingProfit",
+    "EBIT",
+    "Pretax Income",
+    "Normalized EBITDA",
+    "EBITDA",
+]
+
 
 
 def _get_first_valid_df(obj: Any, attr_names: list[str]) -> Optional[pd.DataFrame]:
@@ -112,6 +125,142 @@ def _extract_metric_from_df(df: Optional[pd.DataFrame], possible_keys: list[str]
         pass
 
     return None
+
+
+def calculate_relative_ev_ebit(
+    t: Any,
+    info: Optional[Dict[str, Any]] = None,
+    bs_a: Optional[pd.DataFrame] = None,
+    inc_a: Optional[pd.DataFrame] = None,
+    current_ev: Optional[float] = None,
+    current_ebit: Optional[float] = None,
+    override_current_ev_ebit: Optional[float] = None,
+    override_5y_median: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Calculates current EV/EBIT (or EV/EBITDA) and compares it against its 5-year historical median.
+
+    Rule:
+      If current EV/EBIT is > 20% higher than its 5-year historical median (ev_ebit_premium_pct > 20%),
+      flags is_historically_expensive = True for downstream penalty/rejection.
+
+    Error handling:
+      If 5-year history is not available (e.g. newer IPO or missing statements), calculates median
+      from available shorter history or gracefully falls back to neutral (is_historically_expensive = False).
+    """
+    res: Dict[str, Any] = {
+        "current_ev_ebit": None,
+        "ev_ebit_5y_median": None,
+        "ev_ebit_premium_pct": None,
+        "is_historically_expensive": False,
+        "historical_ev_ebit_years_count": 0,
+    }
+
+    # Respect explicit overrides (e.g. from unit tests or point-in-time datasets)
+    if override_current_ev_ebit is not None and override_5y_median is not None:
+        curr = round(float(override_current_ev_ebit), 2)
+        med = round(float(override_5y_median), 2)
+        res["current_ev_ebit"] = curr
+        res["ev_ebit_5y_median"] = med
+        res["historical_ev_ebit_years_count"] = 5
+        if med > 0:
+            prem = round(((curr - med) / med) * 100.0, 2)
+            res["ev_ebit_premium_pct"] = prem
+            res["is_historically_expensive"] = (prem > 20.0)
+        return res
+
+    info_dict = info if isinstance(info, dict) else {}
+
+    # 1. Determine current EV & EBIT
+    curr_ev = current_ev
+    if curr_ev is None or curr_ev <= 0:
+        ev_raw = info_dict.get("enterpriseValue")
+        if isinstance(ev_raw, (int, float)) and ev_raw > 0:
+            curr_ev = float(ev_raw)
+
+    curr_ebit = current_ebit
+    if curr_ebit is None or curr_ebit <= 0:
+        op_raw = info_dict.get("operatingIncome") or info_dict.get("ebitda")
+        if isinstance(op_raw, (int, float)) and op_raw > 0:
+            curr_ebit = float(op_raw)
+
+    curr_ev_ebit = None
+    if curr_ev is not None and curr_ebit is not None and curr_ebit > 0:
+        curr_ev_ebit = round(curr_ev / curr_ebit, 2)
+    elif info_dict.get("enterpriseToEbitda"):
+        try:
+            val = float(info_dict["enterpriseToEbitda"])
+            if val > 0:
+                curr_ev_ebit = round(val, 2)
+        except Exception:
+            pass
+
+    res["current_ev_ebit"] = curr_ev_ebit
+
+    # 2. Compute historical annual EV/EBIT for up to 5 annual periods
+    hist_ev_ebits: List[float] = []
+    if inc_a is not None and isinstance(inc_a, pd.DataFrame) and not inc_a.empty:
+        try:
+            hist = None
+            if hasattr(t, "history"):
+                try:
+                    hist = t.history(period="5y")
+                except Exception:
+                    hist = None
+
+            mcap_val = float(info_dict.get("marketCap") or (curr_ev if curr_ev else 0.0) or 0.0)
+            px_val = float(info_dict.get("currentPrice") or info_dict.get("previousClose") or 1.0)
+            shares = float(info_dict.get("sharesOutstanding") or 0.0)
+            if shares <= 0 and mcap_val > 0 and px_val > 0:
+                shares = mcap_val / px_val
+
+            if hist is not None and isinstance(hist, pd.DataFrame) and not hist.empty and shares > 0:
+                hist_naive = hist.index.tz_localize(None) if hasattr(hist.index, "tz_localize") and hist.index.tz is not None else hist.index
+
+                for col in list(inc_a.columns)[:5]:
+                    y_ebit = _extract_metric_from_df(inc_a[[col]], _EBIT_KEYS)
+                    if y_ebit is None or y_ebit <= 0:
+                        y_ebit = _extract_metric_from_df(inc_a[[col]], ["EBITDA", "Normalized EBITDA", "Operating Income"])
+
+                    y_debt = 0.0
+                    y_cash = 0.0
+                    if bs_a is not None and isinstance(bs_a, pd.DataFrame) and col in bs_a.columns:
+                        d_val = _extract_metric_from_df(bs_a[[col]], _DEBT_KEYS)
+                        if d_val is not None:
+                            y_debt = float(d_val)
+                        c_val = _extract_metric_from_df(bs_a[[col]], _CASH_KEYS)
+                        if c_val is not None:
+                            y_cash = float(c_val)
+
+                    target_dt = pd.to_datetime(col)
+                    if hasattr(target_dt, "tz_localize") and target_dt.tz is not None:
+                        target_dt = target_dt.tz_localize(None)
+
+                    diffs = abs(hist_naive - target_dt)
+                    if not diffs.empty:
+                        nearest_idx = diffs.argmin()
+                        p = float(hist["Close"].iloc[nearest_idx])
+                        if p > 0:
+                            hist_ev = (p * shares) + y_debt - y_cash
+                            if y_ebit and y_ebit > 0 and hist_ev > 0:
+                                ev_ebits.append(round(hist_ev / y_ebit, 2))
+        except Exception as e:
+            logger.debug(f"Historical EV/EBIT extraction exception: {e}")
+
+    if hist_ev_ebits:
+        med = round(float(statistics.median(hist_ev_ebits)), 2)
+        res["ev_ebit_5y_median"] = med
+        res["historical_ev_ebit_years_count"] = len(hist_ev_ebits)
+        if curr_ev_ebit is not None and med > 0:
+            prem = round(((curr_ev_ebit - med) / med) * 100.0, 2)
+            res["ev_ebit_premium_pct"] = prem
+            res["is_historically_expensive"] = (prem > 20.0)
+    else:
+        res["ev_ebit_5y_median"] = None
+        res["ev_ebit_premium_pct"] = None
+        res["is_historically_expensive"] = False
+
+    return res
 
 
 def get_hard_financials(ticker: str) -> Dict[str, Any]:
@@ -172,6 +321,15 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
     ins_pct = None
     net_ins = None
     has_positive_cash_flow = False
+    current_ev = None
+    current_ebit = None
+    current_ev_ebit = None
+    median_5y_ev_ebit = None
+    ev_ebit_premium_pct = None
+    is_historically_expensive = False
+    historical_ev_ebit_years_count = 0
+    avg_turnover_eur = None
+    liquidity_status = "LIQUID_OK" 
 
     result: Dict[str, Any] = {
         "ticker": cleaned_ticker,
@@ -557,11 +715,67 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             net_ins = info.get("netPercentInsiderShares") or info.get("netInsiderPurchasePercent")
             if isinstance(net_ins, (int, float)) and float(net_ins) > 0.0:
                 result["insider_buying_signal"] = True
+
+            # Average Daily Volume & Turnover in EUR (Liquidity Gate)
+            adv_shares = info.get("averageDailyVolume10Day") or info.get("averageVolume") or info.get("averageVolume10days")
+            px_cur = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+            if (
+                isinstance(adv_shares, (int, float))
+                and isinstance(px_cur, (int, float))
+                and adv_shares > 0
+                and px_cur > 0
+            ):
+                t_curr = str(info.get("currency") or "EUR").strip().upper()
+                turnover_local = float(adv_shares) * float(px_cur)
+                fx_to_eur = 1.0
+                if t_curr == "SEK":
+                    fx_to_eur = 1.0 / 11.30
+                elif t_curr == "NOK":
+                    fx_to_eur = 1.0 / 11.50
+                elif t_curr == "DKK":
+                    fx_to_eur = 1.0 / 7.46
+                elif t_curr == "USD":
+                    fx_to_eur = 1.0 / 1.08
+                avg_turnover_eur = round(turnover_local * fx_to_eur, 2)
+                result["avg_daily_turnover_eur"] = avg_turnover_eur
+
+            # Strict Liquidity Check: Bid-Ask Spread > 3.0% OR Turnover < 50,000 EUR
+            if result.get("bid_ask_spread_pct") is not None and float(result["bid_ask_spread_pct"]) > 3.0:
+                result["status"] = "REJECTED_LOW_LIQUIDITY"
+                result["liquidity_status"] = "REJECTED_LOW_LIQUIDITY"
+                result["errors"].append(f"REJECTED_LOW_LIQUIDITY: Bid-ask spread {float(result['bid_ask_spread_pct']):.2f}% > 3.0% threshold.")
+            elif result.get("avg_daily_turnover_eur") is not None and float(result["avg_daily_turnover_eur"]) < 50_000.0:
+                result["status"] = "REJECTED_LOW_LIQUIDITY"
+                result["liquidity_status"] = "REJECTED_LOW_LIQUIDITY"
+                result["errors"].append(f"REJECTED_LOW_LIQUIDITY: Average daily turnover {float(result['avg_daily_turnover_eur']):,.0f} EUR < 50,000 EUR threshold.")
+            else:
+                result["liquidity_status"] = "LIQUID_OK"
+
+            # Relative Valuation: EV/EBIT vs. 5-year Historical Median
+            curr_ev = info.get("enterpriseValue")
+            if curr_ev is None and mcap is not None and debt is not None and cash is not None:
+                curr_ev = float(mcap) + float(debt) - float(cash)
+            curr_ebit = op_inc if 'op_inc' in locals() and op_inc is not None else (info.get("operatingIncome") or ebitda)
+
+            rel_val = calculate_relative_ev_ebit(
+                t=t,
+                info=info,
+                bs_a=bs_a,
+                inc_a=inc_a,
+                current_ev=float(curr_ev) if curr_ev is not None else None,
+                current_ebit=float(curr_ebit) if curr_ebit is not None else None,
+            )
+            result["current_ev_ebit"] = rel_val.get("current_ev_ebit")
+            result["ev_ebit_5y_median"] = rel_val.get("ev_ebit_5y_median")
+            result["ev_ebit_premium_pct"] = rel_val.get("ev_ebit_premium_pct")
+            result["is_historically_expensive"] = rel_val.get("is_historically_expensive", False)
+            result["historical_ev_ebit_years_count"] = rel_val.get("historical_ev_ebit_years_count", 0)
         except Exception as e_extra:
             logger.debug(f"Tiered metrics extraction skipped for {cleaned_ticker}: {e_extra}")
 
         has_any_data = (cash is not None or ocf_val is not None or rev_curr is not None)
-        result["status"] = "OK" if has_any_data else "PARTIAL"
+        if result.get("status") != "REJECTED_LOW_LIQUIDITY":
+            result["status"] = "OK" if has_any_data else "PARTIAL" 
 
     except Exception as e:
         logger.warning(f"Could not retrieve hard financials for {cleaned_ticker}: {e}")

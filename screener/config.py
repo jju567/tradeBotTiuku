@@ -45,7 +45,7 @@ class ScreenerConfig:
     
     # Quantitative Risk Filter Defaults
     min_cash_runway_months: float = 18.0
-    max_bid_ask_spread_pct: float = 4.0
+    max_bid_ask_spread_pct: float = 3.0
     
     # Portfolio Splitting & Strategy Allocation Defaults
     core_capital_pct: float = 0.75       # 75% for long-term fundamental Core Tenbagger Hunting

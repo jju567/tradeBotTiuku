@@ -78,6 +78,7 @@ from screener.tiered_filters import (
     matches_universe_filter,
     get_market_cap_in_eur,
     get_market_cap_in_usd,
+    get_adv_in_eur,
 )
 from quant_analytics import calculate_top_picks_conviction
 
@@ -2006,12 +2007,25 @@ class MasterLiveTradingDaemon:
                     )
                 continue
 
-            # Bid-Ask Spread Guard: Reject illiquid traps with > 6.0% live spread
+            # Bid-Ask Spread Guard: Reject illiquid traps with > 3.0% live spread
             spread_pct = hard_facts.get("bid_ask_spread_pct")
-            if isinstance(spread_pct, (int, float)) and not isinstance(spread_pct, bool) and float(spread_pct) > 6.0:
+            if isinstance(spread_pct, (int, float)) and not isinstance(spread_pct, bool) and float(spread_pct) > 3.0:
                 logger.info(
-                    f"[{portfolio.config.portfolio_id}] 🛑 [SPREAD GUARD] Skipping {ticker}: "
-                    f"Live bid-ask spread {float(spread_pct):.2f}% > 6.0% threshold."
+                    f"[{portfolio.config.portfolio_id}] 🛑 [REJECTED_LOW_LIQUIDITY] Skipping {ticker}: "
+                    f"Live bid-ask spread {float(spread_pct):.2f}% > 3.0% threshold."
+                )
+                continue
+
+            # Minimum Daily Turnover Guard: Mandate >= 50,000 EUR / day
+            # (Average Daily Volume * Close Price converted to EUR)
+            adv_eur = get_adv_in_eur(meta, ticker, self.market_engine.fx_rates)
+            if adv_eur <= 0.0 and hard_facts.get("avg_daily_turnover_eur"):
+                adv_eur = float(hard_facts["avg_daily_turnover_eur"])
+
+            if (adv_eur > 0.0 and adv_eur < 50_000.0) or hard_facts.get("liquidity_status") == "REJECTED_LOW_LIQUIDITY":
+                logger.info(
+                    f"[{portfolio.config.portfolio_id}] 🛑 [REJECTED_LOW_LIQUIDITY] Skipping {ticker}: "
+                    f"Average daily turnover {adv_eur:,.0f} EUR < 50,000 EUR threshold."
                 )
                 continue
 
@@ -2121,6 +2135,18 @@ class MasterLiveTradingDaemon:
             if "midcap" in u_filter.lower():
                 # Core (Nordic_MidCap_Compounder): (capped_roe * 1.5) + (capped_ebit * 1.5) - (net_debt_to_ebitda * 5.0)
                 cand_score = (capped_roe * 1.5) + (capped_ebit * 1.5) - ((nd_val or 0.0) * 5.0)
+
+                # Relative Valuation Filter: EV/EBIT vs. 5-year historical median
+                # If current EV/EBIT is > 20% higher than its 5y historical median -> -20.0 pts penalty
+                is_expensive = bool(hard_facts.get("is_historically_expensive", False))
+                if is_expensive:
+                    prem_pct = hard_facts.get("ev_ebit_premium_pct")
+                    logger.info(
+                        f"[{portfolio.config.portfolio_id}] ⚠️ [VALUATION PENALTY] {ticker}: "
+                        f"Current EV/EBIT is +{prem_pct}% above its 5-year historical median. "
+                        f"Applying -20.0 pts penalty to candidate_score."
+                    )
+                    cand_score -= 20.0
             elif "us_" in u_filter.lower():
                 # Satellite 1 (US_MicroCap_Growth): capped_rev_yoy + (30.0 if is_profile_a) + (25.0 if nlp_verdict == "STRONG BUY")
                 is_prof_a = bool(hard_facts.get("is_profile_a", False))
@@ -2168,6 +2194,15 @@ class MasterLiveTradingDaemon:
                 entry_hard_facts["days_to_earnings"] = int(days_to_earn)
             if spread_pct is not None:
                 entry_hard_facts["bid_ask_spread_pct"] = round(float(spread_pct), 3)
+            if hard_facts.get("avg_daily_turnover_eur") is not None:
+                entry_hard_facts["avg_daily_turnover_eur"] = hard_facts.get("avg_daily_turnover_eur")
+            if hard_facts.get("current_ev_ebit") is not None:
+                entry_hard_facts["current_ev_ebit"] = hard_facts.get("current_ev_ebit")
+            if hard_facts.get("ev_ebit_5y_median") is not None:
+                entry_hard_facts["ev_ebit_5y_median"] = hard_facts.get("ev_ebit_5y_median")
+            if hard_facts.get("ev_ebit_premium_pct") is not None:
+                entry_hard_facts["ev_ebit_premium_pct"] = hard_facts.get("ev_ebit_premium_pct")
+            entry_hard_facts["is_historically_expensive"] = bool(hard_facts.get("is_historically_expensive", False))
 
             valid_candidates.append({
                 "ticker": ticker,

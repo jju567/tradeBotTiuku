@@ -249,6 +249,8 @@ def matches_nordic_midcap_compounder(
                 reasons.append("Net Debt > 0 but EBITDA <= 0 or missing")
 
     # 6. High Liquidity (tight spread / ADV >= 50,000 EUR)
+    if hard_facts.get("liquidity_status") == "REJECTED_LOW_LIQUIDITY":
+        reasons.append("REJECTED_LOW_LIQUIDITY: Bid-ask spread > 3.0% or turnover < 50,000 EUR")
     adv_eur = get_adv_in_eur(meta, ticker, fx_rates)
     if adv_eur < 50_000.0:
         reasons.append(f"ADV {adv_eur:,.0f} EUR < 50,000 EUR threshold")
@@ -311,6 +313,9 @@ def matches_us_microcap_growth(
 
     if has_dividend:
         reasons.append("Dividend yield detected > 0.0% (Forbidden on OST)")
+
+    if hard_facts.get("liquidity_status") == "REJECTED_LOW_LIQUIDITY":
+        reasons.append("REJECTED_LOW_LIQUIDITY: Bid-ask spread > 3.0% or turnover < 50,000 EUR")
 
     # 3b. Geographic VIE / shell risk guard: Reject China, Hong Kong, Cayman Islands
     country = str(hard_facts.get("country") or meta.get("country") or "").strip()
@@ -411,6 +416,8 @@ def matches_nordic_microcap_catalyst(
         reasons.append(f"Market Cap {mcap_eur:,.0f} EUR >= 150M EUR (Belongs to Core Mid-Cap tier)")
 
     # 2. Mandatory EUR liquidity gate for all candidates (Profile A/B and Turnaround)
+    if hard_facts.get("liquidity_status") == "REJECTED_LOW_LIQUIDITY":
+        reasons.append("REJECTED_LOW_LIQUIDITY: Bid-ask spread > 3.0% or turnover < 50,000 EUR")
     adv_eur = get_adv_in_eur(meta, ticker, fx_rates)
     if adv_eur < 20_000.0:
         reasons.append(f"ADV {adv_eur:,.0f} EUR < 20,000 EUR threshold")

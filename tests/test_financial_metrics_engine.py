@@ -263,3 +263,85 @@ def test_cash_burner_rejection_negative_cash_flow():
     passed_us, reasons_us = matches_us_microcap_growth("BURN_US", cash_burner_facts, meta_us)
     assert not passed_us
     assert any("runway" in r or "cash" in r.lower() for r in reasons_us)
+
+
+def test_relative_ev_ebit_valuation_filter():
+    """Verifies that relative EV/EBIT > 20% above 5y median is flagged as historically expensive."""
+    from screener.financial_metrics_engine import calculate_relative_ev_ebit
+
+    # Case 1: Expensive (24.0 vs 15.0 -> +60.0% > 20%)
+    res_exp = calculate_relative_ev_ebit(
+        t=None,
+        override_current_ev_ebit=24.0,
+        override_5y_median=15.0,
+    )
+    assert res_exp["is_historically_expensive"] is True
+    assert res_exp["ev_ebit_premium_pct"] == 60.0
+
+    # Case 2: Fair/Cheap (14.0 vs 15.0 -> -6.67% <= 20%)
+    res_cheap = calculate_relative_ev_ebit(
+        t=None,
+        override_current_ev_ebit=14.0,
+        override_5y_median=15.0,
+    )
+    assert res_cheap["is_historically_expensive"] is False
+    assert res_cheap["ev_ebit_premium_pct"] < 0.0
+
+    # Case 3: Missing 5y history -> neutral fallback without error or penalty
+    res_missing = calculate_relative_ev_ebit(
+        t=None,
+        current_ev=200_000_000.0,
+        current_ebit=10_000_000.0,
+    )
+    assert res_missing["is_historically_expensive"] is False
+    assert res_missing["ev_ebit_premium_pct"] is None
+
+
+def test_bid_ask_spread_and_liquidity_gate():
+    """Verifies that spread > 3.0% or turnover < 50,000 EUR flags REJECTED_LOW_LIQUIDITY."""
+    from unittest.mock import MagicMock
+    from screener.financial_metrics_engine import get_hard_financials
+
+    # Case 1: Wide spread 4.0% (> 3.0%)
+    mock_wide = MagicMock()
+    mock_wide.quarterly_balance_sheet = None
+    mock_wide.balance_sheet = None
+    mock_wide.quarterly_cashflow = None
+    mock_wide.cashflow = None
+    mock_wide.quarterly_financials = None
+    mock_wide.financials = None
+    mock_wide.fast_info = None
+    mock_wide.info = {
+        "bid": 9.60,
+        "ask": 10.00,  # spread = (10 - 9.60) / 10 = 4.0% > 3.0%
+        "averageDailyVolume10Day": 100_000,
+        "currentPrice": 10.0,
+        "currency": "EUR",
+    }
+    with patch("yfinance.Ticker", return_value=mock_wide):
+        res = get_hard_financials("WIDE_SPREAD")
+        assert res["bid_ask_spread_pct"] == 4.0
+        assert res["liquidity_status"] == "REJECTED_LOW_LIQUIDITY"
+        assert res["status"] == "REJECTED_LOW_LIQUIDITY"
+
+    # Case 2: Low daily turnover 30,000 EUR (< 50,000 EUR)
+    mock_illiquid = MagicMock()
+    mock_illiquid.quarterly_balance_sheet = None
+    mock_illiquid.balance_sheet = None
+    mock_illiquid.quarterly_cashflow = None
+    mock_illiquid.cashflow = None
+    mock_illiquid.quarterly_financials = None
+    mock_illiquid.financials = None
+    mock_illiquid.fast_info = None
+    mock_illiquid.info = {
+        "bid": 9.95,
+        "ask": 10.00,  # spread = 0.5% (good)
+        "averageDailyVolume10Day": 3_000,
+        "currentPrice": 10.0,  # turnover = 30,000 EUR < 50,000 EUR
+        "currency": "EUR",
+    }
+    with patch("yfinance.Ticker", return_value=mock_illiquid):
+        res_liq = get_hard_financials("ILLIQUID")
+        assert res_liq["avg_daily_turnover_eur"] == 30_000.0
+        assert res_liq["liquidity_status"] == "REJECTED_LOW_LIQUIDITY"
+        assert res_liq["status"] == "REJECTED_LOW_LIQUIDITY"

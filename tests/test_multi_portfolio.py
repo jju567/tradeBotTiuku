@@ -902,7 +902,7 @@ def test_p13_sub_strategies_screening_execution(tmp_path):
             "market": "SE",
             "market_cap_eur": 60_000_000.0,
             "currency": "SEK",
-            "adv_20d_local": 500_000.0,
+            "adv_20d_local": 600_000.0,
             "current_price": 20.0,
         },
     }
@@ -1872,6 +1872,120 @@ def test_p13_earnings_gate_spread_guard_and_insider_bonus(tmp_path):
     assert active[0]["Entry_Hard_Facts"]["insider_buying_signal"] is True
     assert active[0]["Entry_Hard_Facts"]["bid_ask_spread_pct"] == pytest.approx(0.45)
     assert daemon.market_engine.operational_metrics.get("earnings_gate_blocks") == 1
+
+
+def test_p13_core_relative_valuation_penalty_and_liquidity_gates(tmp_path):
+    """
+    Verifies that:
+    1. Core candidates with EV/EBIT > 20% above 5y median receive -20.0 pts penalty.
+    2. Candidates with spread > 3.0% are rejected (status: REJECTED_LOW_LIQUIDITY).
+    3. Candidates with daily turnover < 50,000 EUR are rejected.
+    """
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.operational_metrics = {}
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 5500,
+                "slots": 1,
+                "slot_sizes": [1800],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    daemon.market_engine.universe_metadata = {
+        "FAIR_VAL.HE": {
+            "market": "FI",
+            "market_cap_eur": 300_000_000.0,
+            "currency": "EUR",
+            "adv_20d_local": 200_000.0,
+            "current_price": 20.0,
+        },
+        "EXPENSIVE.HE": {
+            "market": "FI",
+            "market_cap_eur": 300_000_000.0,
+            "currency": "EUR",
+            "adv_20d_local": 200_000.0,
+            "current_price": 20.0,
+        },
+        "SPREAD_3_5.HE": {
+            "market": "FI",
+            "market_cap_eur": 300_000_000.0,
+            "currency": "EUR",
+            "adv_20d_local": 200_000.0,
+            "current_price": 20.0,
+        },
+        "LOW_ADV.HE": {
+            "market": "FI",
+            "market_cap_eur": 300_000_000.0,
+            "currency": "EUR",
+            "adv_20d_local": 20_000.0,  # 20k < 50k threshold
+            "current_price": 20.0,
+        },
+    }
+    daemon.market_engine.prices_cache = {
+        "FAIR_VAL.HE": 20.0,
+        "EXPENSIVE.HE": 20.0,
+        "SPREAD_3_5.HE": 20.0,
+        "LOW_ADV.HE": 20.0,
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "FAIR_VAL.HE": {
+            "roe": 0.20,
+            "ebit_margin": 0.20,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "bid_ask_spread_pct": 0.8,
+            "current_ev_ebit": 15.0,
+            "ev_ebit_5y_median": 15.0,
+            "ev_ebit_premium_pct": 0.0,
+            "is_historically_expensive": False,
+        },
+        "EXPENSIVE.HE": {
+            "roe": 0.25,
+            "ebit_margin": 0.25,  # base score 25*1.5 + 25*1.5 = 75.0 > FAIR_VAL (60.0)
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "bid_ask_spread_pct": 0.8,
+            "current_ev_ebit": 24.0,
+            "ev_ebit_5y_median": 15.0,
+            "ev_ebit_premium_pct": 60.0,
+            "is_historically_expensive": True,  # -20.0 pts penalty -> 75.0 - 20.0 = 55.0 < FAIR_VAL (60.0)
+        },
+        "SPREAD_3_5.HE": {
+            "roe": 0.30,
+            "ebit_margin": 0.30,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "bid_ask_spread_pct": 3.5,  # > 3.0% threshold -> must be rejected
+        },
+        "LOW_ADV.HE": {
+            "roe": 0.30,
+            "ebit_margin": 0.30,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "bid_ask_spread_pct": 0.5,
+        },
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache[t]
+
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 1
+    active = p.active_positions()
+    assert len(active) == 1
+    # FAIR_VAL (score 60.0) must beat EXPENSIVE (75.0 - 20.0 = 55.0)
+    assert active[0]["Ticker"] == "FAIR_VAL.HE"
+    assert active[0]["Candidate_Score"] == pytest.approx(60.0)
+
 
 
 
