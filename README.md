@@ -36,7 +36,7 @@
 ---
 
 ### 2. 🔍 Dual-Lens Mikroyhtiöseulonta & Massa-analyysi (`batch_processor.py`)
-> *Yksityiskohtainen kuvaus poimintalogiikasta löytyy dokumentista: [docs/OSAKEPOIMINTALOGIIKKA.md](docs/OSAKEPOIMINTALOGIIKKA.md). Täydellinen testausmetodologia ja tulokset on koottu raporttiin: [docs/BACKTEST_RAPORTTI.md](docs/BACKTEST_RAPORTTI.md).*
+> *Yksityiskohtainen kuvaus poimintalogiikasta löytyy dokumentista: [docs/OSAKEPOIMINTALOGIIKKA.md](docs/OSAKEPOIMINTALOGIIKKA.md). Täydellinen testausmetodologia ja tulokset on koottu raporttiin: [docs/BACKTEST_RAPORTTI.md](docs/BACKTEST_RAPORTTI.md). Kriittinen Devil's Advocate -auditointi kaupankäyntiparametreista, vuotokohdista ja optimistisista oletuksista löytyy dokumentista: [docs/DEVILS_ADVOCATE_AUDIT.md](docs/DEVILS_ADVOCATE_AUDIT.md).*
 
 - **Mikroyhtiöuniversumin Eristys (`scripts/clean_universe_builder.py`) & Dynaaminen Universumipäivitys (`screener/dynamic_universe_updater.py`)**:
   - Hakee reaaliaikaiset FX-kurssit ja suodattaa osakeuniversumin tiukasti alle $300M USD markkina-arvoon (`< $300M USD`) estäen suuryhtiökontaminaation.
