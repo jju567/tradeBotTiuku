@@ -469,3 +469,31 @@ def test_nordic_midcap_compounder_rejects_financial_sector_asset_managers():
     passed, reasons = matches_nordic_midcap_compounder("EQV1V.HE", hf, meta)
     assert passed is False
     assert any("REJECTED_SECTOR_FINANCIAL" in r for r in reasons)
+
+
+def test_nordic_midcap_compounder_soft_threshold_buffer_vs_hard_cliff():
+    """
+    Verifies that a high-margin compounder with ROE = 14.8% (inside the [13.5%, 15.0%] soft buffer,
+    like CEVI.ST) is not rejected by a 0.2%-pt hard cliff, gets flagged with SOFT_THRESHOLD_BUFFER,
+    and receives a smooth linear penalty in calculate_candidate_score().
+    """
+    from screener.financial_metrics_engine import calculate_candidate_score
+
+    meta = {"market": "SE", "market_cap_eur": 318_000_000.0, "adv_20d_local": 2_000_000.0, "currency": "SEK"}
+    hf_cevi = {
+        "roe": 0.148,
+        "roic": 0.149,
+        "ebit_margin": 0.230,
+        "free_cash_flow": 150_000_000.0,
+        "net_debt_to_ebitda": 0.0,
+        "current_ev_ebit": 13.7,
+        "ev_ebit_5y_median": 12.1,
+        "ev_ebit_premium_pct": 13.7,
+    }
+    passed, reasons = matches_nordic_midcap_compounder("CEVI.ST", hf_cevi, meta)
+    assert passed is True, f"Expected soft buffer pass, got reasons: {reasons}"
+    assert "SOFT_THRESHOLD_BUFFER" in hf_cevi.get("audit_flags", [])
+
+    score, bd = calculate_candidate_score("CEVI.ST", hf_cevi, universe_filter="Nordic_MidCap_Compounder")
+    assert bd["soft_threshold_penalty_pts"] < 0.0
+    assert 0.0 <= score <= 100.0

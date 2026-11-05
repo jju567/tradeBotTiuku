@@ -2374,6 +2374,12 @@ class MasterLiveTradingDaemon:
                 entry_hard_facts["cash_runway_years"] = hard_facts.get("cash_runway_years")
             if hard_facts.get("share_dilution_pct") is not None:
                 entry_hard_facts["share_dilution_pct"] = hard_facts.get("share_dilution_pct")
+            if hard_facts.get("latest_statement_date") is not None:
+                entry_hard_facts["latest_statement_date"] = hard_facts.get("latest_statement_date")
+            if hard_facts.get("data_age_days") is not None:
+                entry_hard_facts["data_age_days"] = hard_facts.get("data_age_days")
+            if (hard_facts.get("data_quality") or {}).get("metrics_period_basis") is not None:
+                entry_hard_facts["metrics_period_basis"] = (hard_facts.get("data_quality") or {}).get("metrics_period_basis")
             if hard_facts.get("audit_flags"):
                 entry_hard_facts["audit_flags"] = hard_facts.get("audit_flags")
             if hard_facts.get("audit_warning"):
@@ -2539,8 +2545,8 @@ class MasterLiveTradingDaemon:
 
                     eff_allocation_acc = min(target_alloc_acc, available_cash)
 
-                    # Near-Tie Sector Diversification Rule (<= 3.0 pts band):
-                    # When top candidates are within 3.0 points of each other, prefer a candidate from an unheld sector
+                    # Near-Tie Sector Diversification Rule (<= 5.0 pts band):
+                    # When top candidates are within 5.0 points of each other, prefer a candidate from an unheld sector
                     # rather than mechanically buying multiple stocks from the exact same sector.
                     held_sectors = {
                         str(pos.get("Sector") or (pos.get("Entry_Hard_Facts") or {}).get("sector") or "").strip().lower()
@@ -2553,7 +2559,7 @@ class MasterLiveTradingDaemon:
                         if top_sec in held_sectors:
                             for idx_alt in range(1, len(valid_candidates)):
                                 alt_c = valid_candidates[idx_alt]
-                                if (top_s - float(alt_c.get("score") or 0.0)) > 3.0:
+                                if (top_s - float(alt_c.get("score") or 0.0)) > 5.0:
                                     break
                                 alt_sec = str((alt_c.get("hard_facts") or {}).get("sector") or (alt_c.get("meta") or {}).get("sector") or "").strip().lower()
                                 if alt_sec and alt_sec not in held_sectors:
@@ -2561,7 +2567,7 @@ class MasterLiveTradingDaemon:
                                     logger.info(
                                         f"[{cfg.portfolio_id}] 🌐 [SECTOR DIVERSIFICATION] Promoting {alt_c['ticker']} "
                                         f"(score={alt_c['score']:.2f}, sector={alt_sec}) over {valid_candidates[0]['ticker']} "
-                                        f"(score={top_s:.2f}, already-held sector={top_sec}) within 3.0 pt tie band."
+                                        f"(score={top_s:.2f}, already-held sector={top_sec}) within 5.0 pt tie band."
                                     )
                                     break
 

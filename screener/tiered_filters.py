@@ -202,22 +202,32 @@ def matches_nordic_midcap_compounder(
     elif mcap_eur > 2_000_000_000.0:
         reasons.append(f"Market Cap {mcap_eur:,.0f} EUR > 2,000M EUR (Stagnant Mega-Cap)")
 
-    # 2. ROE > 15%
+    # 2. ROE > 15% (with Soft Threshold Buffer [13.5%, 15.0%] penalized in score rather than hard cliff)
     roe = hard_facts.get("roe")
+    roic = hard_facts.get("roic")
+    roic_val = (float(roic) * 100.0 if abs(float(roic)) <= 2.0 else float(roic)) if roic is not None else 0.0
     if roe is not None:
         roe_val = roe * 100.0 if abs(roe) <= 2.0 else roe
-        if roe_val <= 15.0:
-            reasons.append(f"ROE {roe_val:.1f}% <= 15.0%")
+        if roe_val < 13.5 and roic_val < 15.0:
+            reasons.append(f"ROE {roe_val:.1f}% <= 15.0% (below 13.5% soft threshold buffer)")
+        elif roe_val <= 15.0:
+            flags = hard_facts.setdefault("audit_flags", [])
+            if "SOFT_THRESHOLD_BUFFER" not in flags:
+                flags.append("SOFT_THRESHOLD_BUFFER")
     else:
         # Fallback check net income / equity if available
         reasons.append("ROE data missing")
 
-    # 3. EBIT Margin > 12%
+    # 3. EBIT Margin > 12% (with Soft Threshold Buffer [10.5%, 12.0%] penalized in score rather than hard cliff)
     ebit_margin = hard_facts.get("ebit_margin") or hard_facts.get("operating_margin")
     if ebit_margin is not None:
         ebit_val = ebit_margin * 100.0 if abs(ebit_margin) <= 2.0 else ebit_margin
-        if ebit_val <= 12.0:
-            reasons.append(f"EBIT Margin {ebit_val:.1f}% <= 12.0%")
+        if ebit_val < 10.5:
+            reasons.append(f"EBIT Margin {ebit_val:.1f}% <= 12.0% (below 10.5% soft threshold buffer)")
+        elif ebit_val <= 12.0:
+            flags = hard_facts.setdefault("audit_flags", [])
+            if "SOFT_THRESHOLD_BUFFER" not in flags:
+                flags.append("SOFT_THRESHOLD_BUFFER")
     else:
         # Fallback check gross margin
         gm = hard_facts.get("gross_margin_pct")
@@ -471,9 +481,15 @@ def matches_nordic_microcap_catalyst(
     elif mcap_eur >= 150_000_000.0:
         reasons.append(f"Market Cap {mcap_eur:,.0f} EUR >= 150M EUR (Belongs to Core Mid-Cap tier)")
 
-    # 2. Mandatory EUR liquidity gate for all candidates (Profile A/B and Turnaround)
-    if hard_facts.get("liquidity_status") == "REJECTED_LOW_LIQUIDITY":
-        reasons.append("REJECTED_LOW_LIQUIDITY: Bid-ask spread > 3.0% or turnover < 50,000 EUR")
+    # 2. Mandatory EUR liquidity gate for all Satellite candidates (Spread <= 3.0% and ADV/Turnover >= 20,000 EUR)
+    spread_pct = hard_facts.get("bid_ask_spread_pct")
+    turnover_eur = hard_facts.get("avg_daily_turnover_eur")
+    if spread_pct is not None and float(spread_pct) > 3.0:
+        reasons.append(f"REJECTED_LOW_LIQUIDITY: Bid-ask spread {float(spread_pct):.2f}% > 3.0% threshold")
+    elif turnover_eur is not None and float(turnover_eur) < 20_000.0:
+        reasons.append(f"REJECTED_LOW_LIQUIDITY: Average daily turnover {float(turnover_eur):,.0f} EUR < 20,000 EUR threshold")
+    elif hard_facts.get("liquidity_status") == "REJECTED_LOW_LIQUIDITY" and spread_pct is None and turnover_eur is None:
+        reasons.append("REJECTED_LOW_LIQUIDITY: Bid-ask spread > 3.0% or turnover < 20,000 EUR")
     adv_eur = get_adv_in_eur(meta, ticker, fx_rates)
     if adv_eur < 20_000.0:
         reasons.append(f"ADV {adv_eur:,.0f} EUR < 20,000 EUR threshold")

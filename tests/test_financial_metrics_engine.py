@@ -622,3 +622,104 @@ def test_missing_analyst_count_gets_zero_neglect_bonus_and_ma_dilution_gate():
     )
     assert passed_core is False
     assert any("REJECTED_MA_DILUTION_MANUAL_REVIEW" in r for r in reasons_core)
+
+
+@patch("screener.financial_metrics_engine.yf.Ticker")
+def test_roic_formula_net_cash_does_not_shrink_invested_capital(mock_ticker):
+    """
+    Regression test for ROIC denominator:
+    Invested Capital = Stockholders' Equity + max(0.0, Total_Debt - Cash).
+    When Cash > Total_Debt (net cash), excess cash MUST NOT be subtracted from Equity!
+    """
+    mock_inst = MagicMock()
+    mock_ticker.return_value = mock_inst
+
+    # Equity = 100M, Debt = 10M, Cash = 60M (Net Cash = 50M), EBIT = 20M -> NOPAT = 20M * (1 - 0.206) = 15.88M
+    # Correct Invested Capital = 100M + max(0, 10M - 60M) = 100M -> ROIC = 15.88% (0.1588)
+    # (Old buggy formula subtracted 50M net cash from 100M equity -> 50M IC -> 31.76% ROIC!)
+    bs = pd.DataFrame(
+        {"2026-06-30": [60_000_000.0, 10_000_000.0, 100_000_000.0]},
+        index=["Cash And Cash Equivalents", "Total Debt", "Stockholders Equity"],
+    )
+    mock_inst.quarterly_balance_sheet = bs
+    mock_inst.balance_sheet = bs
+
+    cf = pd.DataFrame({"2026-06-30": [15_000_000.0]}, index=["Operating Cash Flow"])
+    mock_inst.quarterly_cashflow = cf
+    mock_inst.cashflow = cf
+
+    inc = pd.DataFrame(
+        {
+            "2026-06-30": [100_000_000.0, 20_000_000.0, 16_000_000.0],
+            "2025-06-30": [90_000_000.0, 18_000_000.0, 14_000_000.0],
+        },
+        index=["Total Revenue", "Operating Income", "Net Income"],
+    )
+    mock_inst.financials = inc
+    mock_inst.quarterly_financials = None
+    mock_inst.info = {}
+
+    res_net_cash = get_hard_financials("CASHRICH.ST")
+    assert res_net_cash["roic"] == pytest.approx(0.1588, abs=0.0005)
+
+    # Increasing cash from 60M to 90M must NOT change ROIC (since net debt remains 0)
+    bs_more_cash = pd.DataFrame(
+        {"2026-06-30": [90_000_000.0, 10_000_000.0, 100_000_000.0]},
+        index=["Cash And Cash Equivalents", "Total Debt", "Stockholders Equity"],
+    )
+    mock_inst.quarterly_balance_sheet = bs_more_cash
+    mock_inst.balance_sheet = bs_more_cash
+    res_more_cash = get_hard_financials("CASHRICH.ST")
+    assert res_more_cash["roic"] == pytest.approx(res_net_cash["roic"], abs=0.0001)
+
+
+def test_dual_class_ab_shares_no_false_dilution_and_satellite_ma_rollup_haircut():
+    """
+    Verifies:
+    1. check_share_dilution() does not trigger a false positive when Yahoo reports B-shares in
+       `sharesOutstanding` (9.12M) and A+B total shares in `impliedSharesOutstanding` (10.56M) /
+       `Basic Average Shares` (10.56M) (CEVI.ST dual-class share regression).
+    2. Satellite scoring (`Nordic_MicroCap_Catalyst`) caps growth points to <= 3.5 pts for unprofitable
+       M&A roll-up companies (`NTECH.ST` with +56.5% growth, ROE -0.9%, EV/EBIT 145.8x).
+    """
+    from screener.financial_metrics_engine import check_share_dilution, calculate_candidate_score
+
+    inc_a = pd.DataFrame(
+        {
+            "2025-12-31": [10_555_000.0, 10_555_000.0],
+            "2024-12-31": [10_555_000.0, 10_555_000.0],
+        },
+        index=["Basic Average Shares", "Diluted Average Shares"],
+    )
+    bs_a = pd.DataFrame(
+        {
+            "2025-12-31": [10_555_000.0],
+            "2024-12-31": [10_555_000.0],
+        },
+        index=["Ordinary Shares Number"],
+    )
+    info_cevi = {
+        "sharesOutstanding": 9_116_680,         # B-shares only
+        "impliedSharesOutstanding": 10_555_000, # Total A+B shares
+    }
+    dil_res = check_share_dilution(t=None, info=info_cevi, bs_a=bs_a, inc_a=inc_a)
+    assert dil_res["has_share_dilution"] is False
+    assert dil_res["share_dilution_pct"] == pytest.approx(0.0, abs=0.01)
+
+    # Satellite M&A Roll-up Haircut (NTECH.ST-like case)
+    ntech_hf = {
+        "roe": -0.009,
+        "roic": 0.015,
+        "ebit_margin": 0.033,
+        "revenue_growth_yoy_pct": 49.9,
+        "revenue_growth_annual_yoy_pct": 71.7,
+        "revenue_cagr_3y_pct": 50.0,
+        "current_ev_ebit": 145.8,
+        "net_debt_to_ebitda": 0.0,
+        "fcf_yield_pct": 4.2,
+        "analyst_count": None,
+        "is_profile_b": True,
+    }
+    s_ntech, bd_ntech = calculate_candidate_score("NTECH.ST", ntech_hf, universe_filter="Nordic_MicroCap_Catalyst")
+    assert bd_ntech["growth_pts"] <= 3.5
+    assert bd_ntech["manual_review_required"] is True

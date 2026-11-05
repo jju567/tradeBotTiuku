@@ -240,7 +240,12 @@ def calculate_relative_ev_ebit(
             hist = None
             if hasattr(t, "history"):
                 try:
-                    hist = t.history(period="5y")
+                    hist = t.history(period="5y", auto_adjust=False)
+                except TypeError:
+                    try:
+                        hist = t.history(period="5y")
+                    except Exception:
+                        hist = None
                 except Exception:
                     hist = None
 
@@ -948,7 +953,7 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
 
         # ---- 6. Data Freshness Check ----
         latest_dt = None
-        for cand_df in [bs_q, inc_q, cf_q]:
+        for cand_df in [bs_q, inc_q, cf_q, inc_a, bs_a, cf_a]:
             if cand_df is not None and not cand_df.empty and len(cand_df.columns) > 0:
                 try:
                     c_dt = pd.to_datetime(cand_df.columns[0]).tz_localize(None)
@@ -982,9 +987,16 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             ebitda_ttm_4q = _extract_4q_ttm_from_df(inc_q, _ebitda_keys_list)
             net_inc_ttm_4q = _extract_4q_ttm_from_df(inc_q, _net_inc_keys_list)
 
-            ebit_ann = _extract_metric_from_df(inc_a, _ebit_keys_list)
-            ebitda_ann = _extract_metric_from_df(inc_a, _ebitda_keys_list)
-            net_inc_ann = _extract_metric_from_df(inc_a, _net_inc_keys_list)
+            inc_a_latest_col = inc_a.iloc[:, [0]] if (inc_a is not None and not inc_a.empty and len(inc_a.columns) > 0) else inc_a
+            ebit_ann = _extract_metric_from_df(inc_a_latest_col, _ebit_keys_list)
+            if ebit_ann is None:
+                ebit_ann = _extract_metric_from_df(inc_a, _ebit_keys_list)
+            ebitda_ann = _extract_metric_from_df(inc_a_latest_col, _ebitda_keys_list)
+            if ebitda_ann is None:
+                ebitda_ann = _extract_metric_from_df(inc_a, _ebitda_keys_list)
+            net_inc_ann = _extract_metric_from_df(inc_a_latest_col, _net_inc_keys_list)
+            if net_inc_ann is None:
+                net_inc_ann = _extract_metric_from_df(inc_a, _net_inc_keys_list)
 
             if rev_ttm_4q is not None and rev_ttm_4q > 0 and ebit_ttm_4q is not None:
                 period_basis = "TTM_4Q"
@@ -1850,8 +1862,18 @@ def calculate_candidate_score(
     else:
         effective_growth_pct = rev_yoy_pct
 
-    # Organic vs. M&A-driven growth separation:
-    has_ma_divergence = "TTM_ACCELERATION_OR_MA_DIVERGENCE" in audit_flags or bool(hard_facts.get("is_ma_driven_growth", False))
+    # Organic vs. M&A-driven growth separation (applies to both Core and Satellite):
+    curr_ev_ebit_val = float(hard_facts.get("current_ev_ebit") or 0.0)
+    is_unprofitable_ma_rollup = (
+        hard_facts.get("organic_revenue_growth_pct") is None
+        and effective_growth_pct > 25.0
+        and (roe_pct < 8.0 or ebit_pct < 6.0 or curr_ev_ebit_val > 35.0)
+    )
+    has_ma_divergence = (
+        "TTM_ACCELERATION_OR_MA_DIVERGENCE" in audit_flags
+        or bool(hard_facts.get("is_ma_driven_growth", False))
+        or is_unprofitable_ma_rollup
+    )
     has_dilution_flag = "DILUTION_WARNING_RECENT_ISSUE" in audit_flags or bool(hard_facts.get("has_share_dilution", False))
     organic_rev_raw = hard_facts.get("organic_revenue_growth_pct")
     if organic_rev_raw is not None:
@@ -1907,6 +1929,15 @@ def calculate_candidate_score(
         qual_ebit_pts = round(_norm_linear(ebit_pct, 8.0, 45.0) * 18.0, 2)
         quality_pts = round(qual_roic_pts + qual_ebit_pts, 2)
 
+        # Soft threshold buffer penalty: if candidate passed via [13.5%..15.0%] ROE or [10.5%..12.0%] EBIT buffer,
+        # apply a smooth linear penalty (-1.5 pts per 1%-pt below 15% ROE / 12% EBIT margin) instead of a cliff.
+        soft_threshold_penalty_pts = 0.0
+        if 13.5 <= roe_pct < 15.0 and (roic_pct is None or roic_pct < 15.0):
+            soft_threshold_penalty_pts -= (15.0 - roe_pct) * 1.5
+        if 10.5 <= ebit_pct < 12.0:
+            soft_threshold_penalty_pts -= (12.0 - ebit_pct) * 1.5
+        soft_threshold_penalty_pts = round(soft_threshold_penalty_pts, 2)
+
         # 2. Growth (20 pts): Continuous on [-10%, +45%], capped at <= 12.0 pts if unverified M&A spike
         raw_g_pts = _norm_linear(effective_growth_pct, -10.0, 45.0) * 20.0
         if has_ma_divergence and organic_rev_raw is None:
@@ -1934,7 +1965,7 @@ def calculate_candidate_score(
         val_fcf_pts = _norm_linear(float(fcf_yield_pct), 0.0, 10.0) * 10.0
         valuation_pts = round(val_abs_pts + val_hist_pts + val_fcf_pts, 2)
 
-        raw_total = quality_pts + growth_pts + balance_sheet_pts + valuation_pts + insider_pts + dilution_penalty_pts
+        raw_total = quality_pts + growth_pts + balance_sheet_pts + valuation_pts + insider_pts + dilution_penalty_pts + soft_threshold_penalty_pts
         total_score = round(min(100.0, max(0.0, raw_total)), 2)
         breakdown = {
             "quality_pts": quality_pts,
@@ -1943,6 +1974,7 @@ def calculate_candidate_score(
             "valuation_pts": valuation_pts,
             "insider_pts": insider_pts,
             "dilution_penalty_pts": dilution_penalty_pts,
+            "soft_threshold_penalty_pts": soft_threshold_penalty_pts,
             "effective_growth_pct": round(effective_growth_pct, 2),
             "manual_review_required": manual_review_required,
             "total_score": total_score,
@@ -1958,8 +1990,8 @@ def calculate_candidate_score(
     is_profitable_smallcap = (roe_pct >= 5.0 and ebit_pct >= 5.0)
     raw_growth_pts = _norm_linear(effective_growth_pct if "nordic" in u_low else rev_yoy_pct, -5.0, 50.0) * 20.0
     if has_ma_divergence and organic_rev_raw is None:
-        raw_growth_pts = min(12.0, raw_growth_pts)
-    growth_pts = round(raw_growth_pts if is_profitable_smallcap or "us_" in u_low else raw_growth_pts * 0.40, 2)
+        raw_growth_pts = min(9.5, raw_growth_pts)
+    growth_pts = round(raw_growth_pts if is_profitable_smallcap or "us_" in u_low else raw_growth_pts * 0.35, 2)
 
     cf_yield_pts = _norm_linear(float(fcf_yield_pct), -2.0, 12.0) * 15.0
     solv_pts = (1.0 - _norm_linear(nd_val, -1.0, 3.0)) * 10.0
