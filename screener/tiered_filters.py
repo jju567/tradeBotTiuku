@@ -185,6 +185,16 @@ def matches_nordic_midcap_compounder(
     if not is_nordic:
         return False, ["Not a Nordic equity"]
 
+    # 0. Exclude Financial Sector & Asset Management (EV/EBIT and ROE are not comparable to industrial/software compounders)
+    sector_str = str(hard_facts.get("sector") or meta.get("sector") or "").strip().lower()
+    industry_str = str(hard_facts.get("industry") or meta.get("industry") or "").strip().lower()
+    if "financial" in sector_str or any(
+        kw in industry_str for kw in ("asset management", "banks", "insurance", "capital markets", "credit services")
+    ):
+        reasons.append(
+            f"REJECTED_SECTOR_FINANCIAL: Financial/Asset Management company ({hard_facts.get('sector') or hard_facts.get('industry')}) excluded from Core EV/EBIT compounder model"
+        )
+
     # 1. Market Cap in EUR: 150M <= MCAP <= 2000M
     mcap_eur = get_market_cap_in_eur(meta, hard_facts, fx_rates)
     if mcap_eur < 150_000_000.0:

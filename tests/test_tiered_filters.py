@@ -449,3 +449,23 @@ def test_nordic_microcap_catalyst_rejects_unverified_ai_turnaround():
     passed, reasons = matches_nordic_microcap_catalyst("AITURN.ST", hf, meta, nlp_verdict="WATCH_TURNAROUND")
     assert passed is False
     assert any("REJECTED_UNVERIFIED_CATALYST" in r for r in reasons)
+
+
+def test_nordic_midcap_compounder_rejects_financial_sector_asset_managers():
+    """
+    EQV1V.HE (eQ Oyj) regression test:
+    Financial Services / Asset Management companies must be excluded from Nordic_MidCap_Compounder
+    because EV/EBIT and ROE are not comparable to industrial/software compounders.
+    """
+    meta = {"market": "FI", "market_cap_eur": 192_000_000.0, "adv_20d_local": 150_000.0, "currency": "EUR"}
+    hf = {
+        "roe": 0.335,
+        "ebit_margin": 0.476,
+        "free_cash_flow": 25_000_000.0,
+        "net_debt_to_ebitda": 0.0,
+        "sector": "Financial Services",
+        "industry": "Asset Management",
+    }
+    passed, reasons = matches_nordic_midcap_compounder("EQV1V.HE", hf, meta)
+    assert passed is False
+    assert any("REJECTED_SECTOR_FINANCIAL" in r for r in reasons)

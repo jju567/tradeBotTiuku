@@ -258,7 +258,7 @@ def calculate_relative_ev_ebit(
                             if y_ebit and y_ebit > 0 and hist_ev > 0:
                                 hist_ev_ebits.append(round(hist_ev / y_ebit, 2))
         except Exception as e:
-            logger.debug(f"Historical EV/EBIT extraction exception: {e}")
+            logger.warning(f"Historical EV/EBIT extraction exception: {e}", exc_info=True)
 
     raw_op_inc = current_ebit if current_ebit is not None else (info_dict.get("operatingIncome") or info_dict.get("ebitda"))
     if (raw_op_inc is not None and isinstance(raw_op_inc, (int, float)) and raw_op_inc <= 0) or (curr_ev_ebit is not None and curr_ev_ebit <= 0):
@@ -746,19 +746,44 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         rev_curr: Optional[float] = None
         rev_prev: Optional[float] = None
 
-        # TASK-12: Prioritize 8-quarter TTM comparison from quarterly statements to reflect fresh results
+        # TASK-12: Date-verified YoY revenue comparison (prevents missing NaN quarter from shifting iloc[4] to Q2 vs Q3!)
         if inc_q is not None and not inc_q.empty:
             for key in _REVENUE_KEYS:
                 if key in inc_q.index:
                     series = inc_q.loc[key].dropna()
                     if len(series) >= 8:
-                        rev_curr = float(series.iloc[:4].sum())
-                        rev_prev = float(series.iloc[4:8].sum())
-                        break
-                    elif len(series) >= 5:
-                        rev_curr = float(series.iloc[0])
-                        rev_prev = float(series.iloc[4])
-                        break
+                        try:
+                            d0 = pd.to_datetime(series.index[0])
+                            d3 = pd.to_datetime(series.index[3])
+                            d4 = pd.to_datetime(series.index[4])
+                            d7 = pd.to_datetime(series.index[7])
+                            if 250 <= abs((d0 - d3).days) <= 300 and 330 <= abs((d0 - d4).days) <= 400 and 250 <= abs((d4 - d7).days) <= 300:
+                                rev_curr = float(series.iloc[:4].sum())
+                                rev_prev = float(series.iloc[4:8].sum())
+                                result["data_quality"]["rev_yoy_source"] = "ttm_8q_verified"
+                                break
+                        except Exception:
+                            pass
+                    if len(series) >= 2 and rev_curr is None:
+                        try:
+                            d_curr = pd.to_datetime(series.index[0])
+                            for q_idx in range(1, len(series)):
+                                d_cand = pd.to_datetime(series.index[q_idx])
+                                day_diff = abs((d_curr - d_cand).days)
+                                if 330 <= day_diff <= 400:
+                                    rev_curr = float(series.iloc[0])
+                                    rev_prev = float(series.iloc[q_idx])
+                                    result["data_quality"]["rev_yoy_source"] = f"quarterly_yoy_verified ({str(series.index[0])[:10]} vs {str(series.index[q_idx])[:10]})"
+                                    break
+                            if rev_curr is not None:
+                                break
+                        except Exception:
+                            # If index is non-date in synthetic test, only use iloc[4] if no NaNs were dropped before index 4
+                            raw_row = inc_q.loc[key]
+                            if len(raw_row) >= 5 and not raw_row.iloc[:5].isna().any():
+                                rev_curr = float(raw_row.iloc[0])
+                                rev_prev = float(raw_row.iloc[4])
+                                break
 
         if (rev_curr is None or rev_prev is None) and inc_a is not None and not inc_a.empty:
             for key in _REVENUE_KEYS:
@@ -897,11 +922,15 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             else:
                 result["dividend_yield"] = 0.0
 
-            # Exchange & Country
+            # Exchange, Country, Sector & Industry
             exch = info.get("exchange")
             result["exchange"] = str(exch).upper() if exch else None
             country_val = info.get("country")
             result["country"] = str(country_val).strip() if country_val else None
+            sec_val = info.get("sector")
+            result["sector"] = str(sec_val).strip() if sec_val else None
+            ind_val = info.get("industry")
+            result["industry"] = str(ind_val).strip() if ind_val else None
 
             # Market Cap
             mcap = (fast_info and getattr(fast_info, "market_cap", None)) or info.get("marketCap")
@@ -1018,7 +1047,8 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                     result["audit_flags"].append(d_flag)
                 result["audit_flag"] = d_flag
         except Exception as e_extra:
-            logger.debug(f"Tiered metrics extraction skipped for {cleaned_ticker}: {e_extra}")
+            logger.warning(f"Tiered metrics extraction error for {cleaned_ticker}: {e_extra}", exc_info=True)
+            result["errors"].append(f"TIERED_METRICS_ERROR: {e_extra}")
 
         has_any_data = (cash is not None or ocf_val is not None or rev_curr is not None)
         if result.get("status") not in ("REJECTED_LOW_LIQUIDITY", "REJECTED_LOW_RUNWAY"):
@@ -1035,7 +1065,7 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         result["is_profile_b"] = prof_eval.get("is_profile_b", False)
         result["profile_signal"] = prof_eval.get("signal", "REJECT")
     except Exception as e_prof:
-        logger.debug(f"Profile evaluation skipped for {cleaned_ticker}: {e_prof}")
+        logger.warning(f"Profile evaluation error for {cleaned_ticker}: {e_prof}", exc_info=True)
         result["is_profile_a"] = False
         result["is_profile_b"] = False
         result["profile_signal"] = "REJECT"

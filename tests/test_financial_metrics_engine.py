@@ -347,3 +347,54 @@ def test_bid_ask_spread_and_liquidity_gate():
         assert res_liq["avg_daily_turnover_eur"] == 30_000.0
         assert res_liq["liquidity_status"] == "REJECTED_LOW_LIQUIDITY"
         assert res_liq["status"] == "REJECTED_LOW_LIQUIDITY"
+
+
+@patch("screener.financial_metrics_engine.yf.Ticker")
+def test_get_hard_financials_missing_quarter_nan_does_not_compare_q3_to_q2(mock_ticker):
+    """
+    Regression test for MIPS.ST bug:
+    When quarterly_financials has a NaN in 2025-09-30 (Q3 2025), .dropna() leaves 5 rows where
+    index 0 is 2026-09-30 (Q3 2026: 215M) and index 4 is 2025-06-30 (Q2 2025: 135M, 457 days apart).
+    get_hard_financials MUST NOT compare Q3 against Q2 (+59.26%), and must fall back to the
+    verified annual comparison (533M vs 483M = +10.352%).
+    """
+    import numpy as np
+    mock_inst = MagicMock()
+    mock_ticker.return_value = mock_inst
+
+    bs = pd.DataFrame(
+        {"2026-09-30": [200_000_000.0, 20_000_000.0]},
+        index=["Cash And Cash Equivalents", "Total Debt"],
+    )
+    mock_inst.quarterly_balance_sheet = bs
+    mock_inst.balance_sheet = bs
+
+    cf = pd.DataFrame({"2026-09-30": [100_000_000.0]}, index=["Operating Cash Flow"])
+    mock_inst.quarterly_cashflow = cf
+    mock_inst.cashflow = cf
+
+    qf = pd.DataFrame(
+        {
+            "2026-09-30": [215_000_000.0],
+            "2026-06-30": [232_000_000.0],
+            "2026-03-31": [151_000_000.0],
+            "2025-12-31": [147_000_000.0],
+            "2025-09-30": [np.nan],         # Missing Q3 2025!
+            "2025-06-30": [135_000_000.0],  # Q2 2025 (457 days before 2026-09-30)
+        },
+        index=["Total Revenue"],
+    )
+    af = pd.DataFrame(
+        {
+            "2025-12-31": [533_000_000.0],
+            "2024-12-31": [483_000_000.0],
+        },
+        index=["Total Revenue"],
+    )
+    mock_inst.quarterly_financials = qf
+    mock_inst.financials = af
+    mock_inst.info = {}
+
+    metrics = get_hard_financials("MIPS.ST")
+    # Must equal (533 - 483) / 483 = +10.3520%, NEVER +59.2593%!
+    assert metrics["revenue_growth_yoy_pct"] == pytest.approx(10.352, abs=0.01)
