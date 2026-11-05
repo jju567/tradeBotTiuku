@@ -103,6 +103,29 @@ def _get_first_valid_df(obj: Any, attr_names: list[str]) -> Optional[pd.DataFram
     return None
 
 
+def _extract_4q_ttm_from_df(df: Optional[pd.DataFrame], possible_keys: list[str]) -> Optional[float]:
+    """
+    Laskee tuoreimman 4 peräkkäisen kvartaalin TTM-summan (iloc[:4].sum()),
+    kun aikaväli q0..q3 on 240..310 päivää (tai synteettisessä testissä 4 saraketta ilman väli-NaNeja).
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    for key in possible_keys:
+        if key in df.index:
+            series = df.loc[key].dropna()
+            if len(series) >= 4:
+                try:
+                    dq0 = pd.to_datetime(series.index[0]).tz_localize(None)
+                    dq3 = pd.to_datetime(series.index[3]).tz_localize(None)
+                    if 240 <= abs((dq0 - dq3).days) <= 310:
+                        return float(series.iloc[:4].sum())
+                except Exception:
+                    raw_row = df.loc[key]
+                    if len(raw_row) >= 4 and not raw_row.iloc[:4].isna().any():
+                        return float(raw_row.iloc[:4].sum())
+    return None
+
+
 def _extract_metric_from_df(df: Optional[pd.DataFrame], possible_keys: list[str]) -> Optional[float]:
     """Extracts the most recent non-NaN value matching any of the possible row names."""
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
@@ -319,24 +342,32 @@ def check_share_dilution(
         "dilution_flag": None,
     }
     
-    # 1. Current shares from info or fast_info or latest balance sheet
-    shares_curr = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
-    if not isinstance(shares_curr, (int, float)) or shares_curr <= 0:
-        shares_curr = None
+    # 1. Current shares from info, impliedSharesOutstanding (for Nordic A/B share classes), or latest balance sheet
+    sh_out = info.get("sharesOutstanding")
+    sh_imp = info.get("impliedSharesOutstanding")
+    bs_sh_q = _extract_metric_from_df(bs_q, _SHARE_COUNT_KEYS) if (bs_q is not None and not bs_q.empty) else None
+    bs_sh_a = _extract_metric_from_df(bs_a, _SHARE_COUNT_KEYS) if (bs_a is not None and not bs_a.empty) else None
+
+    # For dual-class stocks (e.g. NTEK-B.ST), sharesOutstanding is only B-shares (9.1M) while impliedSharesOutstanding
+    # and balance sheet Ordinary Shares Number include A+B shares (10.6M). Use consistent total-company share count!
+    cand_curr = [
+        float(x)
+        for x in (sh_out, sh_imp, bs_sh_q)
+        if isinstance(x, (int, float)) and not isinstance(x, bool) and float(x) > 0
+    ]
+    shares_curr = max(cand_curr) if cand_curr else None
+    if shares_curr is None or shares_curr <= 0:
         fast_info = getattr(t, "fast_info", None)
         if fast_info:
             cand_sh = getattr(fast_info, "shares", None) or getattr(fast_info, "shares_outstanding", None)
             if isinstance(cand_sh, (int, float)) and cand_sh > 0:
-                shares_curr = cand_sh
-            
-    if (shares_curr is None or shares_curr <= 0) and bs_q is not None and not bs_q.empty:
-        shares_curr = _extract_metric_from_df(bs_q, _SHARE_COUNT_KEYS)
-    if (shares_curr is None or shares_curr <= 0) and bs_a is not None and not bs_a.empty:
-        shares_curr = _extract_metric_from_df(bs_a, _SHARE_COUNT_KEYS)
-        
+                shares_curr = float(cand_sh)
+    if (shares_curr is None or shares_curr <= 0) and bs_sh_a is not None and bs_sh_a > 0:
+        shares_curr = float(bs_sh_a)
+
     if shares_curr is None or shares_curr <= 0:
         return res
-        
+
     res["shares_outstanding_current"] = float(shares_curr)
     
     # 2. Historical shares from annual balance sheet (1-2 years ago)
@@ -371,12 +402,15 @@ def check_share_dilution(
                 except Exception:
                     continue
 
-    # 3. Also check Diluted Average Shares (warrants/options overhang) from income statements
+    # 3. Also check Diluted Average Shares vs Basic Average Shares (warrants/options overhang) from income statements
+    _basic_share_keys = ["Basic Average Shares", "BasicAverageShares", "Basic Shares"]
     diluted_curr = _extract_metric_from_df(inc_q, _DILUTED_SHARE_COUNT_KEYS) or _extract_metric_from_df(inc_a, _DILUTED_SHARE_COUNT_KEYS)
+    basic_curr = _extract_metric_from_df(inc_q, _basic_share_keys) or _extract_metric_from_df(inc_a, _basic_share_keys)
+    base_for_overhang = float(basic_curr) if (basic_curr is not None and basic_curr > 0) else float(shares_curr)
     effective_curr_shares = max(float(shares_curr), float(diluted_curr)) if (diluted_curr is not None and diluted_curr > 0) else float(shares_curr)
 
-    if diluted_curr is not None and float(diluted_curr) > float(shares_curr) * 1.05:
-        overhang_pct = ((float(diluted_curr) - float(shares_curr)) / float(shares_curr)) * 100.0
+    if diluted_curr is not None and base_for_overhang > 0 and float(diluted_curr) > base_for_overhang * 1.05:
+        overhang_pct = ((float(diluted_curr) - base_for_overhang) / base_for_overhang) * 100.0
         res["share_dilution_pct"] = round(overhang_pct, 2)
         res["has_share_dilution"] = True
         res["dilution_flag"] = "DILUTION_WARNING_RECENT_ISSUE"
@@ -754,7 +788,8 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         latest_q_dt: Optional[pd.Timestamp] = None
         latest_a_dt: Optional[pd.Timestamp] = None
 
-        # 4a. Extract annual series, latest annual revenue, and 3-year CAGR
+        rev_annual_yoy_pct: Optional[float] = None
+        # 4a. Extract annual series, latest annual revenue, annual YoY, and 3-year CAGR
         if inc_a is not None and not inc_a.empty:
             for key in _REVENUE_KEYS:
                 if key in inc_a.index:
@@ -766,6 +801,9 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                         except Exception:
                             latest_a_dt = None
                     if len(s_a) >= 2:
+                        r_prev_a = float(s_a.iloc[1])
+                        if r_prev_a != 0 and rev_annual_latest is not None:
+                            rev_annual_yoy_pct = round(((rev_annual_latest - r_prev_a) / abs(r_prev_a)) * 100.0, 4)
                         oldest_idx = min(3, len(s_a) - 1)
                         r_old = float(s_a.iloc[oldest_idx])
                         if r_old > 0 and rev_annual_latest is not None and rev_annual_latest > 0:
@@ -857,6 +895,8 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         # 4c. Sanity check: Reconcile 4Q TTM sum vs Latest Annual Revenue
         result["revenue_ttm_4q"] = rev_ttm_4q
         result["revenue_annual_latest"] = rev_annual_latest
+        result["revenue_annual_yoy_pct"] = rev_annual_yoy_pct
+        result["revenue_growth_annual_yoy_pct"] = rev_annual_yoy_pct
         result["revenue_cagr_3y_pct"] = rev_cagr_3y_pct
         if rev_ttm_4q is not None and rev_annual_latest is not None and rev_annual_latest > 0:
             ttm_vs_ann_diff_pct = round(((rev_ttm_4q - rev_annual_latest) / rev_annual_latest) * 100.0, 2)
@@ -931,36 +971,89 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             info = getattr(t, "info", None) or {}
             fast_info = getattr(t, "fast_info", None)
 
-            # ROE (Return on Equity) & ROIC (Return on Invested Capital)
-            roe = info.get("returnOnEquity")
+            # ---- UNIFIED PERIOD BASIS (4Q TTM Primary vs. Annual Latest Fallback) ----
+            # Ensures Revenue, EBIT, EBITDA, Net Income, EBIT Margin, ROE, ROIC, Net Debt/EBITDA, and EV/EBIT
+            # all use the exact same time period (either 4Q TTM or Latest Annual).
+            _ebit_keys_list = ["Operating Income", "OperatingIncome", "Total Operating Income As Reported", "EBIT"]
+            _ebitda_keys_list = ["EBITDA", "Normalized EBITDA", "NormalizedEBITDA", "EBIT", "Operating Income", "OperatingIncome"]
+            _net_inc_keys_list = ["Net Income", "NetIncome", "Net Income Common Stockholders", "Net Income Continuous Operations"]
+
+            ebit_ttm_4q = _extract_4q_ttm_from_df(inc_q, _ebit_keys_list)
+            ebitda_ttm_4q = _extract_4q_ttm_from_df(inc_q, _ebitda_keys_list)
+            net_inc_ttm_4q = _extract_4q_ttm_from_df(inc_q, _net_inc_keys_list)
+
+            ebit_ann = _extract_metric_from_df(inc_a, _ebit_keys_list)
+            ebitda_ann = _extract_metric_from_df(inc_a, _ebitda_keys_list)
+            net_inc_ann = _extract_metric_from_df(inc_a, _net_inc_keys_list)
+
+            if rev_ttm_4q is not None and rev_ttm_4q > 0 and ebit_ttm_4q is not None:
+                period_basis = "TTM_4Q"
+                unified_rev = float(rev_ttm_4q)
+                unified_ebit = float(ebit_ttm_4q)
+                info_ebitda = info.get("ebitda")
+                if isinstance(info_ebitda, (int, float)) and float(info_ebitda) >= unified_ebit:
+                    unified_ebitda = float(info_ebitda)
+                elif ebitda_ttm_4q is not None and float(ebitda_ttm_4q) >= unified_ebit:
+                    unified_ebitda = float(ebitda_ttm_4q)
+                else:
+                    unified_ebitda = unified_ebit
+                unified_net_inc = net_inc_ttm_4q
+            elif rev_annual_latest is not None and rev_annual_latest > 0 and ebit_ann is not None:
+                period_basis = "ANNUAL_LATEST"
+                unified_rev = float(rev_annual_latest)
+                unified_ebit = float(ebit_ann)
+                unified_ebitda = float(ebitda_ann) if ebitda_ann is not None else unified_ebit
+                unified_net_inc = net_inc_ann
+            else:
+                period_basis = "INFO_OR_PARTIAL_FALLBACK"
+                unified_rev = rev_curr
+                unified_ebit = (
+                    ebit_ttm_4q
+                    if ebit_ttm_4q is not None
+                    else (ebit_ann if ebit_ann is not None else info.get("operatingIncome"))
+                )
+                unified_ebitda = info.get("ebitda") or ebitda_ttm_4q or ebitda_ann or unified_ebit
+                unified_net_inc = net_inc_ttm_4q if net_inc_ttm_4q is not None else net_inc_ann
+
+            result["data_quality"]["metrics_period_basis"] = period_basis
+            result["ebit_ttm_or_unified"] = float(unified_ebit) if unified_ebit is not None else None
+
+            # Equity from latest quarterly balance sheet (fallback to annual)
             equity_val = _extract_metric_from_df(bs_q, ["Stockholders Equity", "StockholdersEquity", "Total Stockholder Equity", "Common Stock Equity"])
             if equity_val is None:
                 equity_val = _extract_metric_from_df(bs_a, ["Stockholders Equity", "StockholdersEquity", "Total Stockholder Equity", "Common Stock Equity"])
+
+            # ROE (Return on Equity) on unified period
+            roe = None
+            if unified_net_inc is not None and equity_val is not None and equity_val > 0:
+                roe = float(unified_net_inc) / float(equity_val)
             if roe is None:
-                net_inc = _extract_metric_from_df(inc_a, ["Net Income", "NetIncome"])
-                if net_inc is not None and equity_val is not None and equity_val > 0:
-                    roe = net_inc / equity_val
+                roe = info.get("returnOnEquity")
             result["roe"] = float(roe) if roe is not None else None
 
+            # ROIC (Return on Invested Capital) on unified period
+            # Formula: NOPAT = Unified_EBIT * (1 - 0.206)
+            # Invested Capital = Equity + max(0.0, Total_Debt - Cash)
+            # Note: Net cash (Cash > Debt) is NOT subtracted from Stockholders' Equity,
+            # so cash-rich companies do not get an artificially shrunken denominator and inflated ROIC!
             roic_val = None
-            op_inc_for_roic = _extract_metric_from_df(inc_a, ["Operating Income", "OperatingIncome", "EBIT"]) or info.get("operatingIncome")
-            if op_inc_for_roic is not None and equity_val is not None and equity_val > 0:
-                nopat = float(op_inc_for_roic) * (1.0 - 0.206)
-                inv_cap = max(float(equity_val) + float(debt or 0.0) - float(cash or 0.0), float(equity_val) * 0.5, 1.0)
+            if unified_ebit is not None and equity_val is not None and equity_val > 0:
+                nopat = float(unified_ebit) * (1.0 - 0.206)
+                net_debt_positive = max(0.0, float(debt or 0.0) - float(cash or 0.0))
+                inv_cap = max(float(equity_val) + net_debt_positive, 1.0)
                 roic_val = round(nopat / inv_cap, 4)
             result["roic"] = roic_val
 
-            # EBIT Margin
-            ebit_m = info.get("operatingMargins") or info.get("ebitMargins")
+            # EBIT Margin on unified period
+            ebit_m = None
+            if unified_ebit is not None and unified_rev is not None and unified_rev > 0:
+                ebit_m = float(unified_ebit) / float(unified_rev)
             if ebit_m is None:
-                op_inc_a = _extract_metric_from_df(inc_a, ["Operating Income", "OperatingIncome", "EBIT"])
-                op_inc_q = _extract_metric_from_df(inc_q, ["Operating Income", "OperatingIncome", "EBIT"])
-                if op_inc_a is not None and rev_a is not None and rev_a > 0:
-                    ebit_m = op_inc_a / rev_a
-                elif op_inc_q is not None and rev_q is not None and rev_q > 0:
-                    ebit_m = op_inc_q / rev_q
-                elif op_inc_a is not None and rev_curr is not None and rev_curr > 0:
-                    ebit_m = op_inc_a / rev_curr
+                ebit_m = info.get("operatingMargins") or info.get("ebitMargins")
+                if ebit_m is None:
+                    op_inc_q = _extract_metric_from_df(inc_q, _ebit_keys_list)
+                    if op_inc_q is not None and rev_q is not None and rev_q > 0:
+                        ebit_m = op_inc_q / rev_q
             result["ebit_margin"] = float(ebit_m) if ebit_m is not None else None
 
             # Free Cash Flow (preserve Section 2 TTM OCF - 4Q CapEx if already computed)
@@ -969,22 +1062,17 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                 if fcf_info is not None:
                     result["free_cash_flow"] = float(fcf_info)
 
-            # EBITDA & Net Debt to EBITDA
-            ebitda = info.get("ebitda")
-            if ebitda is None:
-                _ebitda_keys = ["EBITDA", "Normalized EBITDA", "NormalizedEBITDA", "EBIT", "Operating Income", "OperatingIncome"]
-                ebitda = _extract_metric_from_df(inc_a, _ebitda_keys)
-                if ebitda is None:
-                    ebitda = _extract_metric_from_df(inc_q, _ebitda_keys)
+            # EBITDA & Net Debt to EBITDA on unified period
+            ebitda = unified_ebitda
             result["ebitda"] = float(ebitda) if ebitda is not None else None
-            
+
             nd_ebitda = None
             if debt is not None and cash is not None:
                 net_d = debt - cash
                 if net_d <= 0:
                     nd_ebitda = 0.0  # Net cash -> solvent
                 elif ebitda is not None and ebitda > 0:
-                    nd_ebitda = round(net_d / ebitda, 2)
+                    nd_ebitda = round(net_d / float(ebitda), 2)
             result["net_debt_to_ebitda"] = nd_ebitda
 
             # Dividend Yield, Dividend Rate & Cash Dividends Paid (Strict OST verification)
@@ -1064,8 +1152,14 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                     result["days_to_earnings"] = int(d_to_earn)
 
             # Analyst Coverage Count (for Neglected Small-Cap Satellite filter)
+            # IMPORTANT: Missing Yahoo data (None) is kept as None (UNVERIFIED), never converted to 0!
             n_analysts = info.get("numberOfAnalystOpinions")
-            result["analyst_count"] = int(n_analysts) if isinstance(n_analysts, (int, float)) and n_analysts >= 0 else 0
+            if isinstance(n_analysts, (int, float)) and not isinstance(n_analysts, bool) and n_analysts >= 0:
+                result["analyst_count"] = int(n_analysts)
+                result["data_quality"]["analyst_coverage_status"] = "VERIFIED"
+            else:
+                result["analyst_count"] = None
+                result["data_quality"]["analyst_coverage_status"] = "MISSING_UNVERIFIED"
 
             # Insider Skin-in-the-Game & Net Buying Signal
             ins_pct = info.get("heldPercentInsiders")
@@ -1111,11 +1205,11 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             else:
                 result["liquidity_status"] = "LIQUID_OK"
 
-            # Relative Valuation: EV/EBIT vs. 5-year Historical Median
+            # Relative Valuation: EV/EBIT vs. 5-year Historical Median (strictly using unified TTM/Annual EBIT!)
             curr_ev = info.get("enterpriseValue")
             if curr_ev is None and mcap is not None and debt is not None and cash is not None:
                 curr_ev = float(mcap) + float(debt) - float(cash)
-            curr_ebit = op_inc if 'op_inc' in locals() and op_inc is not None else (info.get("operatingIncome") or ebitda)
+            curr_ebit = unified_ebit if unified_ebit is not None else (info.get("operatingIncome") or ebitda)
 
             rel_val = calculate_relative_ev_ebit(
                 t=t,
@@ -1702,30 +1796,26 @@ def calculate_candidate_score(
     universe_filter: str = "Nordic_MidCap_Compounder",
     news_verdict: str = "HOLD",
     news_reason: str = "",
-) -> tuple[float, Dict[str, float]]:
+) -> tuple[float, Dict[str, Any]]:
     """
-    Normalized 0-100 Continuous Candidate Scoring Function (The Hardened Path v2).
+    Normalized 0-100 Continuous Candidate Scoring Function (The Hardened Path v3).
 
     Architecture & Guarantees:
     1. Output is strictly bounded to [0.0, 100.0] for any input.
-    2. Base component weights sum to 100.0:
-       - Core (Nordic_MidCap_Compounder):
-         * Quality (max 40.0 pts): ROIC primary / leverage-adjusted ROE secondary [5%..55%] (22 pts) + EBIT Margin [8%..45%] (18 pts)
-         * Growth (max 20.0 pts): Blended 3y Revenue CAGR & YoY Growth [-10%..+45%] (20 pts)
-         * Balance Sheet (max 15.0 pts): Continuous Net Debt / EBITDA [-1.0..+2.5] (15 pts)
-         * Valuation (max 25.0 pts): Continuous Absolute EV/EBIT [6..30] (9 pts) + Historical EV/EBIT Premium [-40%..+50%] (6 pts) + FCF Yield [0%..10%] (10 pts)
-         * Insider Bonus (max +4.0 pts added before final 0-100 clip)
-       - Satellite (Nordic_MicroCap_Catalyst / US_MicroCap_Growth):
-         * Profitability (max 30.0 pts): Continuous EBIT margin [-10%..+35%] (18 pts) + ROIC/ROE [-10%..+45%] (12 pts)
-         * Growth (max 30.0 pts): Continuous Revenue Growth [-10%..+60%] (30 pts)
-         * Cash & Viability (max 25.0 pts): Continuous FCF Yield [-5%..+12%] (15 pts) + Net Debt/EBITDA Solvency (10 pts)
-         * Catalyst & Insider (max 15.0 pts): Verified Catalyst (+11 pts) + Insider Buying (+4 pts)
-    3. Monotonicity & Sensitivity:
-       - Higher revenue growth strictly increases growth_pts (within [-10%, +60%]).
-       - Higher Net Debt / EBITDA strictly decreases balance_sheet_pts (within [-1.0, +2.5]).
+    2. Period-consistent inputs (4Q TTM primary, Annual fallback) with ROIC Invested Capital = Equity + max(0, Debt - Cash).
+    3. Multi-period Growth Blending & Organic vs. M&A Haircut:
+       - Blends 3y CAGR, Annual YoY, and Quarterly YoY so a single noisy quarter does not distort the score.
+       - If `organic_revenue_growth_pct` is provided, uses organic growth; otherwise if `TTM_ACCELERATION_OR_MA_DIVERGENCE`
+         is flagged (>25% TTM jump over annual, typical of M&A consolidation), caps inorganic growth above 15% by 75% (max 12/20 pts).
+       - If `DILUTION_WARNING_RECENT_ISSUE` (>5% share dilution) is present, applies a -8.0 pt penalty and marks
+         `manual_review_required = True`.
+    4. Satellite Analyst Coverage Handling:
+       - Missing `analyst_count` (`None` in Yahoo) receives `0.0` neglect bonus (`MISSING_UNVERIFIED`).
+       - Only verified low analyst count (`0..2` analysts -> `+6.0 pts`, `3..5` -> `+3.0 pts`) receives neglect bonus.
     """
     meta = meta or {}
     u_low = str(universe_filter or "").lower()
+    audit_flags = list(hard_facts.get("audit_flags") or [])
 
     # Extract raw metrics (handling decimal ratios vs percentage points)
     roe_raw = hard_facts.get("roe") if hard_facts.get("roe") is not None else hard_facts.get("return_on_equity")
@@ -1745,13 +1835,31 @@ def calculate_candidate_score(
         else hard_facts.get("rev_yoy")
     )
     rev_yoy_pct = float(rev_yoy_raw) if rev_yoy_raw is not None else 0.0
+    rev_ann_yoy_raw = hard_facts.get("revenue_growth_annual_yoy_pct")
     rev_cagr_raw = hard_facts.get("revenue_cagr_3y_pct")
-    if rev_cagr_raw is not None and rev_yoy_raw is not None:
+
+    # Blend multi-period growth to smooth single-quarter noise (e.g. NTEK-B.ST Q2 +12.1% vs Annual +2.9% & 3y CAGR +5.1%)
+    if rev_cagr_raw is not None and rev_ann_yoy_raw is not None and rev_yoy_raw is not None:
+        effective_growth_pct = 0.45 * float(rev_cagr_raw) + 0.30 * float(rev_ann_yoy_raw) + 0.25 * rev_yoy_pct
+    elif rev_cagr_raw is not None and rev_yoy_raw is not None:
         effective_growth_pct = 0.60 * float(rev_cagr_raw) + 0.40 * rev_yoy_pct
+    elif rev_ann_yoy_raw is not None and rev_yoy_raw is not None:
+        effective_growth_pct = 0.60 * float(rev_ann_yoy_raw) + 0.40 * rev_yoy_pct
     elif rev_cagr_raw is not None:
         effective_growth_pct = float(rev_cagr_raw)
     else:
         effective_growth_pct = rev_yoy_pct
+
+    # Organic vs. M&A-driven growth separation:
+    has_ma_divergence = "TTM_ACCELERATION_OR_MA_DIVERGENCE" in audit_flags or bool(hard_facts.get("is_ma_driven_growth", False))
+    has_dilution_flag = "DILUTION_WARNING_RECENT_ISSUE" in audit_flags or bool(hard_facts.get("has_share_dilution", False))
+    organic_rev_raw = hard_facts.get("organic_revenue_growth_pct")
+    if organic_rev_raw is not None:
+        effective_growth_pct = float(organic_rev_raw)
+    elif has_ma_divergence and effective_growth_pct > 15.0:
+        anchor_cagr = float(rev_cagr_raw) if rev_cagr_raw is not None else 12.0
+        base_org_est = max(12.0, min(20.0, anchor_cagr))
+        effective_growth_pct = base_org_est + 0.25 * max(0.0, effective_growth_pct - base_org_est)
 
     nd_ebitda = hard_facts.get("net_debt_to_ebitda")
     if nd_ebitda is None:
@@ -1774,6 +1882,10 @@ def calculate_candidate_score(
     )
     insider_pts = 4.0 if insider_sig else 0.0
 
+    # Share dilution penalty (-8.0 pts when shares grew > 5%, e.g. M&A equity issue)
+    dilution_penalty_pts = -8.0 if has_dilution_flag else 0.0
+    manual_review_required = bool(has_ma_divergence or has_dilution_flag or "MANUAL_REVIEW_OUTLIER" in audit_flags)
+
     # FCF yield %
     fcf_yield_pct = hard_facts.get("fcf_yield_pct")
     if fcf_yield_pct is None:
@@ -1786,7 +1898,6 @@ def calculate_candidate_score(
 
     if "midcap" in u_low:
         # 1. Quality (40 pts): ROIC primary (or ROE penalized for debt leverage > 1.0x) + EBIT margin
-        # If ROE is inflated by lease/debt leverage (e.g. Puuilo 89% ROE with ND/EBITDA > 1), discount ROE toward ROIC
         effective_return_pct = (
             0.65 * roic_pct + 0.35 * min(roe_pct, 55.0)
             if roic_pct is not None
@@ -1796,8 +1907,11 @@ def calculate_candidate_score(
         qual_ebit_pts = round(_norm_linear(ebit_pct, 8.0, 45.0) * 18.0, 2)
         quality_pts = round(qual_roic_pts + qual_ebit_pts, 2)
 
-        # 2. Growth (20 pts): Continuous on [-10%, +45%]
-        growth_pts = round(_norm_linear(effective_growth_pct, -10.0, 45.0) * 20.0, 2)
+        # 2. Growth (20 pts): Continuous on [-10%, +45%], capped at <= 12.0 pts if unverified M&A spike
+        raw_g_pts = _norm_linear(effective_growth_pct, -10.0, 45.0) * 20.0
+        if has_ma_divergence and organic_rev_raw is None:
+            raw_g_pts = min(12.0, raw_g_pts)
+        growth_pts = round(raw_g_pts, 2)
 
         # 3. Balance Sheet (15 pts): Continuous on ND/EBITDA [-1.0, +2.5] (lower debt -> higher score)
         balance_sheet_pts = round((1.0 - _norm_linear(nd_val, -1.0, 2.5)) * 15.0, 2)
@@ -1820,7 +1934,7 @@ def calculate_candidate_score(
         val_fcf_pts = _norm_linear(float(fcf_yield_pct), 0.0, 10.0) * 10.0
         valuation_pts = round(val_abs_pts + val_hist_pts + val_fcf_pts, 2)
 
-        raw_total = quality_pts + growth_pts + balance_sheet_pts + valuation_pts + insider_pts
+        raw_total = quality_pts + growth_pts + balance_sheet_pts + valuation_pts + insider_pts + dilution_penalty_pts
         total_score = round(min(100.0, max(0.0, raw_total)), 2)
         breakdown = {
             "quality_pts": quality_pts,
@@ -1828,30 +1942,34 @@ def calculate_candidate_score(
             "balance_sheet_pts": balance_sheet_pts,
             "valuation_pts": valuation_pts,
             "insider_pts": insider_pts,
+            "dilution_penalty_pts": dilution_penalty_pts,
+            "effective_growth_pct": round(effective_growth_pct, 2),
+            "manual_review_required": manual_review_required,
             "total_score": total_score,
         }
         return total_score, breakdown
 
-    # Satellite (Nordic_MicroCap_Catalyst: "Neglected, Profitable Small-Caps with Low Analyst Coverage"):
-    # Prioritizes profitability + cash flow + balance sheet + neglect over unprofitable hype growth.
+    # Satellite (Nordic_MicroCap_Catalyst: "Neglected, Profitable Small-Caps with Verified Low Analyst Coverage"):
     eff_ret = (0.60 * roic_pct + 0.40 * roe_pct) if roic_pct is not None else roe_pct
     prof_ebit_pts = _norm_linear(ebit_pct, 0.0, 30.0) * 18.0
     prof_roe_pts = _norm_linear(eff_ret, 0.0, 40.0) * 17.0
     profitability_pts = round(prof_ebit_pts + prof_roe_pts, 2)
 
-    # Unprofitable companies (ROE <= 0 or EBIT <= 2%) get growth points damped by 50% so hype never beats profitable small-caps
-    is_profitable_smallcap = (roe_pct > 2.0 and ebit_pct > 3.0)
+    is_profitable_smallcap = (roe_pct >= 5.0 and ebit_pct >= 5.0)
     raw_growth_pts = _norm_linear(effective_growth_pct if "nordic" in u_low else rev_yoy_pct, -5.0, 50.0) * 20.0
-    growth_pts = round(raw_growth_pts if is_profitable_smallcap or "us_" in u_low else raw_growth_pts * 0.45, 2)
+    if has_ma_divergence and organic_rev_raw is None:
+        raw_growth_pts = min(12.0, raw_growth_pts)
+    growth_pts = round(raw_growth_pts if is_profitable_smallcap or "us_" in u_low else raw_growth_pts * 0.40, 2)
 
     cf_yield_pts = _norm_linear(float(fcf_yield_pct), -2.0, 12.0) * 15.0
     solv_pts = (1.0 - _norm_linear(nd_val, -1.0, 3.0)) * 10.0
     viability_pts = round(cf_yield_pts + solv_pts, 2)
 
-    # Neglect (low analyst count <= 2 -> +6p, 3..5 -> +3p, >5 -> 0p) + Catalyst (+10p/+6p) + Insider (+4p)
+    # Neglect Bonus: Missing data (None) gets 0.0 pts!
+    # Also requires profitable baseline (is_profitable_smallcap) so unprofitable stocks are not rewarded for being neglected.
     analyst_cnt = hard_facts.get("analyst_count")
-    if analyst_cnt is None:
-        neglect_pts = 4.0
+    if analyst_cnt is None or not is_profitable_smallcap:
+        neglect_pts = 0.0
     elif int(analyst_cnt) <= 2:
         neglect_pts = 6.0
     elif int(analyst_cnt) <= 5:
@@ -1860,10 +1978,10 @@ def calculate_candidate_score(
         neglect_pts = 0.0
 
     has_cat = news_verdict in ("STRONG BUY", "WATCH_TURNAROUND") or bool(hard_facts.get("is_profile_a", False))
-    cat_base = 10.0 if has_cat else (6.0 if bool(hard_facts.get("is_profile_b", False)) else 0.0)
+    cat_base = (10.0 if is_profitable_smallcap or news_verdict == "WATCH_TURNAROUND" else 4.0) if has_cat else (6.0 if bool(hard_facts.get("is_profile_b", False)) else 0.0)
     catalyst_pts = round(min(20.0, neglect_pts + cat_base + insider_pts), 2)
 
-    raw_total = profitability_pts + growth_pts + viability_pts + catalyst_pts
+    raw_total = profitability_pts + growth_pts + viability_pts + catalyst_pts + dilution_penalty_pts
     total_score = round(min(100.0, max(0.0, raw_total)), 2)
     breakdown = {
         "profitability_pts": profitability_pts,
@@ -1872,6 +1990,9 @@ def calculate_candidate_score(
         "neglect_pts": neglect_pts,
         "catalyst_pts": catalyst_pts,
         "insider_pts": insider_pts,
+        "dilution_penalty_pts": dilution_penalty_pts,
+        "effective_growth_pct": round(effective_growth_pct, 2),
+        "manual_review_required": manual_review_required,
         "total_score": total_score,
     }
     return total_score, breakdown

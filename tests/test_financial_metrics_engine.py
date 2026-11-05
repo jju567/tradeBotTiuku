@@ -559,3 +559,66 @@ def test_calculate_candidate_score_bounds_monotonicity_sensitivity_and_neglected
     assert passed_crowded is False
     assert any("REJECTED_NOT_NEGLECTED" in r for r in reasons_crowded)
 
+
+
+def test_missing_analyst_count_gets_zero_neglect_bonus_and_ma_dilution_gate():
+    """
+    Verifies:
+    1. Missing analyst_count (None in Yahoo) gets 0.0 neglect_pts (never treated as 0 analysts = +6.0 pts).
+    2. Verified 0..2 analysts gets +6.0 neglect_pts.
+    3. M&A divergence (>25% TTM vs Annual) + share dilution (>5%) caps growth points, applies -8.0 dilution penalty,
+       sets manual_review_required=True, and is rejected from automatic Core entry by matches_nordic_midcap_compounder.
+    """
+    from screener.financial_metrics_engine import calculate_candidate_score
+    from screener.tiered_filters import matches_nordic_midcap_compounder
+
+    sat_base = {
+        "roe": 0.18,
+        "roic": 0.16,
+        "ebit_margin": 0.12,
+        "revenue_growth_yoy_pct": 10.0,
+        "net_debt_to_ebitda": 0.0,
+        "fcf_yield_pct": 5.0,
+        "is_profile_b": True,
+    }
+    s_missing, bd_missing = calculate_candidate_score(
+        "UNVERIFIED.HE",
+        dict(sat_base, analyst_count=None),
+        universe_filter="Nordic_MicroCap_Catalyst",
+    )
+    s_verified_1, bd_verified_1 = calculate_candidate_score(
+        "NEGLECTED.HE",
+        dict(sat_base, analyst_count=1),
+        universe_filter="Nordic_MicroCap_Catalyst",
+    )
+    assert bd_missing["neglect_pts"] == 0.0
+    assert bd_verified_1["neglect_pts"] == 6.0
+    assert s_verified_1 == pytest.approx(s_missing + 6.0, abs=0.01)
+
+    # M&A + Dilution Gate (MILDEF.ST-like case)
+    mildef_hf = {
+        "roe": 0.20,
+        "roic": 0.12,
+        "ebit_margin": 0.18,
+        "revenue_growth_yoy_pct": 65.0,
+        "revenue_cagr_3y_pct": 40.0,
+        "free_cash_flow": 100_000_000.0,
+        "net_debt_to_ebitda": 1.0,
+        "current_ev_ebit": 20.0,
+        "ev_ebit_5y_median": 25.0,
+        "ev_ebit_premium_pct": -20.0,
+        "has_share_dilution": True,
+        "audit_flags": ["TTM_ACCELERATION_OR_MA_DIVERGENCE", "DILUTION_WARNING_RECENT_ISSUE"],
+    }
+    s_ma, bd_ma = calculate_candidate_score("MILDEF.ST", mildef_hf, universe_filter="Nordic_MidCap_Compounder")
+    assert bd_ma["growth_pts"] <= 12.0  # Capped from 20.0 due to unverified M&A divergence
+    assert bd_ma["dilution_penalty_pts"] == -8.0
+    assert bd_ma["manual_review_required"] is True
+
+    passed_core, reasons_core = matches_nordic_midcap_compounder(
+        "MILDEF.ST",
+        mildef_hf,
+        {"market": "SE", "market_cap_eur": 800_000_000.0, "currency": "SEK", "adv_20d_local": 5_000_000.0},
+    )
+    assert passed_core is False
+    assert any("REJECTED_MA_DILUTION_MANUAL_REVIEW" in r for r in reasons_core)

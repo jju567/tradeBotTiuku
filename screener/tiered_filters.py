@@ -288,6 +288,15 @@ def matches_nordic_midcap_compounder(
     elif curr_ev_ebit is not None and float(curr_ev_ebit) > 30.0:
         reasons.append(f"REJECTED_VALUATION: Absolute EV/EBIT {float(curr_ev_ebit):.1f} > 30.0")
 
+    # 8. M&A + Share Dilution Gate: Block automatic Core entry when >25% TTM M&A jump is combined with >5% share dilution
+    audit_flags = list(hard_facts.get("audit_flags") or [])
+    has_ma_div = "TTM_ACCELERATION_OR_MA_DIVERGENCE" in audit_flags
+    has_dil = "DILUTION_WARNING_RECENT_ISSUE" in audit_flags or bool(hard_facts.get("has_share_dilution", False))
+    if has_ma_div and has_dil and not bool(hard_facts.get("manual_review_approved", False)):
+        reasons.append(
+            "REJECTED_MA_DILUTION_MANUAL_REVIEW: M&A revenue divergence (>25%) combined with share dilution (>5%) requires manual verification"
+        )
+
     passed = len(reasons) == 0
     return passed, reasons
 

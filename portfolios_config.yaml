@@ -175,20 +175,26 @@ portfolios:
         slot_sizes: [1185]
         universe_filter: "Nordic_MicroCap_Catalyst"
         trial_protocol:
-          thesis: "Neglected, profitable Nordic small-caps (.HE / liquid .ST) with <= 6 analysts and sufficient EUR turnover"
+          thesis: "Neglected, profitable Nordic small-caps (.HE / liquid .ST) with verified <= 6 analysts and sufficient EUR turnover"
           duration_months: 12
           max_duration_months: 24
-          benchmark_ticker: "^OMXSPI"
+          benchmark_ticker: "OMXSSCGI"
+          benchmark_etf_proxy: "XACT-SMABOLAG.ST"
+          benchmark_type: "NORDIC_SMALLCAP_TOTAL_RETURN_GI"
           track_fees_and_fx_separately: true
           kill_switch_criteria:
-            max_net_underperformance_vs_benchmark_pct: -10.0
-            min_closed_trades_for_evaluation: 15
-            max_annual_fee_drag_pct: 3.5
-            max_sub_strategy_drawdown_pct: -25.0
+            evaluation_boolean_logic: "IMMEDIATE_OR_HARD_STOPS_PLUS_12M_AND_SAMPLE_CHECK"
+            immediate_or_hard_stops:
+              max_sub_strategy_drawdown_pct: -25.0
+              max_annual_fee_drag_pct: 3.5
+            periodic_and_evaluation:
+              min_duration_months: 12
+              min_combined_paper_and_live_trades: 15
+              max_net_underperformance_vs_smallcap_gi_pct: -10.0
         rules:
-          - "Thesis: Neglected, profitable Nordic small-caps (<= 6 analysts, positive ROE/EBIT/FCF, .HE or liquid .ST)"
-          - "Trial_Protocol: 12-24 month paper + 1,185 EUR live trial benchmarked against ^OMXSPI net of all broker & FX fees"
-          - "Kill_Switch: Terminate satellite if net return trails ^OMXSPI by > 10%-pts after 12m/15 trades or drawdown exceeds -25%"
+          - "Thesis: Neglected, profitable Nordic small-caps (verified <= 6 analysts, positive ROE/EBIT/FCF, .HE or liquid .ST)"
+          - "Trial_Protocol: 12-24 month paper + 1,185 EUR live trial benchmarked against Nordic Small-Cap Total Return GI (OMXSSCGI / XACT-SMABOLAG.ST) net of all broker & FX fees"
+          - "Kill_Switch: Immediate OR stop if drawdown < -25% or fee drag > 3.5%/yr; OR after (12m AND >= 15 combined paper+live trades) if net return trails Small-Cap GI by > 10%-pts"
           - "Exit_On: EOD_Trailing_Stop (-15.0% from highest close, no intraday stops)"
           - "Time_Stop: 45 trading days if PnL < +5.0%"
           - "Partial_TP: Sell 50% at +25.0%"

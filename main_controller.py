@@ -2539,7 +2539,33 @@ class MasterLiveTradingDaemon:
 
                     eff_allocation_acc = min(target_alloc_acc, available_cash)
 
-                    cand = valid_candidates.pop(0)
+                    # Near-Tie Sector Diversification Rule (<= 3.0 pts band):
+                    # When top candidates are within 3.0 points of each other, prefer a candidate from an unheld sector
+                    # rather than mechanically buying multiple stocks from the exact same sector.
+                    held_sectors = {
+                        str(pos.get("Sector") or (pos.get("Entry_Hard_Facts") or {}).get("sector") or "").strip().lower()
+                        for pos in portfolio.active_positions()
+                    } - {"", "none", "unknown"}
+                    pick_idx = 0
+                    if "midcap" in u_filter.lower() and held_sectors and len(valid_candidates) > 1:
+                        top_s = float(valid_candidates[0].get("score") or 0.0)
+                        top_sec = str((valid_candidates[0].get("hard_facts") or {}).get("sector") or (valid_candidates[0].get("meta") or {}).get("sector") or "").strip().lower()
+                        if top_sec in held_sectors:
+                            for idx_alt in range(1, len(valid_candidates)):
+                                alt_c = valid_candidates[idx_alt]
+                                if (top_s - float(alt_c.get("score") or 0.0)) > 3.0:
+                                    break
+                                alt_sec = str((alt_c.get("hard_facts") or {}).get("sector") or (alt_c.get("meta") or {}).get("sector") or "").strip().lower()
+                                if alt_sec and alt_sec not in held_sectors:
+                                    pick_idx = idx_alt
+                                    logger.info(
+                                        f"[{cfg.portfolio_id}] 🌐 [SECTOR DIVERSIFICATION] Promoting {alt_c['ticker']} "
+                                        f"(score={alt_c['score']:.2f}, sector={alt_sec}) over {valid_candidates[0]['ticker']} "
+                                        f"(score={top_s:.2f}, already-held sector={top_sec}) within 3.0 pt tie band."
+                                    )
+                                    break
+
+                    cand = valid_candidates.pop(pick_idx)
                     ticker = cand["ticker"]
                     cand_price = cand["cand_price"]
                     ticker_curr = cand["ticker_curr"]

@@ -108,7 +108,8 @@ def test_portfolios_yaml_structure():
     assert nordic_sub["slot_sizes"] == [1185]
     assert nordic_sub["universe_filter"] == "Nordic_MicroCap_Catalyst"
     assert "trial_protocol" in nordic_sub
-    assert nordic_sub["trial_protocol"]["benchmark_ticker"] == "^OMXSPI"
+    assert nordic_sub["trial_protocol"]["benchmark_ticker"] == "OMXSSCGI"
+    assert nordic_sub["trial_protocol"]["benchmark_type"] == "NORDIC_SMALLCAP_TOTAL_RETURN_GI"
 
     assert p13["execution_constraints"]["allowed_order_types"] == ["LIMIT"]
     assert p13["execution_constraints"]["market_regime_cash_buffer_pct"] == 40.0
@@ -2283,3 +2284,97 @@ def test_deterministic_tie_breaker_orders_by_liquidity_then_fcf_then_ticker(tmp_
     tickers_order = [c["ticker"] for c in top_list]
     # ZZZ_HIGH_LIQ.HE wins #1 by higher liquidity (250k > 80k); MMM_HIGH_FCF.HE wins #2 over AAA_LOW_LIQ.HE by higher FCF (25M > 15M)
     assert tickers_order == ["ZZZ_HIGH_LIQ.HE", "MMM_HIGH_FCF.HE", "AAA_LOW_LIQ.HE"]
+
+
+
+def test_core_near_tie_sector_diversification_within_3pt_band(tmp_path):
+    """
+    When top Core candidates are within a 3.0-point score band, the selector must prefer
+    a candidate from an unheld sector over a duplicate sector already held in the portfolio.
+    """
+    from main_controller import MasterLiveTradingDaemon, PortfolioConfig, PortfolioInstance
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.operational_metrics = {}
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        max_new_buys_per_cycle=1,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 6000,
+                "slots": 2,
+                "slot_sizes": [2000, 2000],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 8000.0
+    # Already holding 1 Technology stock in Core
+    p.positions = [
+        {
+            "Ticker": "TECH_HELD.HE",
+            "Shares": 100,
+            "Buy Price": 20.0,
+            "Buy Date": "2026-10-01",
+            "Currency": "EUR",
+            "Capital Invested": 2000.0,
+            "Sub_Strategy": "core_nordic_midcap_quality",
+            "Sector": "Technology",
+            "Peak Price": 20.0,
+        }
+    ]
+
+    daemon.market_engine.universe_metadata = {
+        "TECH_CAND.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 200_000.0, "current_price": 20.0, "sector": "Technology"},
+        "IND_CAND.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 200_000.0, "current_price": 20.0, "sector": "Industrials"},
+    }
+    daemon.market_engine.prices_cache = {
+        "TECH_HELD.HE": 20.0,
+        "TECH_CAND.HE": 20.0,
+        "IND_CAND.HE": 20.0,
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "TECH_HELD.HE": {"roe": 0.25, "ebit_margin": 0.20, "free_cash_flow": 20_000_000.0, "net_debt_to_ebitda": 0.0, "sector": "Technology"},
+        # TECH_CAND scores slightly higher (~1.2 pts higher), but is in already-held Technology sector
+        "TECH_CAND.HE": {
+            "roe": 0.26,
+            "roic": 0.24,
+            "ebit_margin": 0.22,
+            "revenue_growth_yoy_pct": 12.0,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "current_ev_ebit": 14.0,
+            "ev_ebit_5y_median": 15.0,
+            "ev_ebit_premium_pct": -6.67,
+            "bid_ask_spread_pct": 0.5,
+            "sector": "Technology",
+        },
+        # IND_CAND is within 3.0 pts of TECH_CAND and is in Industrials (unheld sector) -> must be selected!
+        "IND_CAND.HE": {
+            "roe": 0.24,
+            "roic": 0.22,
+            "ebit_margin": 0.20,
+            "revenue_growth_yoy_pct": 11.0,
+            "free_cash_flow": 20_000_000.0,
+            "net_debt_to_ebitda": 0.0,
+            "current_ev_ebit": 14.0,
+            "ev_ebit_5y_median": 15.0,
+            "ev_ebit_premium_pct": -6.67,
+            "bid_ask_spread_pct": 0.5,
+            "sector": "Industrials",
+        },
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache[t]
+
+    opened = daemon.execute_phase2_screening(p)
+    assert opened == 1
+    bought_tickers = {pos["Ticker"] for pos in p.active_positions()}
+    assert "IND_CAND.HE" in bought_tickers
+    assert "TECH_CAND.HE" not in bought_tickers
