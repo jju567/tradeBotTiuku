@@ -396,5 +396,166 @@ def test_get_hard_financials_missing_quarter_nan_does_not_compare_q3_to_q2(mock_
     mock_inst.info = {}
 
     metrics = get_hard_financials("MIPS.ST")
-    # Must equal (533 - 483) / 483 = +10.3520%, NEVER +59.2593%!
-    assert metrics["revenue_growth_yoy_pct"] == pytest.approx(10.352, abs=0.01)
+    # Must NEVER compare Q3 2026 (215M) against Q2 2025 (135M = +59.2593%)!
+    # Instead, must find date-verified Q2 2026 vs Q2 2025 (232M vs 135M = +71.8519%) AND reconcile 4Q TTM (745M) vs FY2025 (533M)
+    assert metrics["revenue_growth_yoy_pct"] != pytest.approx(59.2593, abs=0.05)
+    assert metrics["revenue_growth_yoy_pct"] == pytest.approx(71.8519, abs=0.01)
+    assert metrics["revenue_ttm_4q"] == pytest.approx(745_000_000.0)
+    assert metrics["revenue_annual_latest"] == pytest.approx(533_000_000.0)
+    assert "TTM_ACCELERATION_OR_MA_DIVERGENCE" in metrics["audit_flags"]
+
+
+@patch("screener.financial_metrics_engine.yf.Ticker")
+def test_ttm_vs_annual_mismatch_error_same_date(mock_ticker):
+    """
+    When the 4-quarter sum (e.g. 600M) ends on the exact same period end date (2025-12-31)
+    as the annual income statement (500M, >5% difference), get_hard_financials must flag
+    TTM_ANNUAL_MISMATCH_ERROR.
+    """
+    mock_inst = MagicMock()
+    mock_ticker.return_value = mock_inst
+    bs = pd.DataFrame(
+        {"2025-12-31": [100_000_000.0, 10_000_000.0]},
+        index=["Cash And Cash Equivalents", "Total Debt"],
+    )
+    mock_inst.quarterly_balance_sheet = bs
+    mock_inst.balance_sheet = bs
+    cf = pd.DataFrame({"2025-12-31": [50_000_000.0]}, index=["Operating Cash Flow"])
+    mock_inst.quarterly_cashflow = cf
+    mock_inst.cashflow = cf
+
+    qf = pd.DataFrame(
+        {
+            "2025-12-31": [150_000_000.0],
+            "2025-09-30": [150_000_000.0],
+            "2025-06-30": [150_000_000.0],
+            "2025-03-31": [150_000_000.0],  # 4Q sum = 600M
+        },
+        index=["Total Revenue"],
+    )
+    af = pd.DataFrame(
+        {
+            "2025-12-31": [500_000_000.0],  # Annual on same date = 500M (+20% mismatch!)
+            "2024-12-31": [450_000_000.0],
+        },
+        index=["Total Revenue"],
+    )
+    mock_inst.quarterly_financials = qf
+    mock_inst.financials = af
+    mock_inst.info = {}
+
+    metrics = get_hard_financials("BAD_SUM.ST")
+    assert "TTM_ANNUAL_MISMATCH_ERROR" in metrics["audit_flags"]
+    assert any("TTM_ANNUAL_MISMATCH_ERROR" in e for e in metrics["errors"])
+
+
+def test_calculate_candidate_score_bounds_monotonicity_sensitivity_and_neglected_satellite():
+    """
+    Verifies the 4 mandatory mathematical guarantees of calculate_candidate_score():
+    1. Bounds [0.0, 100.0]: Never < 0 or > 100 even with extreme inputs + insider bonus.
+    2. Monotonicity: Higher revenue growth never decreases score; higher Net Debt/EBITDA never increases score.
+    3. Sensitivity: Changing revenue_growth_yoy_pct strictly changes the Core score (prevents dead growth parameter).
+    4. Neglected Profitable Satellite: Profitable small-cap with low analyst coverage outscores unprofitable hype stock,
+       and >6 analysts is rejected by matches_nordic_microcap_catalyst.
+    """
+    from screener.financial_metrics_engine import calculate_candidate_score
+    from screener.tiered_filters import matches_nordic_microcap_catalyst
+
+    # 1. Bounds [0.0, 100.0]
+    s_min, bd_min = calculate_candidate_score(
+        "WORST.HE",
+        {
+            "roe": -5.0,
+            "roic": -3.0,
+            "ebit_margin": -2.0,
+            "revenue_growth_yoy_pct": -95.0,
+            "net_debt_to_ebitda": 50.0,
+            "current_ev_ebit": 500.0,
+            "ev_ebit_premium_pct": 400.0,
+            "fcf_yield_pct": -50.0,
+        },
+        universe_filter="Nordic_MidCap_Compounder",
+    )
+    assert 0.0 <= s_min <= 100.0
+    assert s_min == 0.0
+
+    s_max, bd_max = calculate_candidate_score(
+        "BEST.HE",
+        {
+            "roe": 95.0,
+            "roic": 90.0,
+            "ebit_margin": 80.0,
+            "revenue_growth_yoy_pct": 500.0,
+            "revenue_cagr_3y_pct": 300.0,
+            "net_debt_to_ebitda": -10.0,
+            "current_ev_ebit": 2.0,
+            "ev_ebit_premium_pct": -90.0,
+            "fcf_yield_pct": 50.0,
+            "insider_buying_signal": True,
+        },
+        universe_filter="Nordic_MidCap_Compounder",
+    )
+    assert 0.0 <= s_max <= 100.0
+    assert s_max == 100.0
+
+    # 2 & 3. Monotonicity and Sensitivity to Revenue Growth & Debt in Core
+    base_hf = {
+        "roe": 0.25,
+        "roic": 0.22,
+        "ebit_margin": 0.20,
+        "revenue_growth_yoy_pct": 5.0,
+        "net_debt_to_ebitda": 1.0,
+        "current_ev_ebit": 14.0,
+        "ev_ebit_premium_pct": 0.0,
+        "fcf_yield_pct": 5.0,
+    }
+    s_g5, bd_g5 = calculate_candidate_score("CORE.HE", dict(base_hf, revenue_growth_yoy_pct=5.0), universe_filter="Nordic_MidCap_Compounder")
+    s_g25, bd_g25 = calculate_candidate_score("CORE.HE", dict(base_hf, revenue_growth_yoy_pct=25.0), universe_filter="Nordic_MidCap_Compounder")
+    assert s_g25 > s_g5
+    assert bd_g25["growth_pts"] > bd_g5["growth_pts"]
+
+    s_d0, bd_d0 = calculate_candidate_score("CORE.HE", dict(base_hf, net_debt_to_ebitda=0.0), universe_filter="Nordic_MidCap_Compounder")
+    s_d2, bd_d2 = calculate_candidate_score("CORE.HE", dict(base_hf, net_debt_to_ebitda=2.0), universe_filter="Nordic_MidCap_Compounder")
+    assert s_d0 > s_d2
+    assert bd_d0["balance_sheet_pts"] > bd_d2["balance_sheet_pts"]
+
+    # 4. Neglected Profitable Small-Cap (Novotek-like) vs Unprofitable Hype (Nordtech-like)
+    s_prof, _ = calculate_candidate_score(
+        "NTEK-B.ST",
+        {
+            "roe": 0.175,
+            "roic": 0.366,
+            "ebit_margin": 0.08,
+            "revenue_growth_yoy_pct": 12.1,
+            "net_debt_to_ebitda": 0.0,
+            "fcf_yield_pct": 5.0,
+            "analyst_count": 1,
+            "is_profile_b": True,
+        },
+        universe_filter="Nordic_MicroCap_Catalyst",
+    )
+    s_unprof, _ = calculate_candidate_score(
+        "NTECH.ST",
+        {
+            "roe": -0.009,
+            "roic": 0.015,
+            "ebit_margin": 0.009,
+            "revenue_growth_yoy_pct": 49.9,
+            "net_debt_to_ebitda": 0.0,
+            "fcf_yield_pct": 1.0,
+            "analyst_count": 6,
+            "is_profile_a": True,
+        },
+        universe_filter="Nordic_MicroCap_Catalyst",
+    )
+    assert s_prof > s_unprof
+
+    # Over-covered small-cap (> 6 analysts) is rejected by Neglect Filter
+    passed_crowded, reasons_crowded = matches_nordic_microcap_catalyst(
+        "CROWDED.HE",
+        {"is_profile_b": True, "cash_runway_months": "Infinite", "analyst_count": 8},
+        {"market": "FI", "market_cap_eur": 50_000_000.0, "currency": "EUR", "adv_20d_local": 50_000.0},
+    )
+    assert passed_crowded is False
+    assert any("REJECTED_NOT_NEGLECTED" in r for r in reasons_crowded)
+

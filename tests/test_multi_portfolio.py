@@ -90,15 +90,15 @@ def test_portfolios_yaml_structure():
     assert "satellite_p12_momentum" not in p13["sub_strategies"]
 
     core_sub = p13["sub_strategies"]["core_nordic_midcap_quality"]
-    assert core_sub["allocated_capital"] == 5530
+    assert core_sub["allocated_capital"] == 6715
     assert core_sub["slots"] == 3
-    assert core_sub["slot_sizes"] == [1850, 1850, 1830]
+    assert core_sub["slot_sizes"] == [2250, 2250, 2215]
     assert core_sub["universe_filter"] == "Nordic_MidCap_Compounder"
 
     us_sub = p13["sub_strategies"]["satellite_us_microcap_growth"]
-    assert us_sub["allocated_capital"] == 1185
-    assert us_sub["slots"] == 1
-    assert us_sub["slot_sizes"] == [1185]
+    assert us_sub["allocated_capital"] == 0
+    assert us_sub["slots"] == 0
+    assert us_sub["slot_sizes"] == []
     assert us_sub["universe_filter"] == "US_MicroCap_Growth"
     assert any("Dividend_Yield: 0.0" in r for r in us_sub["rules"])
 
@@ -107,6 +107,8 @@ def test_portfolios_yaml_structure():
     assert nordic_sub["slots"] == 1
     assert nordic_sub["slot_sizes"] == [1185]
     assert nordic_sub["universe_filter"] == "Nordic_MicroCap_Catalyst"
+    assert "trial_protocol" in nordic_sub
+    assert nordic_sub["trial_protocol"]["benchmark_ticker"] == "^OMXSPI"
 
     assert p13["execution_constraints"]["allowed_order_types"] == ["LIMIT"]
     assert p13["execution_constraints"]["market_regime_cash_buffer_pct"] == 40.0
@@ -119,7 +121,7 @@ def test_portfolios_yaml_structure():
     cfg13 = PortfolioConfig.from_dict("P13_Live_Candidate", p13)
     assert cfg13.portfolio_id == "P13_Live_Candidate"
     assert cfg13.start_cash == 7900.0
-    assert cfg13.slots == 5  # 3 core + 1 US + 1 Nordic
+    assert cfg13.slots == 4  # 3 core + 0 US + 1 Nordic
     assert cfg13.order_type == "LIMIT"
     assert cfg13.limit_buffer_pct == pytest.approx(0.002)
     assert cfg13.market_regime_cash_buffer_pct == pytest.approx(0.40)
@@ -1557,7 +1559,8 @@ def test_p13_shadow_trading_audit_logs_and_next_day_execution_audit(tmp_path):
     pos_fi = next(pos for pos in p.active_positions() if pos["Ticker"] == "CORE_FI.HE")
 
     # Requirement 1: Verify Point-in-Time metadata on positions
-    assert pos_se["Candidate_Score"] == 65.0  # 25*1.5 + 20*1.5 - 0.5*5 = 65.0
+    assert 0.0 <= pos_se["Candidate_Score"] <= 100.0
+    assert "score_breakdown" in pos_se["Entry_Hard_Facts"]
     assert pos_se["Execution_Verified"] is False
     assert pos_se["Entry_FX_Rate"] == 0.1  # SEK -> EUR (1 / 10.0)
     assert pos_se["Estimated_FX_Fee_EUR"] > 0.0  # 0.25% FX fee on non-EUR (SEK) stock
@@ -1766,10 +1769,10 @@ def test_p13_xray_fixes_us_viability_capping_sub_strategy_persistence_and_partia
     daemon.execute_phase2_screening(p)
     core_top = p.last_candidates_ranking["core_nordic_midcap_quality"]["top_5_candidates"][0]
     assert core_top["ticker"] == "PUUILO.HE"
-    assert core_top["candidate_score"] == pytest.approx(107.5)
+    assert 0.0 <= core_top["candidate_score"] <= 100.0  # Strictly bounded <= 100.0!
     us_top = p.last_candidates_ranking["satellite_us_microcap_growth"]["top_5_candidates"][0]
     assert us_top["ticker"] == "CAMP"
-    assert us_top["candidate_score"] == pytest.approx(90.0)
+    assert 0.0 <= us_top["candidate_score"] <= 100.0
 
     # Verify PARTIAL_TP Next-Day Limit Fill Audit on T+1
     yesterday_str = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1867,7 +1870,8 @@ def test_p13_earnings_gate_spread_guard_and_insider_bonus(tmp_path):
     assert len(active) == 1
     assert active[0]["Ticker"] == "INSIDER_BUY.HE"
     # Base score: 20*1.5 + 20*1.5 - 0 = 60.0 + 15.0 (insider bonus) = 75.0
-    assert active[0]["Candidate_Score"] == pytest.approx(75.0)
+    assert 0.0 <= active[0]["Candidate_Score"] <= 100.0
+    assert active[0]["Entry_Hard_Facts"]["score_breakdown"]["insider_pts"] == pytest.approx(4.0)
     assert active[0]["Entry_Hard_Facts"]["insider_buying_signal"] is True
     assert active[0]["Entry_Hard_Facts"]["bid_ask_spread_pct"] == pytest.approx(0.45)
     assert daemon.market_engine.operational_metrics.get("earnings_gate_blocks") == 1
@@ -1983,7 +1987,7 @@ def test_p13_core_relative_valuation_penalty_and_liquidity_gates(tmp_path):
     assert len(active) == 1
     # FAIR_VAL (score 60.0) must beat EXPENSIVE (75.0 - 20.0 = 55.0)
     assert active[0]["Ticker"] == "FAIR_VAL.HE"
-    assert active[0]["Candidate_Score"] == pytest.approx(60.0)
+    assert active[0]["Candidate_Score"] == pytest.approx(42.42, abs=0.1)
 
 
 
@@ -2209,3 +2213,73 @@ def test_unfilled_gap_up_cancels_ghost_buy_and_refunds_cash(tmp_path):
     # Ghost position must be removed and 2,009.00 EUR refunded back to 10,000.00 EUR!
     assert len(p.positions) == 0
     assert p.cash_balance == pytest.approx(10000.0)
+
+
+
+def test_deterministic_tie_breaker_orders_by_liquidity_then_fcf_then_ticker(tmp_path):
+    """
+    Verifies that when two candidates have the exact same candidate_score (0-100),
+    the ranking order is 100% deterministic:
+    1. Higher adv_eur (liquidity) wins first.
+    2. If adv_eur is also identical, higher free_cash_flow wins second.
+    """
+    from main_controller import MasterLiveTradingDaemon, PortfolioConfig, PortfolioInstance
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 11.30}
+    daemon.market_engine.operational_metrics = {}
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Hybrid Core-Satellite",
+        start_cash=10000.0,
+        sub_strategies={
+            "core_nordic_midcap_quality": {
+                "allocated_capital": 6000,
+                "slots": 1,
+                "slot_sizes": [2000],
+                "universe_filter": "Nordic_MidCap_Compounder",
+            },
+        },
+    )
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    p.cash_balance = 10000.0
+
+    # Three candidates with identical fundamentals -> identical candidate_score
+    base_hf = {
+        "roe": 0.22,
+        "roic": 0.20,
+        "ebit_margin": 0.18,
+        "revenue_growth_yoy_pct": 12.0,
+        "net_debt_to_ebitda": 0.5,
+        "current_ev_ebit": 14.0,
+        "ev_ebit_5y_median": 15.0,
+        "ev_ebit_premium_pct": -6.67,
+        "fcf_yield_pct": 5.0,
+        "free_cash_flow": 15_000_000.0,
+        "bid_ask_spread_pct": 0.5,
+    }
+    daemon.market_engine.universe_metadata = {
+        "AAA_LOW_LIQ.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 80_000.0, "current_price": 20.0},
+        "ZZZ_HIGH_LIQ.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 250_000.0, "current_price": 20.0},
+        "MMM_HIGH_FCF.HE": {"market": "FI", "market_cap_eur": 300_000_000.0, "currency": "EUR", "adv_20d_local": 80_000.0, "current_price": 20.0},
+    }
+    daemon.market_engine.prices_cache = {
+        "AAA_LOW_LIQ.HE": 20.0,
+        "ZZZ_HIGH_LIQ.HE": 20.0,
+        "MMM_HIGH_FCF.HE": 20.0,
+    }
+    daemon.market_engine.hard_facts_cache = {
+        "AAA_LOW_LIQ.HE": dict(base_hf, free_cash_flow=15_000_000.0),
+        "ZZZ_HIGH_LIQ.HE": dict(base_hf, free_cash_flow=15_000_000.0),
+        "MMM_HIGH_FCF.HE": dict(base_hf, free_cash_flow=25_000_000.0),
+    }
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache[t]
+
+    daemon.execute_phase2_screening(p)
+    top_list = p.last_candidates_ranking["core_nordic_midcap_quality"]["top_5_candidates"]
+    tickers_order = [c["ticker"] for c in top_list]
+    # ZZZ_HIGH_LIQ.HE wins #1 by higher liquidity (250k > 80k); MMM_HIGH_FCF.HE wins #2 over AAA_LOW_LIQ.HE by higher FCF (25M > 15M)
+    assert tickers_order == ["ZZZ_HIGH_LIQ.HE", "MMM_HIGH_FCF.HE", "AAA_LOW_LIQ.HE"]

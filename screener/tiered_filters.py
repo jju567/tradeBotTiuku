@@ -428,11 +428,12 @@ def matches_nordic_microcap_catalyst(
     fx_rates: Optional[Dict[str, float]] = None,
 ) -> Tuple[bool, List[str]]:
     """
-    Tier 3: Nordic_MicroCap_Catalyst (Satellite 2)
-    - Market Cap: 15,000,000 EUR <= market_cap < 150,000,000 EUR (OMXH / OMXS / First North).
+    Tier 3: Nordic_MicroCap_Catalyst (Satellite: Neglected, Profitable Nordic Small-Caps)
+    - Market: Strictly FI (.HE) or SE (.ST) with 15M EUR <= market_cap < 150M EUR.
+    - Neglect Filter: Low analyst coverage (number_of_analyst_opinions <= 6 when reported).
     - Liquidity: adv_eur >= 20,000 EUR mandatory for all candidates.
-    - Criteria: Either undervalued quality micro-cap (Profile A or Profile B)
-      OR WATCH_TURNAROUND with verified news/earnings NLP catalyst and cash runway >= 12 months (or FCF/EBIT > 0).
+    - Criteria: Undervalued profitable small-cap (Profile A or Profile B)
+      OR verified turnaround with documented catalyst and cash runway >= 12 months (or OCF/FCF > 0).
     """
     reasons: List[str] = []
     if hard_facts.get("status") == "REJECTED_DATA_LEAK" or hard_facts.get("data_leak_quarantine") is True:
@@ -441,13 +442,18 @@ def matches_nordic_microcap_catalyst(
     t_clean = ticker.strip().upper()
     market = str(meta.get("market", "")).upper()
 
-    # Must be Nordic
+    # Must be FI (.HE) or SE (.ST) Nordic equity
     is_nordic = (
-        market in ["FI", "SE", "DK", "NO", "HE", "ST", "CO", "OL"]
-        or any(t_clean.endswith(s) for s in [".HE", ".ST", ".CO", ".OL"])
+        market in ["FI", "SE", "HE", "ST"]
+        or any(t_clean.endswith(s) for s in [".HE", ".ST"])
     )
     if not is_nordic:
-        return False, ["Not a Nordic equity"]
+        return False, ["Not a Nordic equity (.HE or .ST required for Satellite)"]
+
+    # 0. Neglect Filter: Reject heavily covered stocks (> 6 analysts)
+    analyst_cnt = hard_facts.get("analyst_count") if hard_facts.get("analyst_count") is not None else hard_facts.get("number_of_analyst_opinions")
+    if analyst_cnt is not None and int(analyst_cnt) > 6:
+        reasons.append(f"REJECTED_NOT_NEGLECTED: Analyst coverage ({int(analyst_cnt)}) > 6 analysts")
 
     # 1. Market Cap in EUR: 15M <= MCAP < 150M
     mcap_eur = get_market_cap_in_eur(meta, hard_facts, fx_rates)

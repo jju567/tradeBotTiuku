@@ -65,7 +65,12 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env")
 
 from email_notifier import send_portfolio_alert, send_run_summary_email
-from screener.financial_metrics_engine import audit_candidates_data, evaluate_profiles, get_hard_financials
+from screener.financial_metrics_engine import (
+    audit_candidates_data,
+    calculate_candidate_score,
+    evaluate_profiles,
+    get_hard_financials,
+)
 from screener.nlp_analyzer import rule_based_analyze_core_fundamentals
 from screener.portfolio_manager import evaluate_position
 from screener.web_verifier import (
@@ -2301,45 +2306,23 @@ class MasterLiveTradingDaemon:
                 )
                 continue
 
-            # Step 1.3: Calculate candidate_score with Capping / Winsorizing against extreme outliers
-            capped_roe = min(max(float(roe_pct or 0.0), 0.0), 40.0)
-            capped_ebit = min(max(float(ebit_margin_pct or 0.0), 0.0), 35.0)
-            capped_rev_yoy = min(max(float(rev_yoy_val or 0.0), 0.0), 60.0)
-
-            if "midcap" in u_filter.lower():
-                # Core (Nordic_MidCap_Compounder): (capped_roe * 1.5) + (capped_ebit * 1.5) - (net_debt_to_ebitda * 5.0)
-                cand_score = (capped_roe * 1.5) + (capped_ebit * 1.5) - ((nd_val or 0.0) * 5.0)
-
-                # Relative Valuation Filter: EV/EBIT vs. 5-year historical median
-                # If current EV/EBIT is > 20% higher than its 5y historical median -> -20.0 pts penalty
-                is_expensive = bool(hard_facts.get("is_historically_expensive", False))
-                if is_expensive:
-                    prem_pct = hard_facts.get("ev_ebit_premium_pct")
-                    logger.info(
-                        f"[{portfolio.config.portfolio_id}] ⚠️ [VALUATION PENALTY] {ticker}: "
-                        f"Current EV/EBIT is +{prem_pct}% above its 5-year historical median. "
-                        f"Applying -20.0 pts penalty to candidate_score."
-                    )
-                    cand_score -= 20.0
-            elif "us_" in u_filter.lower():
-                # Satellite 1 (US_MicroCap_Growth): capped_rev_yoy + (30.0 if is_profile_a) + (25.0 if nlp_verdict == "STRONG BUY")
-                is_prof_a = bool(hard_facts.get("is_profile_a", False))
-                cand_score = capped_rev_yoy + (30.0 if is_prof_a else 0.0) + (25.0 if news_verdict == "STRONG BUY" else 0.0)
-            else:
-                # Satellite 2 (Nordic_MicroCap_Catalyst): (35.0 if is_profile_a) + (25.0 if is_profile_b) + (30.0 if nlp in STRONG BUY/WATCH_TURNAROUND) + capped_rev_yoy * 0.5
-                is_prof_a = bool(hard_facts.get("is_profile_a", False))
-                is_prof_b = bool(hard_facts.get("is_profile_b", False))
-                nlp_cat = (news_verdict in ["STRONG BUY", "WATCH_TURNAROUND"])
-                cand_score = (35.0 if is_prof_a else 0.0) + (25.0 if is_prof_b else 0.0) + (30.0 if nlp_cat else 0.0) + (capped_rev_yoy * 0.5)
-
-            # Insider Buying Bonus (+15.0 pts when verified open-market insider buying or MAR manager transaction)
-            news_reason_low = str(news_reason or "").lower()
-            insider_sig = bool(hard_facts.get("insider_buying_signal", False)) or any(
-                kw in news_reason_low
-                for kw in ("johdon liiketoimet", "insider buying", "insynshandel", "manager's transaction", "sisäpiirin osto")
+            # Step 1.3: Normalized 0-100 Continuous Candidate Scoring Function (The Hardened Path v2)
+            cand_score, score_breakdown = calculate_candidate_score(
+                ticker=ticker,
+                hard_facts=hard_facts,
+                meta=meta,
+                universe_filter=u_filter,
+                news_verdict=news_verdict,
+                news_reason=news_reason,
             )
-            if insider_sig:
-                cand_score += 15.0
+            if "midcap" in u_filter.lower() and bool(hard_facts.get("is_historically_expensive", False)):
+                prem_pct = hard_facts.get("ev_ebit_premium_pct")
+                logger.info(
+                    f"[{portfolio.config.portfolio_id}] ⚠️ [VALUATION DISCOUNT] {ticker}: "
+                    f"Current EV/EBIT is +{prem_pct}% above its 5-year historical median "
+                    f"(valuation_pts={score_breakdown.get('valuation_pts')}/25.0, total_score={cand_score}/100.0)."
+                )
+            insider_sig = bool(score_breakdown.get("insider_pts", 0.0) > 0.0)
 
             rates = self.market_engine.fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
             fx_to_eur = 1.0
@@ -2361,7 +2344,15 @@ class MasterLiveTradingDaemon:
                 "cash_runway": cash_runway_val,
                 "adv_eur": round(adv_eur, 2),
                 "nlp_verdict": news_verdict,
+                "score_breakdown": score_breakdown,
             }
+            if hard_facts.get("roic") is not None:
+                roic_r = float(hard_facts["roic"])
+                entry_hard_facts["roic"] = round(roic_r * 100.0 if abs(roic_r) <= 2.0 else roic_r, 2)
+            if hard_facts.get("revenue_cagr_3y_pct") is not None:
+                entry_hard_facts["revenue_cagr_3y_pct"] = round(float(hard_facts["revenue_cagr_3y_pct"]), 2)
+            if hard_facts.get("fcf_yield_pct") is not None:
+                entry_hard_facts["fcf_yield_pct"] = round(float(hard_facts["fcf_yield_pct"]), 2)
             if insider_sig:
                 entry_hard_facts["insider_buying_signal"] = True
             if days_to_earn is not None:
@@ -2392,6 +2383,7 @@ class MasterLiveTradingDaemon:
                 "ticker": ticker,
                 "score": cand_score,
                 "candidate_score": cand_score,
+                "score_breakdown": score_breakdown,
                 "adv_eur": adv_eur,
                 "meta": meta,
                 "hard_facts": hard_facts,
@@ -2414,7 +2406,15 @@ class MasterLiveTradingDaemon:
             and c.get("status") != "REJECTED_DATA_LEAK"
             and (c.get("hard_facts") or {}).get("status") != "REJECTED_DATA_LEAK"
         ]
-        valid_candidates.sort(key=lambda x: (x["score"], x["adv_eur"]), reverse=True)
+        # Deterministic Tie-Breaking: (1) candidate_score DESC, (2) adv_eur liquidity DESC, (3) free_cash_flow DESC, (4) ticker ASC
+        valid_candidates.sort(
+            key=lambda x: (
+                -round(float(x.get("score") or 0.0), 4),
+                -round(float(x.get("adv_eur") or 0.0), 2),
+                -float((x.get("hard_facts") or {}).get("free_cash_flow") or 0.0),
+                str(x.get("ticker") or ""),
+            )
+        )
         return valid_candidates
 
     def execute_phase2_sub_strategies_screening(
@@ -2454,8 +2454,15 @@ class MasterLiveTradingDaemon:
             current_held = len(positions_by_sub.get(sub_name, []))
             needed = sub_slots - current_held
             u_filter = str(sub_cfg.get("universe_filter", ""))
-            slot_sizes = sub_cfg.get("slot_sizes") or [sub_cfg.get("slot_size") or (float(sub_cfg.get("allocated_capital", 1500)) / sub_slots)]
-            target_alloc_ref = float(slot_sizes[current_held] if current_held < len(slot_sizes) else slot_sizes[-1])
+            slot_sizes = sub_cfg.get("slot_sizes") or [
+                sub_cfg.get("slot_size")
+                or (float(sub_cfg.get("allocated_capital", 1500)) / max(1, sub_slots) if sub_slots > 0 else 0.0)
+            ]
+            target_alloc_ref = float(
+                slot_sizes[current_held]
+                if current_held < len(slot_sizes)
+                else (slot_sizes[-1] if slot_sizes else 0.0)
+            )
             eff_allocation_acc = min(target_alloc_ref, max(0.0, available_cash))
 
             # Collect and score candidates for audit & ranking even if slots/cash/staggered guard block buying
