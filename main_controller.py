@@ -371,6 +371,8 @@ class PortfolioConfig:
     description: Optional[str] = None
     ignore_hodl_positions: bool = False
     portfolio_max_drawdown_alert_pct: float = -15.0
+    risk_off_recovery_pct: float = -8.0
+    reconcile_p13_next_day_fills: bool = True
     max_new_buys_per_cycle: Optional[int] = None
     min_days_between_buys: Optional[int] = None
     max_new_buys_per_7d: Optional[int] = None
@@ -505,6 +507,9 @@ class PortfolioInstance:
         self.cash_balance = float(config.start_cash)
         self.starting_balance = float(config.start_cash)
         self.tax_liability_eur: float = 0.0
+        self.net_cash_flows_eur: float = 0.0
+        self.peak_equity_eur: Optional[float] = None
+        self.risk_off_mode: bool = False
         self.currency = "EUR"
         self.positions: List[Dict[str, Any]] = []
         self.pending_execution_audits: List[Dict[str, Any]] = []
@@ -539,6 +544,9 @@ class PortfolioInstance:
                         self.cash_balance = float(data.get("cash_balance", self.config.start_cash))
                         self.starting_balance = float(data.get("starting_balance", self.config.start_cash))
                         self.tax_liability_eur = float(data.get("tax_liability_eur", 0.0))
+                        self.net_cash_flows_eur = float(data.get("net_cash_flows_eur", 0.0))
+                        self.peak_equity_eur = float(data["peak_equity_eur"]) if data.get("peak_equity_eur") is not None else None
+                        self.risk_off_mode = bool(data.get("risk_off_mode", False))
                         self.currency = data.get("currency", "EUR")
                         self.positions = [self._normalize_position(p) for p in data.get("positions", [])]
                         self.pending_execution_audits = list(data.get("pending_execution_audits", []))
@@ -678,6 +686,21 @@ class PortfolioInstance:
         self.save_state()
         return updated_pos
 
+    def record_capital_flow(self, amount_eur: float) -> None:
+        """
+        Records a deposit (+amount_eur) or withdrawal (-amount_eur) and adjusts
+        peak_equity_eur and starting_balance by the same capital flow so deposits
+        do not artificially inflate peak equity and withdrawals do not trigger false
+        -15% drawdown brakes.
+        """
+        flow = float(amount_eur)
+        self.cash_balance = max(0.0, self.cash_balance + flow)
+        self.net_cash_flows_eur = getattr(self, "net_cash_flows_eur", 0.0) + flow
+        self.starting_balance = max(0.0, self.starting_balance + flow)
+        if getattr(self, "peak_equity_eur", None) is not None:
+            self.peak_equity_eur = max(0.0, float(self.peak_equity_eur) + flow)
+        self.save_state()
+
     def set_cash(self, cash_eur: float) -> None:
         """Sets current cash balance and saves state atomically."""
         self.cash_balance = float(cash_eur)
@@ -695,9 +718,12 @@ class PortfolioInstance:
         self.updated_at = datetime.now(timezone.utc).isoformat()
         payload: Dict[str, Any] = {
             "portfolio_id": self.config.portfolio_id,
-            "starting_balance": self.starting_balance,
+            "starting_balance": round(self.starting_balance, 2),
             "cash_balance": round(self.cash_balance, 2),
             "tax_liability_eur": round(getattr(self, "tax_liability_eur", 0.0), 2),
+            "net_cash_flows_eur": round(getattr(self, "net_cash_flows_eur", 0.0), 2),
+            "peak_equity_eur": round(float(self.peak_equity_eur), 2) if getattr(self, "peak_equity_eur", None) is not None else None,
+            "risk_off_mode": bool(getattr(self, "risk_off_mode", False)),
             "currency": self.currency,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -1069,7 +1095,7 @@ class MarketDataEngine:
                         "runup_3d_pct": runup_3d_pct,
                         "rsi_14": rsi_14,
                         "typical_price": vwap_val,
-                        "vwap": vwap_val,
+                        "vwap": vwap_val,  # DEPRECATED: alias for typical_price ((H+L+C)/3), scheduled for removal
                         "last_candle_close": last_c_close,
                         "day_high": h_val,
                         "day_low": l_val,
@@ -1197,7 +1223,14 @@ class MarketDataEngine:
                         safety = nlp_res.get("financial_safety", {})
                         v_reason_raw = str(nlp_res.get("verdict_details", {}).get("reasoning", "") or "")
                         v_reason_low = v_reason_raw.lower()
-                        is_false_snippet_reject = any(
+                        ticker_root = str(ticker).split(".")[0].split("-")[0].lower()
+                        is_mismatched_ticker_reject = (
+                            bool(ticker_root)
+                            and ticker_root not in v_reason_low
+                            and any(p in v_reason_low for p in ("is rejected", "empty shell", "going concern"))
+                            and not any(p in full_text.lower() for p in ("bankruptcy", "insolvency", "chapter 11", "going concern"))
+                        )
+                        is_false_snippet_reject = is_mismatched_ticker_reject or any(
                             phrase in v_reason_low
                             for phrase in (
                                 "lack of information",
@@ -1539,10 +1572,24 @@ class MasterLiveTradingDaemon:
                 pos["highest_price_seen"] = round(highest_close, 4)
             cur_peak = highest_close
 
-            # EOD Stop-Loss threshold: -15.0% from highest close
-            stop_threshold = round(highest_close * (1.0 - 0.15), 4)
+            # TASK-09: Dynamic 2.5x ATR Stop-Loss with -20.0% hard ceiling (defaults to -15.0% when ATR is not provided)
+            mom_info = getattr(self.market_engine, "momentum_cache", {}).get(ticker, {}) if hasattr(self.market_engine, "momentum_cache") else {}
+            hf_cached = getattr(self.market_engine, "hard_facts_cache", {}).get(ticker, {}) if hasattr(self.market_engine, "hard_facts_cache") else {}
+            atr_pct_raw = (
+                pos.get("atr_pct")
+                or (hf_cached.get("atr_pct") if isinstance(hf_cached, dict) else None)
+                or (mom_info.get("atr_pct") if isinstance(mom_info, dict) else None)
+            )
+            if atr_pct_raw is not None and float(atr_pct_raw) > 0:
+                atr_f = float(atr_pct_raw)
+                atr_frac = atr_f / 100.0 if atr_f > 1.0 else atr_f
+                dynamic_stop_pct = min(0.20, max(0.12, 2.5 * atr_frac))
+            else:
+                dynamic_stop_pct = 0.15
+            stop_threshold = round(highest_close * (1.0 - dynamic_stop_pct), 4)
             pos["stop_threshold"] = stop_threshold
             pos["eod_stop_threshold"] = stop_threshold
+            pos["dynamic_stop_pct"] = round(dynamic_stop_pct * 100.0, 2)
 
             # --- Task 2: Partial Take-Profit (+25% gain triggers 50% partial sale into cash) ---
             if portfolio.config.partial_take_profit:
@@ -1771,10 +1818,14 @@ class MasterLiveTradingDaemon:
                                 reason = f"QUARTERLY_FUNDAMENTAL_BREAKDOWN ({', '.join(breakdown_reasons)})"
 
                     elif sub_strat in ["satellite_us_microcap_growth", "satellite_nordic_microcap_catalyst"]:
-                        # Satellite: EOD Trailing Stop (-15.0% from highest close)
-                        if current_price <= stop_threshold:
+                        # Satellite: EOD Trailing Stop (2.5x ATR capped at -20%, or -15% default) + Gap-Down min(Open, Stop)
+                        day_low_sat = pos.get("day_low") or (mom_info.get("day_low") if isinstance(mom_info, dict) else None)
+                        day_open_sat = pos.get("day_open") or (mom_info.get("day_open") if isinstance(mom_info, dict) else None)
+                        if current_price <= stop_threshold or (day_low_sat is not None and float(day_low_sat) <= stop_threshold):
+                            if day_open_sat is not None and float(day_open_sat) > 0:
+                                current_price = round(min(float(day_open_sat), float(stop_threshold), float(current_price)), 4)
                             action = "SELL"
-                            reason = f"EOD_TRAILING_STOP (Close {current_price:.2f} <= Stop {stop_threshold:.2f}, -15.0% from Peak Close {highest_close:.2f})"
+                            reason = f"EOD_TRAILING_STOP (Close {current_price:.2f} <= Stop {stop_threshold:.2f}, -{dynamic_stop_pct*100:.1f}% from Peak Close {highest_close:.2f})"
                         elif news_verdict == "REJECT":
                             action = "SELL"
                             reason = f"LLM_NEWS_REJECT ({news_reason})"
@@ -1809,16 +1860,23 @@ class MasterLiveTradingDaemon:
                             action = "SELL"
                             reason = f"STOP_LOSS_{region} (Loss -{loss_from_buy*100:.1f}% >= -{effective_stop*100:.1f}%)" 
 
-            # Dedicated Momentum Breakout Exits (Strict Trailing Stop 6%, Stalled Momentum 21d, NLP Clean Guard)
+            # Dedicated Momentum Breakout Exits (Strict Trailing Stop 6%, Intraday Low & Gap-Down min(Open, Stop), Stalled Momentum 21d, NLP Clean Guard)
             if portfolio.config.strategy == "Momentum_Breakout":
+                mom_stop_px = round(cur_peak * (1.0 - portfolio.config.trailing_stop_pct), 4)
+                day_low_mom = pos.get("day_low") or (mom_info.get("day_low") if isinstance(mom_info, dict) else None)
+                day_open_mom = pos.get("day_open") or (mom_info.get("day_open") if isinstance(mom_info, dict) else None)
                 drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
+                intraday_stop_hit = day_low_mom is not None and float(day_low_mom) <= mom_stop_px
                 try:
                     b_date = datetime.strptime(str(buy_date)[:10], "%Y-%m-%d").date()
                     holding_days = (today - b_date).days
                 except Exception:
                     holding_days = 0
 
-                if drawdown_from_peak >= portfolio.config.trailing_stop_pct:
+                if drawdown_from_peak >= portfolio.config.trailing_stop_pct or intraday_stop_hit:
+                    if day_open_mom is not None and float(day_open_mom) > 0:
+                        current_price = round(min(float(day_open_mom), mom_stop_px), 4)
+                        drawdown_from_peak = (cur_peak - current_price) / cur_peak if cur_peak > 0 else 0.0
                     action = "SELL"
                     reason = f"TRAILING_STOP (Peak {cur_peak:.2f} -> {current_price:.2f}, -{drawdown_from_peak*100:.1f}%)"
                 elif holding_days >= portfolio.config.max_holding_days:
@@ -2554,6 +2612,7 @@ class MasterLiveTradingDaemon:
                         "Entry_FX_Rate": round(fx_to_acc, 6),
                         "Estimated_FX_Fee_EUR": est_fx_fee_eur,
                         "Broker_Fee_EUR": broker_fee_eur,
+                        "Total_Cost_EUR": round(total_cost_acc, 4),
                         "Execution_Verified": False,
                         "Audit_Flags": cand.get("audit_flags", []),
                         "Audit_Warning": cand.get("audit_warning"),
@@ -2654,7 +2713,7 @@ class MasterLiveTradingDaemon:
             buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
             min_required_cash = baseline_equity * buffer_pct
 
-        # Portfolio Max Drawdown alert & TASK-14 Emergency Risk-Off Mode
+        # Portfolio Max Drawdown alert & TASK-14 Emergency Risk-Off Mode with Hysteresis (-15% trigger, -8% recovery)
         peak_eq = getattr(portfolio, "peak_equity_eur", None)
         if peak_eq is None:
             peak_eq = cur_total_equity
@@ -2662,17 +2721,23 @@ class MasterLiveTradingDaemon:
             peak_eq = max(float(peak_eq), cur_total_equity)
         portfolio.peak_equity_eur = peak_eq
         port_dd_pct = 0.0
+        dd_alert = getattr(cfg, "portfolio_max_drawdown_alert_pct", -15.0) or -15.0
+        recovery_pct = getattr(cfg, "risk_off_recovery_pct", -8.0) or -8.0
         if peak_eq > 0:
             port_dd_pct = ((cur_total_equity - peak_eq) / peak_eq) * 100.0
-            dd_alert = getattr(cfg, "portfolio_max_drawdown_alert_pct", -15.0) or -15.0
             if port_dd_pct <= dd_alert:
                 portfolio.risk_off_mode = True
                 logger.warning(
                     f"🚨 [{cfg.portfolio_id}] PORTFOLIO DRAWDOWN ALERT: Current equity {cur_total_equity:.2f}€ is {port_dd_pct:.1f}% below peak {peak_eq:.2f}€ (Alert threshold: {dd_alert:.1f}%). "
                     f"Enforcing EMERGENCY RISK-OFF: New buys halted and cash buffer elevated to 60%."
                 )
+            elif getattr(portfolio, "risk_off_mode", False) and port_dd_pct >= recovery_pct:
+                portfolio.risk_off_mode = False
+                logger.info(
+                    f"✅ [{cfg.portfolio_id}] Drawdown recovered to {port_dd_pct:.1f}% (>= {recovery_pct:.1f}% hysteresis threshold). Exiting RISK-OFF mode."
+                )
 
-        if getattr(portfolio, "risk_off_mode", False) or (peak_eq > 0 and port_dd_pct <= (getattr(cfg, "portfolio_max_drawdown_alert_pct", -15.0) or -15.0)):
+        if getattr(portfolio, "risk_off_mode", False):
             buffer_pct = 0.60
             min_required_cash = baseline_equity * buffer_pct
             portfolio.last_screening_block_reason = "BLOCKED_BY_DRAWDOWN_RISK_OFF"
@@ -3454,7 +3519,9 @@ class MasterLiveTradingDaemon:
         limit_buf = getattr(portfolio.config, "limit_buffer_pct", 0.002) or 0.002
 
         # 1. Audit open positions with Execution_Verified == False
-        for pos in portfolio.positions:
+        unfilled_positions_to_cancel: List[Dict[str, Any]] = []
+        reconcile_fills = bool(getattr(portfolio.config, "reconcile_p13_next_day_fills", True))
+        for pos in list(portfolio.positions):
             if portfolio.is_hodl_position(pos):
                 continue
             if pos.get("Execution_Verified", True) is not False:
@@ -3524,8 +3591,31 @@ class MasterLiveTradingDaemon:
             pos["Would_Have_Filled"] = would_have_filled
             pos["Realistic_Fill_Price"] = realistic_fill_str if realistic_fill_str != "" else None
             pos["Slippage_vs_Paper_Pct"] = slippage_pct
+
+            if reconcile_fills:
+                if would_have_filled == "UNFILLED_GAP_UP":
+                    refund_eur = pos.get("Total_Cost_EUR")
+                    if refund_eur is None:
+                        refund_eur = (shares * paper_price) * fx_to_acc + float(broker_fee_eur) + float(fx_fee_eur)
+                    portfolio.cash_balance = round(portfolio.cash_balance + float(refund_eur), 2)
+                    pos["Cancelled_Unfilled_Gap_Up"] = True
+                    unfilled_positions_to_cancel.append(pos)
+                    logger.warning(
+                        f"🚫 [{portfolio.config.portfolio_id}] T+1 UNFILLED_GAP_UP on {ticker}: "
+                        f"Next-day Low {next_low:.4f} > Limit {limit_price:.4f}. Cancelled ghost buy and refunded {float(refund_eur):.2f} EUR."
+                    )
+                elif would_have_filled == "FILLED" and isinstance(realistic_fill_str, (int, float)) and abs(float(realistic_fill_str) - paper_price) > 1e-6:
+                    fill_px = float(realistic_fill_str)
+                    price_diff_eur = (paper_price - fill_px) * shares * fx_to_acc
+                    portfolio.cash_balance = round(portfolio.cash_balance + price_diff_eur, 2)
+                    pos["Buy Price"] = fill_px
+                    pos["Capital Invested"] = round( pos.get("Capital Invested", shares * paper_price) - (paper_price - fill_px) * shares, 2)
+
             state_dirty = True
             audited_count += 1
+
+        if unfilled_positions_to_cancel:
+            portfolio.positions = [p for p in portfolio.positions if p not in unfilled_positions_to_cancel]
 
         # 2. Audit pending SELL / PARTIAL_TP executions
         remaining_pending: List[Dict[str, Any]] = []

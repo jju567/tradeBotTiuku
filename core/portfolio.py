@@ -283,40 +283,52 @@ class PortfolioManager:
                     is_fi = sym_up.endswith(".HE")
                     mkt = "SE" if is_se else ("FI" if is_fi else "US")
                     curr = "SEK" if is_se else ("EUR" if is_fi else "USD")
-                    # TASK-11: Check if ticker is in clean microcap universe to avoid mistagging Nordic micro-caps as Core Mid-Caps
-                    microcap_set = set()
-                    try:
-                        clean_u_file = Path(__file__).resolve().parent.parent / "data" / "clean_microcap_universe.csv"
-                        if clean_u_file.exists():
-                            import csv
-                            with open(clean_u_file, "r", encoding="utf-8") as f_cu:
-                                microcap_set = {r["ticker"].strip().upper() for r in csv.DictReader(f_cu) if "ticker" in r}
-                    except Exception:
-                        pass
+                    # TASK-11: Market cap-based classification (>= 150M EUR -> Core Mid-Cap, < 150M EUR or missing -> Satellite Micro-Cap)
+                    mcap_eur = float(h.get("market_cap_eur") or 0.0)
+                    if mcap_eur <= 0:
+                        try:
+                            clean_u_file = Path(__file__).resolve().parent.parent / "data" / "clean_microcap_universe.csv"
+                            if clean_u_file.exists():
+                                import csv
+                                with open(clean_u_file, "r", encoding="utf-8") as f_cu:
+                                    for r in csv.DictReader(f_cu):
+                                        if r.get("ticker", "").strip().upper() == sym_up:
+                                            mc_loc = float(r.get("market_cap_local") or 0.0)
+                                            mc_usd = float(r.get("market_cap_usd") or 0.0)
+                                            r_curr = str(r.get("currency") or curr).upper()
+                                            if r_curr == "EUR" and mc_loc > 0:
+                                                mcap_eur = mc_loc
+                                            elif r_curr == "SEK" and mc_loc > 0:
+                                                mcap_eur = mc_loc / 11.30
+                                            elif mc_usd > 0:
+                                                mcap_eur = mc_usd / 1.08
+                                            break
+                        except Exception:
+                            pass
+
+                    if (is_fi or is_se) and mcap_eur <= 0:
+                        try:
+                            import yfinance as yf
+                            t_inst = yf.Ticker(sym_up)
+                            raw_mc = getattr(t_inst.fast_info, "market_cap", None) or 0.0
+                            # Handle dual-class A/B shares (e.g., BEAMMW-B.ST) via impliedSharesOutstanding
+                            info_d = getattr(t_inst, "info", None)
+                            if isinstance(info_d, dict):
+                                imp_sh = float(info_d.get("impliedSharesOutstanding") or info_d.get("sharesOutstanding") or 0.0)
+                                px_now = float(info_d.get("currentPrice") or info_d.get("previousClose") or buy_price or 0.0)
+                                raw_mc = max(float(raw_mc or 0.0), float(info_d.get("marketCap") or 0.0), imp_sh * px_now)
+                            if raw_mc and float(raw_mc) > 0:
+                                fx_eur = 1.0 if is_fi else (1.0 / 11.30)
+                                mcap_eur = float(raw_mc) * fx_eur
+                        except Exception:
+                            pass
 
                     if is_fi or is_se:
-                        # TASK-11: Market cap-based classification (>= 150M EUR -> Core Mid-Cap, < 150M EUR -> Satellite Micro-Cap)
-                        mcap_eur = 0.0
-                        if sym_up in microcap_set:
-                            sub_strat = "satellite_nordic_microcap_catalyst"
+                        if mcap_eur >= 150_000_000.0:
+                            sub_strat = "core_nordic_midcap_quality"
                         else:
-                            try:
-                                import yfinance as yf
-                                t_inst = yf.Ticker(sym_up)
-                                raw_mc = getattr(t_inst.fast_info, "market_cap", None)
-                                if raw_mc and float(raw_mc) > 0:
-                                    fx_eur = 1.0 if is_fi else (1.0 / 11.30)
-                                    mcap_eur = float(raw_mc) * fx_eur
-                            except Exception:
-                                pass
-
-                            if mcap_eur >= 150_000_000.0:
-                                sub_strat = "core_nordic_midcap_quality"
-                            elif mcap_eur > 0:
-                                sub_strat = "satellite_nordic_microcap_catalyst"
-                            else:
-                                # Fallback if live fetch unavailable
-                                sub_strat = "core_nordic_midcap_quality" if is_fi else "satellite_nordic_microcap_catalyst"
+                            # Missing market cap (<= 0) or < 150M EUR defaults safely to Satellite (never Core!)
+                            sub_strat = "satellite_nordic_microcap_catalyst"
                     else:
                         sub_strat = "satellite_us_microcap_growth"
 

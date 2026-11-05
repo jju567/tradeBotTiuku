@@ -277,3 +277,77 @@ def test_audit_candidates_data_roe_duplicate_quarantine():
     assert "DATA_DUPLICATE_WARNING" in c2["audit_flags"]
     assert c2.get("data_leak_quarantine") is True
     assert c2.get("status") == "REJECTED_DATA_LEAK"
+
+
+def test_audit_candidates_data_no_false_positive_on_rounded_or_distinct_4dec_pct():
+    """
+    TASK-00 edge cases:
+    1. Two tickers with 0.0% or clean integer 10.0% (0.10) do NOT trigger false duplicate quarantine.
+    2. Two tickers with 4.308% (0.04308) and 4.311% (0.04311) ebit_margin (which both round to 0.0431 as 4-dec ratio
+       like MEKO.ST vs ITAB.ST) do NOT collide because audit normalizes to percentage points with 4 decimals (4.3080% vs 4.3110%).
+    3. Longitudinal audit flags STALE_FINANCIAL_DATA (>120d) and REPEATED_PREV_RUN_VALUE.
+    """
+    candidates = [
+        {"ticker": "MEKO.ST", "roe": 0.10, "ebit_margin": 0.04308, "revenue_growth": 0.0, "data_age_days": 45},
+        {"ticker": "ITAB.ST", "roe": 0.10, "ebit_margin": 0.04311, "revenue_growth": 0.0, "data_age_days": 150},
+    ]
+    prev_snapshot = {
+        "ITAB.ST": {"roe": 0.10, "ebit_margin": 0.04311, "revenue_growth": 0.0, "latest_statement_date": "2025-06-30"}
+    }
+    audited = audit_candidates_data(candidates, previous_run_snapshot=prev_snapshot)
+    meko = next(c for c in audited if c["ticker"] == "MEKO.ST")
+    itab = next(c for c in audited if c["ticker"] == "ITAB.ST")
+
+    assert "DATA_DUPLICATE_WARNING" not in meko["audit_flags"]
+    assert meko.get("data_leak_quarantine") is not True
+    assert "DATA_DUPLICATE_WARNING" not in itab["audit_flags"]
+    assert itab.get("data_leak_quarantine") is not True
+
+    # ITAB has data_age_days=150 (>120d) and identical values to previous_run_snapshot
+    assert "STALE_FINANCIAL_DATA" in itab["audit_flags"]
+    assert "REPEATED_PREV_RUN_VALUE" in itab["audit_flags"]
+
+
+def test_adjusted_cash_does_not_subtract_long_term_debt_and_diluted_shares_warrants():
+    """
+    TASK-12 & TASK-10 edge cases:
+    1. When Current Debt is missing from balance sheet, Adjusted Cash must NOT subtract Total (Long-Term) Debt.
+    2. check_share_dilution detects >5% dilution from Diluted Average Shares (options/warrants overhang).
+    """
+    with patch("screener.financial_metrics_engine.yf.Ticker") as mock_ticker:
+        mock_inst = MagicMock()
+        mock_ticker.return_value = mock_inst
+
+        # Balance sheet has Cash=10M, Total Debt=25M, Long Term Debt=25M, NO Current Debt row
+        bs = pd.DataFrame(
+            {"2024-12-31": [10_000_000.0, 25_000_000.0, 25_000_000.0]},
+            index=["Cash And Cash Equivalents", "Total Debt", "Long Term Debt"],
+        )
+        mock_inst.quarterly_balance_sheet = bs
+        mock_inst.balance_sheet = bs
+
+        cf = pd.DataFrame(
+            {"2024-12-31": [-2_000_000.0]},
+            index=["Operating Cash Flow"],
+        )
+        mock_inst.quarterly_cashflow = cf
+        mock_inst.cashflow = cf
+
+        # Income statement with Diluted Average Shares 12M vs Basic 10M (+20% warrant/option dilution)
+        fin = pd.DataFrame(
+            {"2024": [20_000_000.0, 12_000_000.0, 10_000_000.0], "2023": [18_000_000.0, 10_000_000.0, 10_000_000.0]},
+            index=["Total Revenue", "Diluted Average Shares", "Basic Average Shares"],
+        )
+        mock_inst.financials = fin
+        mock_inst.quarterly_financials = None
+        mock_inst.info = {"sharesOutstanding": 10_000_000}
+
+        metrics = get_hard_financials("HEALTHY_LT_DEBT")
+        # Adjusted cash must remain 10M (not 10M - 25M = 0!), giving 10M / 2M = 5.0 years (60 months) runway
+        assert metrics["current_debt"] == 0.0
+        assert metrics["adjusted_cash"] == 10_000_000.0
+        assert metrics["cash_runway_years"] == 5.0
+        assert metrics["runway_status"] == "RUNWAY_OK"
+        # Warrant/option overhang (+20% diluted vs basic) must be flagged
+        assert metrics["has_share_dilution"] is True
+        assert metrics["dilution_flag"] == "DILUTION_WARNING_RECENT_ISSUE"

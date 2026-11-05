@@ -165,6 +165,7 @@ def calculate_relative_ev_ebit(
         "ev_ebit_premium_pct": None,
         "is_historically_expensive": False,
         "historical_ev_ebit_years_count": 0,
+        "valuation_status": "UNKNOWN",
     }
 
     # Respect explicit overrides (e.g. from unit tests or point-in-time datasets)
@@ -174,7 +175,8 @@ def calculate_relative_ev_ebit(
         res["current_ev_ebit"] = curr
         res["ev_ebit_5y_median"] = med
         res["historical_ev_ebit_years_count"] = 5
-        if med > 0:
+        res["valuation_status"] = "REJECTED_NEGATIVE_EBIT" if curr <= 0 else "FULL_5Y_HISTORY"
+        if med > 0 and curr > 0:
             prem = round(((curr - med) / med) * 100.0, 2)
             res["ev_ebit_premium_pct"] = prem
             res["is_historically_expensive"] = (prem > 20.0)
@@ -254,15 +256,27 @@ def calculate_relative_ev_ebit(
                         if p > 0:
                             hist_ev = (p * shares) + y_debt - y_cash
                             if y_ebit and y_ebit > 0 and hist_ev > 0:
-                                ev_ebits.append(round(hist_ev / y_ebit, 2))
+                                hist_ev_ebits.append(round(hist_ev / y_ebit, 2))
         except Exception as e:
             logger.debug(f"Historical EV/EBIT extraction exception: {e}")
+
+    raw_op_inc = current_ebit if current_ebit is not None else (info_dict.get("operatingIncome") or info_dict.get("ebitda"))
+    if (raw_op_inc is not None and isinstance(raw_op_inc, (int, float)) and raw_op_inc <= 0) or (curr_ev_ebit is not None and curr_ev_ebit <= 0):
+        res["valuation_status"] = "REJECTED_NEGATIVE_EBIT"
 
     if hist_ev_ebits:
         med = round(float(statistics.median(hist_ev_ebits)), 2)
         res["ev_ebit_5y_median"] = med
-        res["historical_ev_ebit_years_count"] = len(hist_ev_ebits)
-        if curr_ev_ebit is not None and med > 0:
+        yrs_cnt = len(hist_ev_ebits)
+        res["historical_ev_ebit_years_count"] = yrs_cnt
+        if res["valuation_status"] != "REJECTED_NEGATIVE_EBIT":
+            if yrs_cnt >= 5:
+                res["valuation_status"] = "FULL_5Y_HISTORY"
+            elif yrs_cnt >= 3:
+                res["valuation_status"] = "PARTIAL_4Y_HISTORY"
+            else:
+                res["valuation_status"] = "INSUFFICIENT_5Y_HISTORY"
+        if curr_ev_ebit is not None and curr_ev_ebit > 0 and med > 0:
             prem = round(((curr_ev_ebit - med) / med) * 100.0, 2)
             res["ev_ebit_premium_pct"] = prem
             res["is_historically_expensive"] = (prem > 20.0)
@@ -270,8 +284,17 @@ def calculate_relative_ev_ebit(
         res["ev_ebit_5y_median"] = None
         res["ev_ebit_premium_pct"] = None
         res["is_historically_expensive"] = False
+        if res["valuation_status"] != "REJECTED_NEGATIVE_EBIT":
+            res["valuation_status"] = "MISSING_5Y_HISTORY"
 
     return res
+
+
+_DILUTED_SHARE_COUNT_KEYS = [
+    "Diluted Average Shares",
+    "DilutedAverageShares",
+    "Diluted Shares",
+]
 
 
 def check_share_dilution(
@@ -279,6 +302,8 @@ def check_share_dilution(
     info: Dict[str, Any],
     bs_a: Optional[pd.DataFrame],
     bs_q: Optional[pd.DataFrame] = None,
+    inc_a: Optional[pd.DataFrame] = None,
+    inc_q: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
     Checks for recent share dilution / secondary offerings over a 1-2 year window.
@@ -343,11 +368,22 @@ def check_share_dilution(
                 except Exception:
                     continue
 
+    # 3. Also check Diluted Average Shares (warrants/options overhang) from income statements
+    diluted_curr = _extract_metric_from_df(inc_q, _DILUTED_SHARE_COUNT_KEYS) or _extract_metric_from_df(inc_a, _DILUTED_SHARE_COUNT_KEYS)
+    effective_curr_shares = max(float(shares_curr), float(diluted_curr)) if (diluted_curr is not None and diluted_curr > 0) else float(shares_curr)
+
+    if diluted_curr is not None and float(diluted_curr) > float(shares_curr) * 1.05:
+        overhang_pct = ((float(diluted_curr) - float(shares_curr)) / float(shares_curr)) * 100.0
+        res["share_dilution_pct"] = round(overhang_pct, 2)
+        res["has_share_dilution"] = True
+        res["dilution_flag"] = "DILUTION_WARNING_RECENT_ISSUE"
+
     if shares_past_candidates:
         shares_past = min(shares_past_candidates)
         res["shares_outstanding_historical"] = float(shares_past)
-        dilution_pct = ((float(shares_curr) - float(shares_past)) / float(shares_past)) * 100.0
-        res["share_dilution_pct"] = round(dilution_pct, 2)
+        dilution_pct = ((effective_curr_shares - float(shares_past)) / float(shares_past)) * 100.0
+        if res["share_dilution_pct"] is None or dilution_pct > res["share_dilution_pct"]:
+            res["share_dilution_pct"] = round(dilution_pct, 2)
         if dilution_pct > 5.0:
             res["has_share_dilution"] = True
             res["dilution_flag"] = "DILUTION_WARNING_RECENT_ISSUE"
@@ -570,7 +606,13 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             elif l_ob is not None:
                 lease_ob_val = float(l_ob)
             elif debt is not None:
-                cur_debt_val = float(debt)
+                lt_known = _extract_metric_from_df(bs_q, _LT_DEBT_KEYS)
+                if lt_known is None:
+                    lt_known = _extract_metric_from_df(bs_a, _LT_DEBT_KEYS)
+                if lt_known is not None:
+                    cur_debt_val = max(0.0, float(debt) - float(lt_known))
+                else:
+                    cur_debt_val = float(debt)
 
         cash_val = float(cash) if cash is not None else 0.0
         adjusted_cash_raw = cash_val - cur_debt_val - lease_ob_val
@@ -736,16 +778,22 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
 
         if rev_curr is not None and rev_prev not in (None, 0):
             result["revenue_growth_yoy_pct"] = round(
-                ((rev_curr - rev_prev) / abs(rev_prev)) * 100.0, 2
+                ((rev_curr - rev_prev) / abs(rev_prev)) * 100.0, 4
             )
 
         # ---- 5. Bruttokate (Gross Profit & Gross Margin %) ----
-        gp_val = _extract_metric_from_df(inc_a, _GROSS_PROFIT_KEYS)
-        if gp_val is None:
-            gp_val = _extract_metric_from_df(inc_q, _GROSS_PROFIT_KEYS)
+        gp_a = _extract_metric_from_df(inc_a, _GROSS_PROFIT_KEYS)
+        rev_a = _extract_metric_from_df(inc_a, _REVENUE_KEYS)
+        gp_q = _extract_metric_from_df(inc_q, _GROSS_PROFIT_KEYS)
+        rev_q = _extract_metric_from_df(inc_q, _REVENUE_KEYS)
 
+        gp_val = gp_a if gp_a is not None else gp_q
         gm_pct = None
-        if gp_val is not None and rev_curr is not None and rev_curr > 0:
+        if gp_a is not None and rev_a is not None and rev_a > 0:
+            gm_pct = round((gp_a / rev_a) * 100.0, 2)
+        elif gp_q is not None and rev_q is not None and rev_q > 0:
+            gm_pct = round((gp_q / rev_q) * 100.0, 2)
+        elif gp_val is not None and rev_curr is not None and rev_curr > 0:
             gm_pct = round((gp_val / rev_curr) * 100.0, 2)
 
         result["gross_profit"] = gp_val
@@ -788,17 +836,21 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             # EBIT Margin
             ebit_m = info.get("operatingMargins") or info.get("ebitMargins")
             if ebit_m is None:
-                op_inc = _extract_metric_from_df(inc_a, ["Operating Income", "OperatingIncome", "EBIT"])
-                if op_inc is not None and rev_curr is not None and rev_curr > 0:
-                    ebit_m = op_inc / rev_curr
+                op_inc_a = _extract_metric_from_df(inc_a, ["Operating Income", "OperatingIncome", "EBIT"])
+                op_inc_q = _extract_metric_from_df(inc_q, ["Operating Income", "OperatingIncome", "EBIT"])
+                if op_inc_a is not None and rev_a is not None and rev_a > 0:
+                    ebit_m = op_inc_a / rev_a
+                elif op_inc_q is not None and rev_q is not None and rev_q > 0:
+                    ebit_m = op_inc_q / rev_q
+                elif op_inc_a is not None and rev_curr is not None and rev_curr > 0:
+                    ebit_m = op_inc_a / rev_curr
             result["ebit_margin"] = float(ebit_m) if ebit_m is not None else None
 
-            # Free Cash Flow
-            fcf = info.get("freeCashflow")
-            if fcf is None and ocf_val is not None:
-                capex = _extract_metric_from_df(cf_a, ["Capital Expenditure", "CapitalExpenditure", "CapitalExpenditures"]) or 0.0
-                fcf = ocf_val - abs(capex)
-            result["free_cash_flow"] = float(fcf) if fcf is not None else None
+            # Free Cash Flow (preserve Section 2 TTM OCF - 4Q CapEx if already computed)
+            if result.get("free_cash_flow") is None:
+                fcf_info = info.get("freeCashflow")
+                if fcf_info is not None:
+                    result["free_cash_flow"] = float(fcf_info)
 
             # EBITDA & Net Debt to EBITDA
             ebitda = info.get("ebitda")
@@ -948,13 +1000,18 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             result["ev_ebit_premium_pct"] = rel_val.get("ev_ebit_premium_pct")
             result["is_historically_expensive"] = rel_val.get("is_historically_expensive", False)
             result["historical_ev_ebit_years_count"] = rel_val.get("historical_ev_ebit_years_count", 0)
+            result["valuation_status"] = rel_val.get("valuation_status", "UNKNOWN")
+            if result["valuation_status"] == "PARTIAL_4Y_HISTORY":
+                if "VALUATION_4Y_FALLBACK" not in result["audit_flags"]:
+                    result["audit_flags"].append("VALUATION_4Y_FALLBACK")
 
             # 8. Osakeanti- ja diluutiolippu (Share Dilution Flag)
-            dil_res = check_share_dilution(t=t, info=info, bs_a=bs_a, bs_q=bs_q)
+            dil_res = check_share_dilution(t=t, info=info, bs_a=bs_a, bs_q=bs_q, inc_a=inc_a, inc_q=inc_q)
             result["shares_outstanding_current"] = dil_res.get("shares_outstanding_current")
             result["shares_outstanding_historical"] = dil_res.get("shares_outstanding_historical")
             result["share_dilution_pct"] = dil_res.get("share_dilution_pct")
             result["has_share_dilution"] = dil_res.get("has_share_dilution", False)
+            result["dilution_flag"] = dil_res.get("dilution_flag")
             if dil_res.get("has_share_dilution") and dil_res.get("dilution_flag"):
                 d_flag = dil_res["dilution_flag"]
                 if d_flag not in result["audit_flags"]:
@@ -1195,7 +1252,30 @@ if __name__ == "__main__":
     print(format_for_llm_prompt(facts))
 
 
-def audit_candidates_data(candidates: Any) -> Any:
+def _normalize_audit_metric_pct(raw_val: Any, is_ratio_convertible: bool = True) -> Optional[float]:
+    """
+    Normalizes a metric to percentage points rounded to 4 decimal places (equivalent to 6 decimals in ratio form).
+    Exempts exact zero (0.0) and clean integer percentages (e.g. 10.0%, 20.0%) to prevent false positives on rounded figures.
+    """
+    if raw_val is None or isinstance(raw_val, bool):
+        return None
+    try:
+        vf = float(raw_val)
+    except (ValueError, TypeError):
+        return None
+    if vf == 0.0:
+        return None
+    pct = (vf * 100.0) if (is_ratio_convertible and 0.0 < abs(vf) <= 1.0) else vf
+    r_pct = round(pct, 4)
+    if r_pct == 0.0 or r_pct == round(r_pct, 0):
+        return None
+    return r_pct
+
+
+def audit_candidates_data(
+    candidates: Any,
+    previous_run_snapshot: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Any:
     """
     Audits candidate data before final scoring and EOD action list generation.
 
@@ -1279,33 +1359,57 @@ def audit_candidates_data(candidates: Any) -> Any:
             else hard_facts.get("return_on_equity")
         )
 
-        # 1. Collect for Duplicate Detector
-        try:
-            if rev_raw is not None:
-                rev_f = float(rev_raw)
-                rev_round = round(rev_f, 4)
-                if rev_round != 0.0:
-                    rev_map.setdefault(rev_round, []).append(cand)
-        except (ValueError, TypeError):
-            pass
+        # 1. Collect for Duplicate Detector (4 decimals in percentage points; exempts 0.0% and clean integer percentages)
+        rev_norm = _normalize_audit_metric_pct(rev_raw, is_ratio_convertible=True)
+        if rev_norm is not None:
+            rev_map.setdefault(rev_norm, []).append(cand)
 
-        try:
-            if ebit_raw is not None:
-                ebit_f = float(ebit_raw)
-                ebit_round = round(ebit_f, 4)
-                if ebit_round != 0.0:
-                    ebit_map.setdefault(ebit_round, []).append(cand)
-        except (ValueError, TypeError):
-            pass
+        ebit_norm = _normalize_audit_metric_pct(ebit_raw, is_ratio_convertible=True)
+        if ebit_norm is not None:
+            ebit_map.setdefault(ebit_norm, []).append(cand)
 
-        try:
-            if roe_raw is not None:
-                roe_f = float(roe_raw)
-                roe_round = round(roe_f, 4)
-                if roe_round != 0.0:
-                    roe_map.setdefault(roe_round, []).append(cand)
-        except (ValueError, TypeError):
-            pass
+        roe_norm = _normalize_audit_metric_pct(roe_raw, is_ratio_convertible=True)
+        if roe_norm is not None:
+            roe_map.setdefault(roe_norm, []).append(cand)
+
+        # 1b. Longitudinal Audit: Timestamp & Stale / Repeated Previous Run Check
+        t_sym = str(cand.get("ticker") or hard_facts.get("ticker") or "").strip().upper()
+        age_days = cand.get("data_age_days") if cand.get("data_age_days") is not None else hard_facts.get("data_age_days")
+        if age_days is not None:
+            try:
+                if float(age_days) > 120.0:
+                    if "STALE_FINANCIAL_DATA" not in cand["audit_flags"]:
+                        cand["audit_flags"].append("STALE_FINANCIAL_DATA")
+                    cand["requires_manual_review"] = True
+            except (ValueError, TypeError):
+                pass
+
+        if isinstance(previous_run_snapshot, dict) and t_sym and t_sym in previous_run_snapshot:
+            prev_info = previous_run_snapshot[t_sym]
+            if isinstance(prev_info, dict):
+                prev_stmt = prev_info.get("latest_statement_date")
+                curr_stmt = cand.get("latest_statement_date") or hard_facts.get("latest_statement_date")
+                prev_rev = _normalize_audit_metric_pct(
+                    prev_info.get("revenue_growth_yoy_pct")
+                    if prev_info.get("revenue_growth_yoy_pct") is not None
+                    else prev_info.get("rev_yoy")
+                    if prev_info.get("rev_yoy") is not None
+                    else prev_info.get("revenue_growth")
+                )
+                prev_ebit = _normalize_audit_metric_pct(prev_info.get("ebit_margin"))
+                prev_roe = _normalize_audit_metric_pct(prev_info.get("roe"))
+                same_val = (
+                    (rev_norm is not None and prev_rev == rev_norm)
+                    or (ebit_norm is not None and prev_ebit == ebit_norm)
+                    or (roe_norm is not None and prev_roe == roe_norm)
+                )
+                stmt_stale = (prev_stmt and curr_stmt and prev_stmt == curr_stmt and age_days is not None and float(age_days) > 95.0)
+                stmt_changed_same_val = (prev_stmt and curr_stmt and prev_stmt != curr_stmt and same_val)
+                stale_repeated = (age_days is not None and float(age_days) > 95.0 and same_val)
+                if stmt_stale or stmt_changed_same_val or stale_repeated:
+                    if "REPEATED_PREV_RUN_VALUE" not in cand["audit_flags"]:
+                        cand["audit_flags"].append("REPEATED_PREV_RUN_VALUE")
+                    cand["requires_manual_review"] = True
 
         # 2. Outlier Guard
         is_outlier = False

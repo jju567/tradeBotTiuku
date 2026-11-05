@@ -398,3 +398,54 @@ def test_nordic_midcap_compounder_rejects_expensive_valuation():
     passed, reasons = matches_nordic_midcap_compounder("HARVIA.HE", hard_facts_abs, meta)
     assert passed is False
     assert any("Absolute EV/EBIT" in r for r in reasons)
+
+
+def test_nordic_midcap_compounder_rejects_missing_5y_valuation_history_and_negative_ebit():
+    """
+    TASK-00B:
+    1. Missing 5-year EV/EBIT history (ev_ebit_5y_median=None or valuation_status=MISSING_5Y_HISTORY) must be rejected.
+    2. Negative or zero EV/EBIT (REJECTED_NEGATIVE_EBIT) must be rejected.
+    """
+    meta = {"market": "FI", "market_cap_eur": 500_000_000.0, "adv_20d_local": 150_000.0, "currency": "EUR"}
+
+    # Case 1: Missing 5y valuation history (ev_ebit_5y_median=None)
+    hf_missing = {
+        "roe": 0.22,
+        "ebit_margin": 0.18,
+        "free_cash_flow": 25_000_000.0,
+        "net_debt_to_ebitda": 1.0,
+        "ev_ebit_5y_median": None,
+        "valuation_status": "MISSING_5Y_HISTORY",
+    }
+    passed_m, reasons_m = matches_nordic_midcap_compounder("NOHIST.HE", hf_missing, meta)
+    assert passed_m is False
+    assert any("REJECTED_VALUATION_HISTORY_MISSING" in r for r in reasons_m)
+
+    # Case 2: Negative EBIT / EV_EBIT
+    hf_neg = {
+        "roe": 0.22,
+        "ebit_margin": 0.18,
+        "free_cash_flow": 25_000_000.0,
+        "net_debt_to_ebitda": 1.0,
+        "current_ev_ebit": -12.5,
+        "valuation_status": "REJECTED_NEGATIVE_EBIT",
+    }
+    passed_n, reasons_n = matches_nordic_midcap_compounder("NEGEBIT.HE", hf_neg, meta)
+    assert passed_n is False
+    assert any("REJECTED_VALUATION_NEGATIVE_EBIT" in r for r in reasons_n)
+
+
+def test_nordic_microcap_catalyst_rejects_unverified_ai_turnaround():
+    """
+    TASK-10: Turnaround candidate with unverified AI catalyst (catalyst_source='UNVERIFIED_AI') must be rejected.
+    """
+    meta = {"market": "SE", "market_cap_eur": 45_000_000.0, "currency": "SEK", "adv_20d_local": 300_000.0}
+    hf = {
+        "is_profile_a": False,
+        "is_profile_b": False,
+        "cash_runway_months": 18.0,
+        "catalyst_source": "UNVERIFIED_AI",
+    }
+    passed, reasons = matches_nordic_microcap_catalyst("AITURN.ST", hf, meta, nlp_verdict="WATCH_TURNAROUND")
+    assert passed is False
+    assert any("REJECTED_UNVERIFIED_CATALYST" in r for r in reasons)

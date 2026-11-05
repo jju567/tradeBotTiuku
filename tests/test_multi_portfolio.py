@@ -1993,7 +1993,7 @@ def test_p13_core_relative_valuation_penalty_and_liquidity_gates(tmp_path):
 
 
 
-def test_portfolio_drawdown_enforces_risk_off_and_60pct_cash_buffer():
+def test_portfolio_drawdown_enforces_risk_off_and_60pct_cash_buffer(tmp_path):
     """TASK-14: -15% drawdown halts new buys, elevates cash buffer to 60%, and sets BLOCKED_BY_DRAWDOWN_RISK_OFF."""
     from main_controller import MasterLiveTradingDaemon, PortfolioInstance, PortfolioConfig
 
@@ -2005,7 +2005,7 @@ def test_portfolio_drawdown_enforces_risk_off_and_60pct_cash_buffer():
         slot_size=2000.0,
         portfolio_max_drawdown_alert_pct=-15.0,
     )
-    port = PortfolioInstance(config=cfg)
+    port = PortfolioInstance(config=cfg, base_dir=tmp_path)
     port.cash_balance = 3000.0
     # Peak equity 10,000, current cash 3,000 + stock 5,200 = 8,200 (-18.0% drawdown)
     port.peak_equity_eur = 10000.0
@@ -2022,3 +2022,190 @@ def test_portfolio_drawdown_enforces_risk_off_and_60pct_cash_buffer():
     assert opened == 0
     assert port.last_screening_block_reason == "BLOCKED_BY_DRAWDOWN_RISK_OFF"
     assert getattr(port, "risk_off_mode", False) is True
+
+
+def test_hand_calculated_broker_fees_fx_and_aot_tax_liability(tmp_path):
+    """
+    TASK-01, TASK-02, TASK-03, TASK-04: Hand-calculated verification of:
+    1. Domestic (.HE) min fee = 9.00 EUR vs Foreign (.ST / US) min fee = 15.00 EUR.
+    2. Variable fee 0.20% when gross > 4,500 EUR (.HE) or > 7,500 EUR (.ST).
+    3. FX conversion fee = 0.25% on non-EUR trades, 0.00 EUR on EUR trades.
+    4. AOT 30% tax liability reserve on realized net profit.
+    """
+    from main_controller import (
+        get_broker_min_fee_acc,
+        calculate_transaction_fee,
+        calculate_fx_fee,
+        MasterLiveTradingDaemon,
+        PortfolioInstance,
+        PortfolioConfig,
+    )
+
+    # 1. Min fees
+    assert get_broker_min_fee_acc("HARVIA.HE") == 9.00
+    assert get_broker_min_fee_acc("MIPS.ST") == 15.00
+    assert get_broker_min_fee_acc("AAPL") == 15.00
+
+    # 2. Transaction fee: max(gross * 0.002, min_fee)
+    # 1,800 EUR domestic trade -> 1800 * 0.002 = 3.60 EUR < 9.00 EUR -> 9.00 EUR
+    assert calculate_transaction_fee(1800.0, min_fee=9.00) == 9.00
+    # 6,000 EUR domestic trade -> 6000 * 0.002 = 12.00 EUR > 9.00 EUR -> 12.00 EUR
+    assert calculate_transaction_fee(6000.0, min_fee=9.00) == 12.00
+    # 1,500 EUR foreign trade -> 1500 * 0.002 = 3.00 EUR < 15.00 EUR -> 15.00 EUR
+    assert calculate_transaction_fee(1500.0, min_fee=15.00) == 15.00
+
+    # 3. FX conversion fee (0.25%)
+    assert calculate_fx_fee(2000.0, "EUR", "EUR") == 0.00
+    assert calculate_fx_fee(2000.0, "SEK", "EUR") == 5.00   # 2000 * 0.0025 = 5.00 EUR
+    assert calculate_fx_fee(1500.0, "USD", "EUR") == 3.75   # 1500 * 0.0025 = 3.75 EUR
+
+    # 4. Full hand-calculated SEK sale on AOT account:
+    # Buy 100 shares @ 100 SEK (10,000 SEK = 1,000 EUR at EURSEK=10.0), Capital Invested = 10,175 SEK (incl buy fees)
+    # Sell 100 shares @ 150 SEK (15,000 SEK = 1,500 EUR):
+    # - Broker fee = 15.00 EUR = 150.00 SEK
+    # - FX fee (0.25% of 1,500 EUR) = 3.75 EUR = 37.50 SEK
+    # - Net return = 15,000 - 150.00 - 37.50 = 14,812.50 SEK (1,481.25 EUR)
+    # - Net PnL = 14,812.50 - 10,175.00 = 4,637.50 SEK (463.75 EUR)
+    # - AOT 30% tax reserve = round(463.75 * 0.30, 2) = 139.12 EUR
+    cfg = PortfolioConfig(
+        portfolio_id="P_HAND_CALC",
+        strategy="Hybrid Core-Satellite",
+        account_tax_profile="AOT",
+        start_cash=5000.0,
+    )
+    port = PortfolioInstance(cfg, base_dir=tmp_path)
+    port.cash_balance = 5000.0
+    port.positions = [
+        {
+            "Ticker": "TEST.ST",
+            "Buy Date": "2026-09-01",
+            "Buy Price": 100.0,
+            "Shares": 100,
+            "Capital Invested": 10175.0,
+            "Sub_Strategy": "core_nordic_midcap_quality",
+            "Currency": "SEK",
+            "highest_close": 150.0,
+        }
+    ]
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURSEK": 10.0, "EURUSD": 1.0}
+    daemon.market_engine.prices_cache = {"TEST.ST": 150.0}
+    daemon.market_engine.bids_cache = {}
+    daemon.market_engine.news_radar_cache = {"TEST.ST": ("REJECT", "Quarterly breakdown")}
+    daemon.market_engine.hard_facts_cache = {"TEST.ST": {"roe": 0.20, "ebit_margin": 0.15}}
+    daemon.market_engine.momentum_cache = {}
+    daemon.market_engine.universe_metadata = {}
+    daemon.market_engine.get_ticker_nlp_status = lambda t: ("REJECT", "Quarterly breakdown")
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache.get(t, {})
+
+    closed = daemon.execute_phase1_exits(port)
+    assert closed == 1
+    assert port.cash_balance == pytest.approx(5000.0 + 1481.25)
+    assert port.tax_liability_eur == pytest.approx(139.12)
+
+
+def test_drawdown_capital_flow_adjustment_and_hysteresis(tmp_path):
+    """
+    TASK-14 edge cases:
+    1. Deposit (+5,000 EUR) adjusts peak_equity_eur upward by +5,000 EUR, and subsequent withdrawal (-5,000 EUR)
+       adjusts peak_equity_eur downward by -5,000 EUR so withdrawals NEVER trigger a false -15% drawdown brake!
+    2. Hysteresis: once RISK_OFF is triggered at <= -15%, a partial bounce to -10% keeps RISK_OFF active;
+       only recovery to >= -8.0% clears RISK_OFF.
+    """
+    from main_controller import MasterLiveTradingDaemon, PortfolioInstance, PortfolioConfig
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_DD_TEST",
+        strategy="Multi_Strategy_Hybrid",
+        slots=5,
+        start_cash=10000.0,
+        portfolio_max_drawdown_alert_pct=-15.0,
+        risk_off_recovery_pct=-8.0,
+    )
+    port = PortfolioInstance(config=cfg, base_dir=tmp_path)
+    port.cash_balance = 10000.0
+    port.peak_equity_eur = 10000.0
+
+    # User deposits +5,000 EUR -> cash=15,000, peak_equity_eur=15,000
+    port.record_capital_flow(5000.0)
+    assert port.cash_balance == 15000.0
+    assert port.peak_equity_eur == 15000.0
+
+    # User withdraws -5,000 EUR -> cash=10,000, peak_equity_eur=10,000 (0% drawdown, NOT -33%!)
+    port.record_capital_flow(-5000.0)
+    assert port.cash_balance == 10000.0
+    assert port.peak_equity_eur == 10000.0
+
+    ctrl = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    ctrl.market_engine = type("Engine", (), {})()
+    ctrl.market_engine.market_regime = {}
+    ctrl.market_engine.universe_metadata = {}
+
+    # Verify 0% drawdown after withdrawal does NOT trigger risk_off_mode
+    ctrl.calculate_stock_value_eur = lambda p: 0.0
+    ctrl.execute_phase2_screening(port)
+    assert port.risk_off_mode is False
+
+    # Now simulate real market loss to 8,400 EUR (-16.0% <= -15.0%) -> triggers risk_off_mode = True
+    port.cash_balance = 3400.0
+    ctrl.calculate_stock_value_eur = lambda p: 5000.0
+    ctrl.execute_phase2_screening(port)
+    assert port.risk_off_mode is True
+    assert port.last_screening_block_reason == "BLOCKED_BY_DRAWDOWN_RISK_OFF"
+
+    # Market bounces slightly to 9,000 EUR (-10.0% drawdown, still below -8.0% recovery threshold) -> stays in RISK_OFF!
+    ctrl.calculate_stock_value_eur = lambda p: 5600.0
+    ctrl.execute_phase2_screening(port)
+    assert port.risk_off_mode is True
+    assert port.last_screening_block_reason == "BLOCKED_BY_DRAWDOWN_RISK_OFF"
+
+    # Market recovers to 9,250 EUR (-7.5% drawdown >= -8.0% recovery threshold) -> exits RISK_OFF!
+    ctrl.calculate_stock_value_eur = lambda p: 5850.0
+    ctrl.execute_phase2_screening(port)
+    assert port.risk_off_mode is False
+    assert port.last_screening_block_reason != "BLOCKED_BY_DRAWDOWN_RISK_OFF"
+
+
+def test_unfilled_gap_up_cancels_ghost_buy_and_refunds_cash(tmp_path):
+    """
+    TASK-05: When Next-Day Low > Limit Price (UNFILLED_GAP_UP), audit_p13_next_day_executions
+    removes the unfilled ghost buy from portfolio.positions and refunds the full Total_Cost_EUR to cash_balance.
+    """
+    from datetime import datetime, timedelta, timezone
+    from main_controller import MasterLiveTradingDaemon, PortfolioInstance, PortfolioConfig
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.fx_rates = {"EURUSD": 1.00, "EURSEK": 10.0}
+
+    cfg = PortfolioConfig(portfolio_id="P13_Live_Candidate", start_cash=10000.0)
+    p = PortfolioInstance(cfg, base_dir=tmp_path)
+    yesterday_str = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Position bought yesterday on paper for 2,000 EUR + 9 EUR fee = 2,009 EUR deducted from 10,000 EUR cash
+    p.cash_balance = 7991.0
+    p.positions = [
+        {
+            "Ticker": "GAPUP.HE",
+            "Buy Date": yesterday_str,
+            "Buy Price": 20.0,
+            "Limit Price": 20.04,
+            "Shares": 100,
+            "Capital Invested": 2009.0,
+            "Total_Cost_EUR": 2009.0,
+            "Broker_Fee_EUR": 9.0,
+            "Estimated_FX_Fee_EUR": 0.0,
+            "Currency": "EUR",
+            "Sub_Strategy": "core_nordic_midcap_quality",
+            "Execution_Verified": False,
+        }
+    ]
+    daemon.market_engine.next_day_ohlc_cache = {
+        "GAPUP.HE": {"Open": 21.00, "Low": 20.80, "High": 22.00, "Close": 21.50},
+    }
+    audited = daemon.audit_p13_next_day_executions(p)
+    assert audited == 1
+    # Ghost position must be removed and 2,009.00 EUR refunded back to 10,000.00 EUR!
+    assert len(p.positions) == 0
+    assert p.cash_balance == pytest.approx(10000.0)

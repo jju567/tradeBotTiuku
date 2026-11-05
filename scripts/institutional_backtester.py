@@ -31,7 +31,10 @@ import pandas as pd
 import yfinance as yf
 
 from screener.financial_metrics_engine import evaluate_profiles
-from universe_builder import MicroCapUniverseBuilder
+try:
+    from universe_builder import MicroCapUniverseBuilder
+except ImportError:
+    MicroCapUniverseBuilder = None
 
 # Configure cross-platform terminal encoding (Windows cp1252 fix)
 if hasattr(sys.stdout, "reconfigure"):
@@ -219,7 +222,7 @@ class InstitutionalBacktester:
 
         actual_buy_date = window_df.index[0].strftime("%Y-%m-%d")
         atr_14 = float(window_df.iloc[0]["ATR_14"]) if pd.notna(window_df.iloc[0]["ATR_14"]) and window_df.iloc[0]["ATR_14"] > 0 else (buy_price * 0.08)
-        trailing_stop = max(0.0001, buy_price - (self.atr_multiplier * atr_14))
+        trailing_stop = max(buy_price * self.stop_multiplier, buy_price - (self.atr_multiplier * atr_14))
         highest_seen = buy_price
 
         stopped_out = False
@@ -251,7 +254,7 @@ class InstitutionalBacktester:
             # Trailing stop update if new high achieved
             if close_px > highest_seen:
                 highest_seen = close_px
-                new_stop = close_px - (self.atr_multiplier * cur_atr)
+                new_stop = max(close_px * self.stop_multiplier, close_px - (self.atr_multiplier * cur_atr))
                 if new_stop > trailing_stop:
                     trailing_stop = new_stop
 

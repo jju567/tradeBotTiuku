@@ -258,10 +258,22 @@ def matches_nordic_midcap_compounder(
     if adv_eur < 50_000.0:
         reasons.append(f"ADV {adv_eur:,.0f} EUR < 50,000 EUR threshold")
 
-    # 7. Relative Valuation Filter: EV/EBIT vs. 5y Historical Median & Absolute Ceiling
+    # 7. Relative Valuation Filter: EV/EBIT vs. 5y Historical Median, Missing History & Absolute Ceiling
+    val_status = hard_facts.get("valuation_status")
     ev_ebit_prem = hard_facts.get("ev_ebit_premium_pct")
     curr_ev_ebit = hard_facts.get("current_ev_ebit")
-    if ev_ebit_prem is not None and float(ev_ebit_prem) > 50.0:
+    hist_yrs = hard_facts.get("historical_ev_ebit_years_count")
+    med_5y = hard_facts.get("ev_ebit_5y_median")
+
+    if val_status == "REJECTED_NEGATIVE_EBIT" or (curr_ev_ebit is not None and float(curr_ev_ebit) <= 0.0):
+        reasons.append("REJECTED_VALUATION_NEGATIVE_EBIT: EV/EBIT is non-positive or EBIT <= 0")
+    elif (
+        val_status in ("MISSING_5Y_HISTORY", "INSUFFICIENT_5Y_HISTORY")
+        or ("ev_ebit_5y_median" in hard_facts and med_5y is None)
+        or ("historical_ev_ebit_years_count" in hard_facts and int(hist_yrs or 0) < 3 and med_5y is None)
+    ):
+        reasons.append("REJECTED_VALUATION_HISTORY_MISSING: 5-year historical EV/EBIT data missing or < 3 years")
+    elif ev_ebit_prem is not None and float(ev_ebit_prem) > 50.0:
         reasons.append(f"REJECTED_VALUATION: EV/EBIT premium +{float(ev_ebit_prem):.1f}% > 50.0% vs 5y median")
     elif curr_ev_ebit is not None and float(curr_ev_ebit) > 30.0:
         reasons.append(f"REJECTED_VALUATION: Absolute EV/EBIT {float(curr_ev_ebit):.1f} > 30.0")
@@ -447,6 +459,9 @@ def matches_nordic_microcap_catalyst(
     is_turnaround = (nlp_verdict in ["WATCH_TURNAROUND", "STRONG BUY"] or meta.get("is_turnaround", False))
     if is_turnaround and (hard_facts.get("has_share_dilution") or hard_facts.get("dilution_flag") == "DILUTION_WARNING_RECENT_ISSUE"):
         reasons.append("REJECTED_DILUTION: Turnaround candidate has recent share dilution > 5%")
+    if is_turnaround and not (is_prof_a or is_prof_b):
+        if hard_facts.get("unverified_ai_catalyst") is True or str(hard_facts.get("catalyst_source", "")).upper() == "UNVERIFIED_AI":
+            reasons.append("REJECTED_UNVERIFIED_CATALYST: Turnaround requires documented press release, insider buying, or financial inflection")
 
     if hard_facts.get("runway_status") == "REJECTED_LOW_RUNWAY" or hard_facts.get("status") == "REJECTED_LOW_RUNWAY":
         reasons.append("REJECTED_LOW_RUNWAY: Cash runway < 1.0 year with negative TTM operating cash flow")
