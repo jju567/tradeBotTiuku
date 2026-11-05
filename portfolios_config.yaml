@@ -182,10 +182,14 @@ portfolios:
           benchmark_etf_proxy: "XACT-SMABOLAG.ST"
           benchmark_type: "NORDIC_SMALLCAP_TOTAL_RETURN_GI"
           track_fees_and_fx_separately: true
+          time_stop_mode: "CHECKPOINT_REVIEW_ONLY"
+          time_checkpoint_trading_days: 120
           kill_switch_criteria:
             evaluation_boolean_logic: "IMMEDIATE_OR_HARD_STOPS_PLUS_12M_AND_SAMPLE_CHECK"
             max_roundtrips_per_year: 1
-            min_target_holding_days: 120
+            min_target_holding_days: 252
+            time_stop_mode: "CHECKPOINT_REVIEW_ONLY"
+            time_checkpoint_trading_days: 120
             immediate_or_hard_stops:
               max_sub_strategy_drawdown_pct: -25.0
               max_annual_direct_broker_and_fx_drag_pct: 3.5
@@ -197,10 +201,10 @@ portfolios:
         rules:
           - "Thesis: Neglected, profitable Nordic small-caps (verified <= 6 analysts, positive ROE/EBIT/FCF, .HE or liquid .ST)"
           - "Trial_Protocol: 12-24 month paper + 1,185 EUR live trial benchmarked against Nordic Small-Cap Total Return GI (OMXSSCGI / XACT-SMABOLAG.ST) net of all broker & FX fees"
-          - "Turnover_Guard: Max 1 round-trip/yr in live slot (time-stop extended to 120 trading days) so direct broker+FX drag stays <= 3.5%/yr and all-in cost with spread stays <= 5.5%/yr"
+          - "Turnover_Guard: Max 1 round-trip/yr in live slot (no forced Time_Stop auto-sell) so direct broker+FX drag stays <= 3.5%/yr and all-in cost with spread stays <= 5.5%/yr"
           - "Kill_Switch: Immediate OR stop if drawdown < -25%, direct broker+FX drag > 3.5%/yr, or all-in cost > 5.5%/yr; OR after (12m AND >= 15 combined paper+live trades) if net return trails Small-Cap GI by > 10%-pts"
-          - "Exit_On: EOD_Trailing_Stop (-15.0% from highest close, no intraday stops)"
-          - "Time_Stop: 120 trading days if PnL < +5.0%"
+          - "Exit_On: EOD_Trailing_Stop (-15.0% from highest close, no intraday stops) or Quarterly_Fundamental_Breakdown"
+          - "Time_Checkpoint: 120 trading days manual review alert if PnL < +5.0% (CHECKPOINT_REVIEW_ONLY, not a forced auto-sell)"
           - "Partial_TP: Sell 50% at +25.0%"
           - "Runner_Rule: After Partial_TP, move stop to Break-Even (0.0%) and activate -15.0% EOD_Trailing_Stop"
 

@@ -322,13 +322,26 @@ def matches_nordic_midcap_compounder(
             "REJECTED_MA_DILUTION_MANUAL_REVIEW: M&A revenue divergence (>25%) combined with share dilution (>5%) requires manual verification"
         )
 
-    # 9. Data Freshness Gate: Block automatic Core entry if the oldest used financial statement is > 120 days old
+    # 9. Calendar-Aware Data Freshness & Pre-Earnings Blackout Gate:
+    # - Rejects if Yahoo has incomplete statements (e.g. newer Balance Sheet exists while Income Statement is >45d older)
+    # - Rejects if statement is stale (>140d for quarterly / >230d for semi-annual, or post-earnings not updated)
+    # - Rejects if next earnings report is within <= 5 days (Pre-Earnings Blackout)
     data_age = hard_facts.get("data_age_days")
-    if "STALE_FINANCIAL_DATA" in audit_flags or (data_age is not None and int(data_age) > 120):
-        oldest_dt = hard_facts.get("oldest_statement_date") or hard_facts.get("latest_statement_date")
+    stmt_split = int(hard_facts.get("statement_split_days") or 0)
+    oldest_dt = hard_facts.get("oldest_statement_date") or hard_facts.get("latest_statement_date")
+    newest_dt = hard_facts.get("newest_statement_date")
+    days_to_earn = hard_facts.get("days_to_earnings")
+
+    if "YAHOO_INCOMPLETE_STATEMENTS" in audit_flags or (stmt_split > 45 and data_age is not None and int(data_age) > 120):
         reasons.append(
-            f"REJECTED_STALE_DATA: Oldest used financial statement ({oldest_dt}) is {data_age} days old (> 120 days threshold)"
+            f"REJECTED_YAHOO_INCOMPLETE_DATA: Newer report ({newest_dt}) exists, but Yahoo income/cashflow statement is from {oldest_dt} ({data_age} days old)"
         )
+    elif "STALE_FINANCIAL_DATA" in audit_flags or (data_age is not None and int(data_age) > 140):
+        reasons.append(
+            f"REJECTED_STALE_DATA: Oldest used financial statement ({oldest_dt}) is {data_age} days old (newer published report missing)"
+        )
+
+    # Pre-earnings 0-5d blackout is enforced at main_controller [EARNINGS GATE] to track earnings_gate_blocks
 
     passed = len(reasons) == 0
     return passed, reasons
@@ -520,11 +533,21 @@ def matches_nordic_microcap_catalyst(
     # 3. Criteria: (A) Profitable Small-Cap (Profile A or Profile B with positive ROE/EBIT) OR (B) Verified Turnaround with runway >= 12m
     audit_flags = list(hard_facts.get("audit_flags") or [])
     data_age = hard_facts.get("data_age_days")
-    if "STALE_FINANCIAL_DATA" in audit_flags or (data_age is not None and int(data_age) > 120):
-        oldest_dt = hard_facts.get("oldest_statement_date") or hard_facts.get("latest_statement_date")
+    stmt_split = int(hard_facts.get("statement_split_days") or 0)
+    oldest_dt = hard_facts.get("oldest_statement_date") or hard_facts.get("latest_statement_date")
+    newest_dt = hard_facts.get("newest_statement_date")
+    days_to_earn = hard_facts.get("days_to_earnings")
+
+    if "YAHOO_INCOMPLETE_STATEMENTS" in audit_flags or (stmt_split > 45 and data_age is not None and int(data_age) > 120):
         reasons.append(
-            f"REJECTED_STALE_DATA: Oldest used financial statement ({oldest_dt}) is {data_age} days old (> 120 days threshold)"
+            f"REJECTED_YAHOO_INCOMPLETE_DATA: Newer report ({newest_dt}) exists, but Yahoo income/cashflow statement is from {oldest_dt} ({data_age} days old)"
         )
+    elif "STALE_FINANCIAL_DATA" in audit_flags or (data_age is not None and int(data_age) > 140):
+        reasons.append(
+            f"REJECTED_STALE_DATA: Oldest used financial statement ({oldest_dt}) is {data_age} days old (newer published report missing)"
+        )
+
+    # Pre-earnings 0-5d blackout is enforced at main_controller [EARNINGS GATE] to track earnings_gate_blocks
 
     is_prof_a = hard_facts.get("is_profile_a", False)
     is_prof_b = hard_facts.get("is_profile_b", False)

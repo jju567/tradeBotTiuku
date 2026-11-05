@@ -1085,17 +1085,54 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                 oldest_dt = min(valid_dts)
                 newest_dt = max(valid_dts)
                 age_days = (now_utc - oldest_dt).days
+                newest_age_days = (now_utc - newest_dt).days
+                stmt_split_days = (newest_dt - oldest_dt).days
                 result["oldest_statement_date"] = oldest_dt.strftime("%Y-%m-%d")
                 result["newest_statement_date"] = newest_dt.strftime("%Y-%m-%d")
                 result["latest_statement_date"] = oldest_dt.strftime("%Y-%m-%d")
                 result["data_age_days"] = age_days
-                is_fresh = age_days <= 120
-                result["data_quality"]["is_fresh"] = is_fresh
-                if not is_fresh:
+                result["newest_statement_age_days"] = newest_age_days
+                result["statement_split_days"] = stmt_split_days
+
+                # Determine expected reporting cadence (quarterly ~92d + 48d lag = 140d vs semi-annual ~182d + 48d = 230d)
+                is_semi_annual = False
+                if inc_q is not None and not inc_q.empty and len(inc_q.columns) >= 2:
+                    try:
+                        q_d0 = pd.to_datetime(inc_q.columns[0]).tz_localize(None)
+                        q_d1 = pd.to_datetime(inc_q.columns[1]).tz_localize(None)
+                        if 165 <= abs((q_d0 - q_d1).days) <= 200:
+                            is_semi_annual = True
+                    except Exception:
+                        pass
+                max_normal_cycle_days = 230 if is_semi_annual else 140
+
+                # Case 1: Yahoo Data Hole / Incomplete Statements (e.g. PUUILO.HE where BS is 2026-07-31 [97d]
+                # but Yahoo's income/cashflow statement is 2026-01-31 [278d], >45d older than BS!)
+                if stmt_split_days > 45 and age_days > 120:
+                    result["data_quality"]["is_fresh"] = False
+                    result["data_quality"]["freshness_status"] = "YAHOO_INCOMPLETE_STATEMENTS"
+                    if "YAHOO_INCOMPLETE_STATEMENTS" not in result["audit_flags"]:
+                        result["audit_flags"].append("YAHOO_INCOMPLETE_STATEMENTS")
                     if "STALE_FINANCIAL_DATA" not in result["audit_flags"]:
                         result["audit_flags"].append("STALE_FINANCIAL_DATA")
                     result["errors"].append(
-                        f"DATA_STALENESS_WARNING: Oldest used statement ({oldest_dt.strftime('%Y-%m-%d')}) is {age_days} days old (>120d). Statements: {stmt_dates}"
+                        f"YAHOO_INCOMPLETE_STATEMENTS: Newer report ({newest_dt.strftime('%Y-%m-%d')}, {newest_age_days}d) exists, "
+                        f"but Yahoo income/cashflow statement is from {oldest_dt.strftime('%Y-%m-%d')} ({age_days}d old). Statements: {stmt_dates}"
+                    )
+                elif age_days > max_normal_cycle_days:
+                    # Case 2: Exceeds full reporting cycle + reporting lag -> newer report was published but missing from Yahoo
+                    result["data_quality"]["is_fresh"] = False
+                    result["data_quality"]["freshness_status"] = "STALE_MISSING_PUBLISHED_REPORT"
+                    if "STALE_FINANCIAL_DATA" not in result["audit_flags"]:
+                        result["audit_flags"].append("STALE_FINANCIAL_DATA")
+                    result["errors"].append(
+                        f"DATA_STALENESS_WARNING: Oldest used statement ({oldest_dt.strftime('%Y-%m-%d')}) is {age_days} days old "
+                        f"(> {max_normal_cycle_days}d reporting cycle). Statements: {stmt_dates}"
+                    )
+                else:
+                    result["data_quality"]["is_fresh"] = True
+                    result["data_quality"]["freshness_status"] = (
+                        "LATEST_PUBLISHED_AWAITING_NEXT_REPORT" if age_days > 105 else "FRESH_RECENT_REPORT"
                     )
             result["ebit_ttm_or_unified"] = float(unified_ebit) if unified_ebit is not None else None
 
@@ -1231,6 +1268,15 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                 if d_to_earn >= -1:
                     result["next_earnings_date"] = earn_dt_obj.strftime("%Y-%m-%d")
                     result["days_to_earnings"] = int(d_to_earn)
+                    if 0 <= int(d_to_earn) <= 5:
+                        if "EARNINGS_BLACKOUT_5D" not in result["audit_flags"]:
+                            result["audit_flags"].append("EARNINGS_BLACKOUT_5D")
+                elif d_to_earn < -3 and (result.get("data_age_days") or 0) > 95:
+                    # Scheduled report date passed >3 days ago, yet Yahoo statement is still >95 days old!
+                    result["data_quality"]["is_fresh"] = False
+                    result["data_quality"]["freshness_status"] = "STALE_POST_EARNINGS_NOT_UPDATED"
+                    if "STALE_FINANCIAL_DATA" not in result["audit_flags"]:
+                        result["audit_flags"].append("STALE_FINANCIAL_DATA")
 
             # Analyst Coverage Count (for Neglected Small-Cap Satellite filter)
             # IMPORTANT: Missing Yahoo data (None) is kept as None (UNVERIFIED), never converted to 0!

@@ -909,3 +909,61 @@ def test_negative_ebit_never_produces_positive_ev_ebit_and_ssh1v_rejected():
     assert any("REJECTED_DILUTION" in r for r in reasons_ssh)
     assert any("REJECTED_PROFITABILITY_BRAKE" in r for r in reasons_ssh)
     assert any("REJECTED_UNPROFITABLE" in r for r in reasons_ssh)
+
+
+def test_calendar_aware_freshness_gate_distinguishes_yahoo_hole_vs_normal_lag():
+    """
+    Verifies that:
+    1. A company with statement split > 45d (BS 97d, IS 278d like PUUILO) is flagged as
+       YAHOO_INCOMPLETE_STATEMENTS and rejected as REJECTED_YAHOO_INCOMPLETE_DATA.
+    2. A company with normal reporting lag <= 140d (e.g. 128d like RVRC / NTEK-B) without split
+       or missed earnings is NOT rejected by the freshness gate.
+    3. A company whose data exceeds the cycle lag (> 140d) is rejected as REJECTED_STALE_DATA.
+    """
+    from screener.tiered_filters import matches_nordic_midcap_compounder
+
+    meta = {"market": "FI", "market_cap_eur": 500_000_000.0, "currency": "EUR", "adv_20d_local": 500_000.0}
+
+    # Case 1: Yahoo Data Hole (split > 45d)
+    hf_split = {
+        "roe": 0.22, "roic": 0.18, "ebit_margin": 0.16, "free_cash_flow": 50_000_000.0,
+        "net_debt_to_ebitda": 0.5, "current_ev_ebit": 15.0, "ev_ebit_5y_median": 16.0,
+        "ev_ebit_premium_pct": -6.25,
+        "data_age_days": 278,
+        "statement_split_days": 181,
+        "oldest_statement_date": "2026-01-31",
+        "newest_statement_date": "2026-07-31",
+        "audit_flags": ["YAHOO_INCOMPLETE_STATEMENTS", "STALE_FINANCIAL_DATA"],
+    }
+    passed_1, reasons_1 = matches_nordic_midcap_compounder("PUUILO.HE", hf_split, meta)
+    assert passed_1 is False
+    assert any("REJECTED_YAHOO_INCOMPLETE_DATA" in r for r in reasons_1)
+
+    # Case 2: Clean 128-day normal quarterly lag (<= 140d)
+    hf_clean_128 = {
+        "roe": 0.22, "roic": 0.18, "ebit_margin": 0.16, "free_cash_flow": 50_000_000.0,
+        "net_debt_to_ebitda": 0.5, "current_ev_ebit": 15.0, "ev_ebit_5y_median": 16.0,
+        "ev_ebit_premium_pct": -6.25,
+        "data_age_days": 128,
+        "statement_split_days": 0,
+        "oldest_statement_date": "2026-06-30",
+        "newest_statement_date": "2026-06-30",
+        "audit_flags": [],
+    }
+    passed_2, reasons_2 = matches_nordic_midcap_compounder("RVRC.ST", hf_clean_128, meta)
+    assert passed_2 is True, f"Failed unexpectedly with: {reasons_2}"
+
+    # Case 3: Truly stale data (> 140d)
+    hf_stale_145 = {
+        "roe": 0.22, "roic": 0.18, "ebit_margin": 0.16, "free_cash_flow": 50_000_000.0,
+        "net_debt_to_ebitda": 0.5, "current_ev_ebit": 15.0, "ev_ebit_5y_median": 16.0,
+        "ev_ebit_premium_pct": -6.25,
+        "data_age_days": 145,
+        "statement_split_days": 0,
+        "oldest_statement_date": "2026-06-12",
+        "newest_statement_date": "2026-06-12",
+        "audit_flags": ["STALE_FINANCIAL_DATA"],
+    }
+    passed_3, reasons_3 = matches_nordic_midcap_compounder("OLD.ST", hf_stale_145, meta)
+    assert passed_3 is False
+    assert any("REJECTED_STALE_DATA" in r for r in reasons_3)

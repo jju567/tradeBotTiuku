@@ -1848,9 +1848,19 @@ class MasterLiveTradingDaemon:
                                 trading_days = 0
                                 cal_days = 0
                             pnl_pct = ((current_price - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
-                            if (trading_days >= 45 or cal_days >= 63) and pnl_pct < 5.0:
-                                action = "SELL"
-                                reason = f"TIME_STOP_DECAY ({trading_days} trading days >= 45d, PnL {pnl_pct:+.1f}% < +5.0%)"
+                            sub_cfg_dict = (portfolio.config.sub_strategies or {}).get(sub_strat, {}) if sub_strat else {}
+                            trial_proto = sub_cfg_dict.get("trial_protocol") or {}
+                            time_stop_mode = str(trial_proto.get("time_stop_mode") or "FORCED_SELL").upper()
+                            checkpoint_days = int(trial_proto.get("time_checkpoint_trading_days") or 45)
+                            if (trading_days >= checkpoint_days or cal_days >= int(checkpoint_days * 1.4)) and pnl_pct < 5.0:
+                                if time_stop_mode == "CHECKPOINT_REVIEW_ONLY":
+                                    pos["time_checkpoint_review_alert"] = (
+                                        f"TIME_CHECKPOINT_REVIEW ({trading_days} trading days >= {checkpoint_days}d, "
+                                        f"PnL {pnl_pct:+.1f}% < +5.0% — manual thesis review; forced sell disabled to preserve <= 1 round-trip/yr cost cap)"
+                                    )
+                                else:
+                                    action = "SELL"
+                                    reason = f"TIME_STOP_DECAY ({trading_days} trading days >= {checkpoint_days}d, PnL {pnl_pct:+.1f}% < +5.0%)"
                     else:
                         pos_market = pos.get("market") or pos.get("Market")
                         region = get_ticker_region(ticker, pos_market)
@@ -2154,9 +2164,10 @@ class MasterLiveTradingDaemon:
             if not passed:
                 continue
 
-            # Earnings Calendar Gate: Prevent binary earnings gap risk 0–2 days before earnings report
+            # Earnings Calendar Gate: Prevent binary earnings gap risk 0–5 days before earnings report
             days_to_earn = hard_facts.get("days_to_earnings")
-            if isinstance(days_to_earn, (int, float)) and not isinstance(days_to_earn, bool) and 0 <= int(days_to_earn) <= 2:
+            has_earn_blackout = "EARNINGS_BLACKOUT_5D" in (hard_facts.get("audit_flags") or [])
+            if has_earn_blackout or (isinstance(days_to_earn, (int, float)) and not isinstance(days_to_earn, bool) and 0 <= int(days_to_earn) <= 5):
                 logger.info(
                     f"[{portfolio.config.portfolio_id}] 📅 [EARNINGS GATE] Skipping {ticker}: "
                     f"Earnings report in {int(days_to_earn)}d ({hard_facts.get('next_earnings_date')}) — avoiding pre-earnings binary gap."
