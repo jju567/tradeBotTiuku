@@ -723,3 +723,189 @@ def test_dual_class_ab_shares_no_false_dilution_and_satellite_ma_rollup_haircut(
     s_ntech, bd_ntech = calculate_candidate_score("NTECH.ST", ntech_hf, universe_filter="Nordic_MicroCap_Catalyst")
     assert bd_ntech["growth_pts"] <= 3.5
     assert bd_ntech["manual_review_required"] is True
+
+
+def test_calculate_relative_ev_ebit_auto_adjust_false_mock():
+    """
+    Regression test for PUUILO.HE / BIOG-B.ST historical 5y EV/EBIT median:
+    Verifies that calculate_relative_ev_ebit() requests t.history(period='5y', auto_adjust=False)
+    so past dividends are NOT subtracted from historical stock prices.
+    """
+    from screener.financial_metrics_engine import calculate_relative_ev_ebit
+
+    mock_t = MagicMock()
+
+    def fake_history(period="5y", auto_adjust=True):
+        # If auto_adjust=True (wrong), historical price is 6.00 (shrunk by dividends -> EV/EBIT = 12.0x)
+        # If auto_adjust=False (correct), historical price is 8.00 (actual point-in-time -> EV/EBIT = 16.0x)
+        px = 8.00 if auto_adjust is False else 6.00
+        idx = pd.to_datetime(["2025-12-31", "2024-12-31", "2023-12-31", "2022-12-31"])
+        return pd.DataFrame({"Close": [px, px, px, px]}, index=idx)
+
+    mock_t.history.side_effect = fake_history
+    inc_a = pd.DataFrame(
+        {
+            "2025-12-31": [50_000_000.0],
+            "2024-12-31": [50_000_000.0],
+            "2023-12-31": [50_000_000.0],
+            "2022-12-31": [50_000_000.0],
+        },
+        index=["Operating Income"],
+    )
+    bs_a = pd.DataFrame(
+        {
+            "2025-12-31": [0.0, 0.0],
+            "2024-12-31": [0.0, 0.0],
+            "2023-12-31": [0.0, 0.0],
+            "2022-12-31": [0.0, 0.0],
+        },
+        index=["Total Debt", "Cash And Cash Equivalents"],
+    )
+    info = {"sharesOutstanding": 100_000_000, "currentPrice": 11.0, "marketCap": 1_100_000_000}
+    res = calculate_relative_ev_ebit(
+        t=mock_t,
+        info=info,
+        bs_a=bs_a,
+        inc_a=inc_a,
+        current_ev=1_100_000_000.0,
+        current_ebit=50_000_000.0,  # Current EV/EBIT = 22.0x
+    )
+    mock_t.history.assert_called_with(period="5y", auto_adjust=False)
+    # With unadjusted price 8.00 * 100M shares / 50M EBIT -> 5y median MUST be 16.0x (not 12.0x!)
+    assert res["ev_ebit_5y_median"] == pytest.approx(16.0, abs=0.01)
+    assert res["ev_ebit_premium_pct"] == pytest.approx(37.5, abs=0.01)
+
+
+@patch("screener.financial_metrics_engine.yf.Ticker")
+def test_latest_annual_ebit_row_fallback_and_oldest_statement_data_age_days(mock_ticker):
+    """
+    Verifies:
+    1. When Operating Income is NaN in the latest annual column (2026-01-31) and 70.6M in 2025-01-31,
+       while EBIT is 75.0M in 2026-01-31 (PUUILO.HE regression), get_hard_financials extracts 75.0M
+       from the latest column (2026-01-31), NOT 70.6M from the previous year!
+    2. When quarterly_balance_sheet is fresh (e.g. 60 days old) but the income statement used is
+       ANNUAL_LATEST (e.g. 240 days old), data_age_days reports the OLDEST used statement (240 days)
+       and flags STALE_FINANCIAL_DATA.
+    """
+    import numpy as np
+    from datetime import datetime, timezone, timedelta
+
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+    fresh_bs_date = (now_dt - timedelta(days=60)).strftime("%Y-%m-%d")
+    stale_inc_date = (now_dt - timedelta(days=240)).strftime("%Y-%m-%d")
+    prev_inc_date = (now_dt - timedelta(days=605)).strftime("%Y-%m-%d")
+
+    mock_inst = MagicMock()
+    mock_ticker.return_value = mock_inst
+
+    bs_q = pd.DataFrame(
+        {fresh_bs_date: [50_000_000.0, 100_000_000.0, 100_000_000.0]},
+        index=["Cash And Cash Equivalents", "Total Debt", "Stockholders Equity"],
+    )
+    mock_inst.quarterly_balance_sheet = bs_q
+    mock_inst.balance_sheet = bs_q
+
+    cf_a = pd.DataFrame({stale_inc_date: [80_000_000.0, -10_000_000.0]}, index=["Operating Cash Flow", "Capital Expenditure"])
+    mock_inst.quarterly_cashflow = pd.DataFrame()
+    mock_inst.cashflow = cf_a
+
+    inc_a = pd.DataFrame(
+        {
+            stale_inc_date: [451_400_000.0, np.nan, 75_000_000.0, 58_000_000.0],
+            prev_inc_date: [390_000_000.0, 70_600_000.0, 70_600_000.0, 50_000_000.0],
+        },
+        index=["Total Revenue", "Operating Income", "EBIT", "Net Income"],
+    )
+    mock_inst.quarterly_financials = pd.DataFrame()
+    mock_inst.financials = inc_a
+    mock_inst.info = {"enterpriseValue": 1_650_000_000.0, "marketCap": 1_600_000_000.0}
+
+    res = get_hard_financials("PUUILO.HE")
+    # Must pick 75.0M EBIT from latest annual column, NOT 70.6M from previous year!
+    assert res["ebit_ttm_or_unified"] == pytest.approx(75_000_000.0)
+    assert res["current_ev_ebit"] == pytest.approx(1_650_000_000.0 / 75_000_000.0, abs=0.02)
+    # Must report data_age_days from the OLDEST used statement (~240 days), NOT fresh_bs_date (60 days)!
+    assert res["statement_ages_days"]["balance_sheet"] == pytest.approx(60, abs=1)
+    assert res["statement_ages_days"]["income_statement"] == pytest.approx(240, abs=1)
+    assert res["data_age_days"] == pytest.approx(240, abs=1)
+    assert "STALE_FINANCIAL_DATA" in res["audit_flags"]
+
+
+def test_stale_financial_data_flag_blocks_buy_in_core_and_satellite():
+    """
+    Verifies that STALE_FINANCIAL_DATA (or data_age_days > 120) blocks automatic PASS
+    in both matches_nordic_midcap_compounder and matches_nordic_microcap_catalyst.
+    """
+    from screener.tiered_filters import matches_nordic_midcap_compounder, matches_nordic_microcap_catalyst
+
+    meta_core = {"market": "SE", "market_cap_eur": 500_000_000.0, "currency": "SEK", "adv_20d_local": 5_000_000.0}
+    hf_stale_core = {
+        "roe": 0.26,
+        "roic": 0.26,
+        "ebit_margin": 0.21,
+        "free_cash_flow": 300_000_000.0,
+        "net_debt_to_ebitda": 0.0,
+        "current_ev_ebit": 13.3,
+        "ev_ebit_5y_median": 11.8,
+        "ev_ebit_premium_pct": 12.7,
+        "data_age_days": 128,
+        "oldest_statement_date": "2026-06-30",
+        "audit_flags": ["STALE_FINANCIAL_DATA"],
+    }
+    passed_c, reasons_c = matches_nordic_midcap_compounder("RVRC.ST", hf_stale_core, meta_core)
+    assert passed_c is False
+    assert any("REJECTED_STALE_DATA" in r for r in reasons_c)
+
+    meta_sat = {"market": "SE", "market_cap_eur": 60_000_000.0, "currency": "SEK", "adv_20d_local": 500_000.0}
+    hf_stale_sat = {
+        "roe": 0.16,
+        "ebit_margin": 0.10,
+        "is_profile_b": True,
+        "cash_runway_months": "Infinite",
+        "data_age_days": 128,
+        "oldest_statement_date": "2026-06-30",
+        "audit_flags": ["STALE_FINANCIAL_DATA"],
+    }
+    passed_s, reasons_s = matches_nordic_microcap_catalyst("NTEK-B.ST", hf_stale_sat, meta_sat)
+    assert passed_s is False
+    assert any("REJECTED_STALE_DATA" in r for r in reasons_s)
+
+
+def test_negative_ebit_never_produces_positive_ev_ebit_and_ssh1v_rejected():
+    """
+    Regression test for SSH1V.HE:
+    1. When current_ebit <= 0 (e.g. -2.2M), calculate_relative_ev_ebit() must NEVER fall back
+       to positive info['ebitda'] or info['enterpriseToEbitda'] (which produced EV/EBIT = 393.93x!).
+       Instead, current_ev_ebit must be None and valuation_status = 'REJECTED_NEGATIVE_EBIT'.
+    2. SSH1V.HE-like candidate (ROE -47.5%, EBIT -10.1%, share dilution > 5%) must be rejected by
+       matches_nordic_microcap_catalyst on dilution, profitability brake, and unprofitable status.
+    """
+    from screener.financial_metrics_engine import calculate_relative_ev_ebit
+    from screener.tiered_filters import matches_nordic_microcap_catalyst
+
+    rel_ssh = calculate_relative_ev_ebit(
+        t=None,
+        info={"enterpriseValue": 98_000_000.0, "ebitda": 250_000.0, "enterpriseToEbitda": 393.93},
+        current_ev=98_000_000.0,
+        current_ebit=-2_200_000.0,  # Negative EBIT!
+    )
+    assert rel_ssh["current_ev_ebit"] is None
+    assert rel_ssh["valuation_status"] == "REJECTED_NEGATIVE_EBIT"
+
+    meta_ssh = {"market": "FI", "market_cap_eur": 99_000_000.0, "currency": "EUR", "adv_20d_local": 25_000.0}
+    hf_ssh = {
+        "roe": -0.475,
+        "roic": -0.36,
+        "ebit_margin": -0.101,
+        "is_profile_b": True,
+        "cash_runway_months": "Infinite",
+        "has_share_dilution": True,
+        "dilution_flag": "DILUTION_WARNING_RECENT_ISSUE",
+        "valuation_status": "REJECTED_NEGATIVE_EBIT",
+        "audit_flags": ["DILUTION_WARNING_RECENT_ISSUE"],
+    }
+    passed_ssh, reasons_ssh = matches_nordic_microcap_catalyst("SSH1V.HE", hf_ssh, meta_ssh)
+    assert passed_ssh is False
+    assert any("REJECTED_DILUTION" in r for r in reasons_ssh)
+    assert any("REJECTED_PROFITABILITY_BRAKE" in r for r in reasons_ssh)
+    assert any("REJECTED_UNPROFITABLE" in r for r in reasons_ssh)

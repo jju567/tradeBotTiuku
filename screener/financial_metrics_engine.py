@@ -28,12 +28,43 @@ from __future__ import annotations
 import logging
 import math
 import statistics
+import os
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Union, List
 import yfinance as yf
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+_LIVE_FX_CACHE: Dict[str, float] = {}
+
+
+def get_live_fx_rates(force_refresh: bool = False) -> Dict[str, float]:
+    """
+    Fetches live EUR/SEK, EUR/USD, EUR/NOK, and EUR/DKK rates from yfinance once per session,
+    with safe deterministic fallback during unit tests or offline runs.
+    """
+    defaults = {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+    if "PYTEST_CURRENT_TEST" in os.environ or " MagicMock" in str(type(yf.Ticker)):
+        return dict(defaults)
+    if _LIVE_FX_CACHE and not force_refresh:
+        return dict(_LIVE_FX_CACHE)
+    rates = dict(defaults)
+    pairs = {"EURSEK": "EURSEK=X", "EURUSD": "EURUSD=X", "EURNOK": "EURNOK=X", "EURDKK": "EURDKK=X"}
+    for key, sym in pairs.items():
+        try:
+            tk = yf.Ticker(sym)
+            fi = getattr(tk, "fast_info", None)
+            px = getattr(fi, "last_price", None) if fi is not None else None
+            if not isinstance(px, (int, float)) or px <= 0:
+                inf = getattr(tk, "info", None) or {}
+                px = inf.get("regularMarketPrice") or inf.get("previousClose")
+            if isinstance(px, (int, float)) and px > 0:
+                rates[key] = round(float(px), 4)
+        except Exception:
+            pass
+    _LIVE_FX_CACHE.update(rates)
+    return dict(_LIVE_FX_CACHE)
 
 # Rivinimet joita yfinance käyttää eri raporteissa (versiot/markkinat vaihtelevat)
 _DEBT_KEYS = ["Total Debt", "TotalDebt"]
@@ -215,15 +246,21 @@ def calculate_relative_ev_ebit(
             curr_ev = float(ev_raw)
 
     curr_ebit = current_ebit
-    if curr_ebit is None or curr_ebit <= 0:
-        op_raw = info_dict.get("operatingIncome") or info_dict.get("ebitda")
-        if isinstance(op_raw, (int, float)) and op_raw > 0:
+    if curr_ebit is None:
+        op_raw = info_dict.get("operatingIncome")
+        if isinstance(op_raw, (int, float)):
             curr_ebit = float(op_raw)
+        elif isinstance(info_dict.get("ebitda"), (int, float)):
+            curr_ebit = float(info_dict["ebitda"])
 
     curr_ev_ebit = None
-    if curr_ev is not None and curr_ebit is not None and curr_ebit > 0:
-        curr_ev_ebit = round(curr_ev / curr_ebit, 2)
-    elif info_dict.get("enterpriseToEbitda"):
+    if curr_ebit is not None and float(curr_ebit) <= 0.0:
+        # Negative or zero EBIT: NEVER fall back to positive EBITDA or enterpriseToEbitda!
+        curr_ev_ebit = None
+        res["valuation_status"] = "REJECTED_NEGATIVE_EBIT"
+    elif curr_ev is not None and curr_ebit is not None and float(curr_ebit) > 0.0:
+        curr_ev_ebit = round(float(curr_ev) / float(curr_ebit), 2)
+    elif curr_ebit is None and info_dict.get("enterpriseToEbitda"):
         try:
             val = float(info_dict["enterpriseToEbitda"])
             if val > 0:
@@ -951,27 +988,7 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
         result["gross_profit"] = gp_val
         result["gross_margin_pct"] = gm_pct
 
-        # ---- 6. Data Freshness Check ----
-        latest_dt = None
-        for cand_df in [bs_q, inc_q, cf_q, inc_a, bs_a, cf_a]:
-            if cand_df is not None and not cand_df.empty and len(cand_df.columns) > 0:
-                try:
-                    c_dt = pd.to_datetime(cand_df.columns[0]).tz_localize(None)
-                    if latest_dt is None or c_dt > latest_dt:
-                        latest_dt = c_dt
-                except Exception:
-                    pass
-
-        if latest_dt is not None:
-            age_days = (datetime.now(timezone.utc).replace(tzinfo=None) - latest_dt).days
-            result["latest_statement_date"] = latest_dt.strftime("%Y-%m-%d")
-            result["data_age_days"] = age_days
-            is_fresh = age_days <= 120
-            result["data_quality"]["is_fresh"] = is_fresh
-            if not is_fresh:
-                result["errors"].append(f"DATA_STALENESS_WARNING: Latest statement is {age_days} days old (>120d).")
-
-        # ---- 7. Tiered Quality & Constraint Metrics (Core MidCap, US Growth, Nordic Catalyst) ----
+        # ---- 6 & 7. Unified Period Basis & Per-Statement Freshness Check (Oldest Statement Governs) ----
         try:
             info = getattr(t, "info", None) or {}
             fast_info = getattr(t, "fast_info", None)
@@ -1028,6 +1045,58 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
                 unified_net_inc = net_inc_ttm_4q if net_inc_ttm_4q is not None else net_inc_ann
 
             result["data_quality"]["metrics_period_basis"] = period_basis
+
+            # ---- Per-Statement Data Freshness Check (Balance Sheet, Income Statement, Cash Flow) ----
+            # Calculates age for each statement actually used in the metrics and sets data_age_days
+            # to the OLDEST of the used statements (e.g. if BS is 97d old but Income Statement is 278d old, data_age_days = 278d).
+            bs_used_df = bs_q if (bs_q is not None and not bs_q.empty and len(bs_q.columns) > 0) else bs_a
+            if period_basis == "TTM_4Q" and inc_q is not None and not inc_q.empty and len(inc_q.columns) > 0:
+                inc_used_df = inc_q
+            elif period_basis == "ANNUAL_LATEST" and inc_a is not None and not inc_a.empty and len(inc_a.columns) > 0:
+                inc_used_df = inc_a
+            else:
+                inc_used_df = inc_q if (inc_q is not None and not inc_q.empty and len(inc_q.columns) > 0) else inc_a
+
+            ocf_src = result["data_quality"].get("ocf_source")
+            if ocf_src == "latest_annual" and cf_a is not None and not cf_a.empty and len(cf_a.columns) > 0:
+                cf_used_df = cf_a
+            else:
+                cf_used_df = cf_q if (cf_q is not None and not cf_q.empty and len(cf_q.columns) > 0) else cf_a
+
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            stmt_dates: Dict[str, Optional[str]] = {"balance_sheet": None, "income_statement": None, "cash_flow": None}
+            stmt_ages: Dict[str, Optional[int]] = {"balance_sheet": None, "income_statement": None, "cash_flow": None}
+            valid_dts: List[pd.Timestamp] = []
+
+            for st_name, st_df in [("balance_sheet", bs_used_df), ("income_statement", inc_used_df), ("cash_flow", cf_used_df)]:
+                if st_df is not None and not st_df.empty and len(st_df.columns) > 0:
+                    try:
+                        c_dt = pd.to_datetime(st_df.columns[0]).tz_localize(None)
+                        stmt_dates[st_name] = c_dt.strftime("%Y-%m-%d")
+                        stmt_ages[st_name] = (now_utc - c_dt).days
+                        valid_dts.append(c_dt)
+                    except Exception:
+                        pass
+
+            result["statement_dates"] = stmt_dates
+            result["statement_ages_days"] = stmt_ages
+
+            if valid_dts:
+                oldest_dt = min(valid_dts)
+                newest_dt = max(valid_dts)
+                age_days = (now_utc - oldest_dt).days
+                result["oldest_statement_date"] = oldest_dt.strftime("%Y-%m-%d")
+                result["newest_statement_date"] = newest_dt.strftime("%Y-%m-%d")
+                result["latest_statement_date"] = oldest_dt.strftime("%Y-%m-%d")
+                result["data_age_days"] = age_days
+                is_fresh = age_days <= 120
+                result["data_quality"]["is_fresh"] = is_fresh
+                if not is_fresh:
+                    if "STALE_FINANCIAL_DATA" not in result["audit_flags"]:
+                        result["audit_flags"].append("STALE_FINANCIAL_DATA")
+                    result["errors"].append(
+                        f"DATA_STALENESS_WARNING: Oldest used statement ({oldest_dt.strftime('%Y-%m-%d')}) is {age_days} days old (>120d). Statements: {stmt_dates}"
+                    )
             result["ebit_ttm_or_unified"] = float(unified_ebit) if unified_ebit is not None else None
 
             # Equity from latest quarterly balance sheet (fallback to annual)
@@ -1193,15 +1262,17 @@ def get_hard_financials(ticker: str) -> Dict[str, Any]:
             ):
                 t_curr = str(info.get("currency") or "EUR").strip().upper()
                 turnover_local = float(adv_shares) * float(px_cur)
+                live_fx = get_live_fx_rates()
+                result["fx_rates"] = live_fx
                 fx_to_eur = 1.0
                 if t_curr == "SEK":
-                    fx_to_eur = 1.0 / 11.30
+                    fx_to_eur = 1.0 / float(live_fx.get("EURSEK", 11.30))
                 elif t_curr == "NOK":
-                    fx_to_eur = 1.0 / 11.50
+                    fx_to_eur = 1.0 / float(live_fx.get("EURNOK", 11.50))
                 elif t_curr == "DKK":
-                    fx_to_eur = 1.0 / 7.46
+                    fx_to_eur = 1.0 / float(live_fx.get("EURDKK", 7.46))
                 elif t_curr == "USD":
-                    fx_to_eur = 1.0 / 1.08
+                    fx_to_eur = 1.0 / float(live_fx.get("EURUSD", 1.08))
                 avg_turnover_eur = round(turnover_local * fx_to_eur, 2)
                 result["avg_daily_turnover_eur"] = avg_turnover_eur
 

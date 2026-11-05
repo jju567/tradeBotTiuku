@@ -41,13 +41,28 @@ DISALLOWED_US_EXCHANGES = {
 }
 
 
+def _resolve_fx_rates(
+    fx_rates: Optional[Dict[str, float]] = None,
+    hard_facts: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    if fx_rates:
+        return fx_rates
+    if hard_facts and isinstance(hard_facts.get("fx_rates"), dict):
+        return hard_facts["fx_rates"]
+    try:
+        from screener.financial_metrics_engine import get_live_fx_rates
+        return get_live_fx_rates()
+    except Exception:
+        return {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+
+
 def get_market_cap_in_eur(
     meta: Dict[str, Any],
     hard_facts: Optional[Dict[str, Any]] = None,
     fx_rates: Optional[Dict[str, float]] = None,
 ) -> float:
     """Extracts or converts market capitalization to EUR."""
-    rates = fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+    rates = _resolve_fx_rates(fx_rates, hard_facts)
     
     # 1. Direct EUR field if present
     if "market_cap_eur" in meta and float(meta.get("market_cap_eur") or 0.0) > 0:
@@ -113,7 +128,7 @@ def get_adv_in_eur(
     fx_rates: Optional[Dict[str, float]] = None,
 ) -> float:
     """Extracts or converts 20-day Average Daily Volume (ADV) to EUR."""
-    rates = fx_rates or {"EURUSD": 1.08, "EURSEK": 11.30, "EURNOK": 11.50, "EURDKK": 7.46}
+    rates = _resolve_fx_rates(fx_rates)
     t_clean = ticker.strip().upper()
     market = str(meta.get("market", "")).upper()
     curr = str(meta.get("currency", "")).upper()
@@ -307,6 +322,14 @@ def matches_nordic_midcap_compounder(
             "REJECTED_MA_DILUTION_MANUAL_REVIEW: M&A revenue divergence (>25%) combined with share dilution (>5%) requires manual verification"
         )
 
+    # 9. Data Freshness Gate: Block automatic Core entry if the oldest used financial statement is > 120 days old
+    data_age = hard_facts.get("data_age_days")
+    if "STALE_FINANCIAL_DATA" in audit_flags or (data_age is not None and int(data_age) > 120):
+        oldest_dt = hard_facts.get("oldest_statement_date") or hard_facts.get("latest_statement_date")
+        reasons.append(
+            f"REJECTED_STALE_DATA: Oldest used financial statement ({oldest_dt}) is {data_age} days old (> 120 days threshold)"
+        )
+
     passed = len(reasons) == 0
     return passed, reasons
 
@@ -494,12 +517,43 @@ def matches_nordic_microcap_catalyst(
     if adv_eur < 20_000.0:
         reasons.append(f"ADV {adv_eur:,.0f} EUR < 20,000 EUR threshold")
 
-    # 3. Criteria: (A) Quality Micro-Cap (Profile A or Profile B) OR (B) Turnaround with runway >= 12m (or OCF/FCF > 0)
+    # 3. Criteria: (A) Profitable Small-Cap (Profile A or Profile B with positive ROE/EBIT) OR (B) Verified Turnaround with runway >= 12m
+    audit_flags = list(hard_facts.get("audit_flags") or [])
+    data_age = hard_facts.get("data_age_days")
+    if "STALE_FINANCIAL_DATA" in audit_flags or (data_age is not None and int(data_age) > 120):
+        oldest_dt = hard_facts.get("oldest_statement_date") or hard_facts.get("latest_statement_date")
+        reasons.append(
+            f"REJECTED_STALE_DATA: Oldest used financial statement ({oldest_dt}) is {data_age} days old (> 120 days threshold)"
+        )
+
     is_prof_a = hard_facts.get("is_profile_a", False)
     is_prof_b = hard_facts.get("is_profile_b", False)
     is_turnaround = (nlp_verdict in ["WATCH_TURNAROUND", "STRONG BUY"] or meta.get("is_turnaround", False))
-    if is_turnaround and (hard_facts.get("has_share_dilution") or hard_facts.get("dilution_flag") == "DILUTION_WARNING_RECENT_ISSUE"):
-        reasons.append("REJECTED_DILUTION: Turnaround candidate has recent share dilution > 5%")
+    has_dilution = (
+        bool(hard_facts.get("has_share_dilution"))
+        or hard_facts.get("dilution_flag") == "DILUTION_WARNING_RECENT_ISSUE"
+        or "DILUTION_WARNING_RECENT_ISSUE" in audit_flags
+    )
+    if has_dilution:
+        reasons.append("REJECTED_DILUTION: Candidate has recent share dilution > 5%")
+
+    roe_raw = hard_facts.get("roe")
+    roe_pct = (float(roe_raw) * 100.0 if abs(float(roe_raw)) <= 2.0 else float(roe_raw)) if roe_raw is not None else None
+    ebit_raw = hard_facts.get("ebit_margin") if hard_facts.get("ebit_margin") is not None else hard_facts.get("operating_margin")
+    ebit_pct = (float(ebit_raw) * 100.0 if abs(float(ebit_raw)) <= 2.0 else float(ebit_raw)) if ebit_raw is not None else None
+
+    if roe_pct is not None and roe_pct < -40.0:
+        reasons.append(f"REJECTED_PROFITABILITY_BRAKE: ROE {roe_pct:.1f}% < -40.0% emergency limit")
+    if not is_turnaround:
+        if (
+            hard_facts.get("valuation_status") == "REJECTED_NEGATIVE_EBIT"
+            or (roe_pct is not None and roe_pct <= 0.0)
+            or (ebit_pct is not None and ebit_pct <= 0.0)
+        ):
+            reasons.append(
+                f"REJECTED_UNPROFITABLE: Negative ROE ({roe_pct}%) or EBIT margin ({ebit_pct}%) without verified turnaround catalyst"
+            )
+
     if is_turnaround and not (is_prof_a or is_prof_b):
         if hard_facts.get("unverified_ai_catalyst") is True or str(hard_facts.get("catalyst_source", "")).upper() == "UNVERIFIED_AI":
             reasons.append("REJECTED_UNVERIFIED_CATALYST: Turnaround requires documented press release, insider buying, or financial inflection")
