@@ -464,11 +464,13 @@ class MicroCapBacktester:
                     exit_volume = cur_vol
                     break
 
-                # Check Trailing Stop-Loss
+                # Check Trailing Stop-Loss (TASK-05: Gap-down safe execution min(Open, trailing_stop))
                 drawdown_from_peak = (peak_price - cur_low) / peak_price
                 if drawdown_from_peak >= self.trailing_stop_pct and d_idx > 0:
                     exit_date = cur_date
-                    raw_exit_price = peak_price * (1.0 - self.trailing_stop_pct)
+                    cur_open = float(cur_row.get("open", cur_close))
+                    stop_px = peak_price * (1.0 - self.trailing_stop_pct)
+                    raw_exit_price = min(cur_open, stop_px)
                     exit_reason = "TRAILING_STOP"
                     exit_volume = cur_vol
                     break

@@ -83,6 +83,7 @@ def build_eod_action_orders(
     run_trades: Optional[List[Dict[str, Any]]] = None,
     fx_rates: Optional[Dict[str, float]] = None,
     limit_buffer_pct: float = 0.002,
+    exit_limit_buffer_pct: Optional[float] = None,
 ) -> Tuple[List[EODActionOrder], List[EODActionOrder], List[EODActionOrder]]:
     """
     Parses executed or pending run trades and portfolio state into categorized EODActionOrder objects:
@@ -232,7 +233,9 @@ def build_eod_action_orders(
 
             exact_limit = details.get("limit_price")
             if exact_limit is None:
-                exact_limit = round(price_val * (1.0 - limit_buffer_pct), 2)
+                # TASK-09: EOD full exits use exit_limit_buffer_pct (default -3.5% PROTECTIVE_LIMIT)
+                buf = exit_limit_buffer_pct if exit_limit_buffer_pct is not None else limit_buffer_pct
+                exact_limit = round(price_val * (1.0 - buf), 2)
             else:
                 exact_limit = float(exact_limit)
 
@@ -672,11 +675,13 @@ def generate_and_send_p13_eod_action_email(
     if limit_buf > 0.05:  # e.g. if passed as 0.2 meaning 0.2%
         limit_buf = limit_buf / 100.0
 
+    exit_limit_buf = getattr(portfolio.config, "exit_limit_buffer_pct", 0.035) if hasattr(portfolio, "config") else 0.035
     buys, full_exits, partial_tps = build_eod_action_orders(
         portfolio=portfolio,
         run_trades=run_trades,
         fx_rates=fx,
         limit_buffer_pct=limit_buf,
+        exit_limit_buffer_pct=exit_limit_buf,
     )
     total_actions = len(buys) + len(full_exits) + len(partial_tps)
 

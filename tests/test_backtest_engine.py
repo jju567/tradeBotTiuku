@@ -167,3 +167,39 @@ def test_microcap_backtester_simulation(monkeypatch):
     assert trade.ticker == "FARON.HE"
     assert trade.entry_price_exec > trade.entry_price_raw  # Slippage added on buy
     assert trade.exit_price_exec < trade.exit_price_raw    # Slippage deducted on sell
+
+
+def test_backtest_trailing_stop_gap_down_execution(monkeypatch):
+    """TASK-05: Gap-down execution must execute at min(Open, trailing_stop), not at imaginary stop."""
+    dates = pd.date_range("2024-06-10", periods=5, freq="B")
+    # Day 0: Open=10, Close=10 (Entry)
+    # Day 1: Open=10, High=10, Low=9.5, Close=9.8
+    # Day 2: Gap down! Open=7.0, High=7.2, Low=6.8, Close=7.0 (Stop at 10 * 0.85 = 8.5)
+    # Market opened at 7.0, so fill must be at min(7.0, 8.5) = 7.0 (before exit slippage).
+    mock_df = pd.DataFrame({
+        "open": [10.0, 10.0, 7.0, 7.0, 7.0],
+        "high": [10.0, 10.0, 7.2, 7.0, 7.0],
+        "low": [10.0, 9.5, 6.8, 6.9, 7.0],
+        "close": [10.0, 9.8, 7.0, 7.0, 7.0],
+        "volume": [10000.0, 10000.0, 10000.0, 10000.0, 10000.0],
+    }, index=dates)
+
+    import yfinance as yf
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: mock_df)
+
+    backtester = MicroCapBacktester(
+        initial_capital=10000.0,
+        nominal_trade_size_eur=1000.0,
+        base_spread_slippage_pct=0.0, # Zero slippage to test exact execution price
+        toro_bouchaud_y=0.0,
+        trailing_stop_pct=0.15,       # 15% stop (8.50)
+    )
+
+    signals = [{"ticker": "GAPDOWN.HE", "signal_date": "2024-06-10", "signal_type": "BUY"}]
+    summary = backtester.run_backtest_on_signals(signals)
+
+    assert summary.total_trades == 1
+    trade = summary.trades[0]
+    assert trade.exit_reason == "TRAILING_STOP"
+    # Should execute at open (7.0), NOT at trailing stop price (8.5)
+    assert trade.exit_price_raw == 7.0

@@ -171,6 +171,9 @@ def matches_nordic_midcap_compounder(
     - High liquidity (tight bid-ask spread / ADV >= 50k EUR).
     """
     reasons: List[str] = []
+    if hard_facts.get("status") == "REJECTED_DATA_LEAK" or hard_facts.get("data_leak_quarantine") is True:
+        return False, ["REJECTED_DATA_LEAK: Candidate quarantined due to duplicate or corrupt data"]
+
     t_clean = ticker.strip().upper()
     market = str(meta.get("market", "")).upper()
 
@@ -255,6 +258,14 @@ def matches_nordic_midcap_compounder(
     if adv_eur < 50_000.0:
         reasons.append(f"ADV {adv_eur:,.0f} EUR < 50,000 EUR threshold")
 
+    # 7. Relative Valuation Filter: EV/EBIT vs. 5y Historical Median & Absolute Ceiling
+    ev_ebit_prem = hard_facts.get("ev_ebit_premium_pct")
+    curr_ev_ebit = hard_facts.get("current_ev_ebit")
+    if ev_ebit_prem is not None and float(ev_ebit_prem) > 50.0:
+        reasons.append(f"REJECTED_VALUATION: EV/EBIT premium +{float(ev_ebit_prem):.1f}% > 50.0% vs 5y median")
+    elif curr_ev_ebit is not None and float(curr_ev_ebit) > 30.0:
+        reasons.append(f"REJECTED_VALUATION: Absolute EV/EBIT {float(curr_ev_ebit):.1f} > 30.0")
+
     passed = len(reasons) == 0
     return passed, reasons
 
@@ -273,6 +284,9 @@ def matches_us_microcap_growth(
     - Catalyst: Strong revenue/EPS growth (YoY > 15%) or Profile A or high NLP earnings score with viability.
     """
     reasons: List[str] = []
+    if hard_facts.get("status") == "REJECTED_DATA_LEAK" or hard_facts.get("data_leak_quarantine") is True:
+        return False, ["REJECTED_DATA_LEAK: Candidate quarantined due to duplicate or corrupt data"]
+
     t_clean = ticker.strip().upper()
     market = str(meta.get("market", "")).upper()
 
@@ -399,6 +413,9 @@ def matches_nordic_microcap_catalyst(
       OR WATCH_TURNAROUND with verified news/earnings NLP catalyst and cash runway >= 12 months (or FCF/EBIT > 0).
     """
     reasons: List[str] = []
+    if hard_facts.get("status") == "REJECTED_DATA_LEAK" or hard_facts.get("data_leak_quarantine") is True:
+        return False, ["REJECTED_DATA_LEAK: Candidate quarantined due to duplicate or corrupt data"]
+
     t_clean = ticker.strip().upper()
     market = str(meta.get("market", "")).upper()
 
@@ -428,6 +445,8 @@ def matches_nordic_microcap_catalyst(
     is_prof_a = hard_facts.get("is_profile_a", False)
     is_prof_b = hard_facts.get("is_profile_b", False)
     is_turnaround = (nlp_verdict in ["WATCH_TURNAROUND", "STRONG BUY"] or meta.get("is_turnaround", False))
+    if is_turnaround and (hard_facts.get("has_share_dilution") or hard_facts.get("dilution_flag") == "DILUTION_WARNING_RECENT_ISSUE"):
+        reasons.append("REJECTED_DILUTION: Turnaround candidate has recent share dilution > 5%")
 
     if hard_facts.get("runway_status") == "REJECTED_LOW_RUNWAY" or hard_facts.get("status") == "REJECTED_LOW_RUNWAY":
         reasons.append("REJECTED_LOW_RUNWAY: Cash runway < 1.0 year with negative TTM operating cash flow")

@@ -375,3 +375,26 @@ def test_both_nordic_filters_reject_30k_sek_liquidity():
     assert any("20,000 EUR threshold" in r for r in reasons_sat)
 
 
+
+
+def test_nordic_midcap_compounder_rejects_data_leak():
+    meta = {"market": "FI", "market_cap_eur": 500_000_000.0, "adv_20d_local": 150_000.0, "currency": "EUR"}
+    hard_facts = {"roe": 0.18, "ebit_margin": 0.15, "free_cash_flow": 25_000_000.0, "net_debt_to_ebitda": 1.2, "status": "REJECTED_DATA_LEAK"}
+    passed, reasons = matches_nordic_midcap_compounder("HARVIA.HE", hard_facts, meta)
+    assert passed is False
+    assert any("REJECTED_DATA_LEAK" in r for r in reasons)
+
+
+def test_nordic_midcap_compounder_rejects_expensive_valuation():
+    meta = {"market": "FI", "market_cap_eur": 500_000_000.0, "adv_20d_local": 150_000.0, "currency": "EUR"}
+    # Test premium > 50%
+    hard_facts_prem = {"roe": 0.18, "ebit_margin": 0.15, "free_cash_flow": 25_000_000.0, "net_debt_to_ebitda": 1.2, "ev_ebit_premium_pct": 55.0}
+    passed, reasons = matches_nordic_midcap_compounder("HARVIA.HE", hard_facts_prem, meta)
+    assert passed is False
+    assert any("REJECTED_VALUATION" in r for r in reasons)
+
+    # Test absolute EV/EBIT > 30.0
+    hard_facts_abs = {"roe": 0.18, "ebit_margin": 0.15, "free_cash_flow": 25_000_000.0, "net_debt_to_ebitda": 1.2, "current_ev_ebit": 34.0}
+    passed, reasons = matches_nordic_midcap_compounder("HARVIA.HE", hard_facts_abs, meta)
+    assert passed is False
+    assert any("Absolute EV/EBIT" in r for r in reasons)

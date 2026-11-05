@@ -295,10 +295,28 @@ class PortfolioManager:
                         pass
 
                     if is_fi or is_se:
+                        # TASK-11: Market cap-based classification (>= 150M EUR -> Core Mid-Cap, < 150M EUR -> Satellite Micro-Cap)
+                        mcap_eur = 0.0
                         if sym_up in microcap_set:
                             sub_strat = "satellite_nordic_microcap_catalyst"
                         else:
-                            sub_strat = "core_nordic_midcap_quality" if is_fi else "satellite_nordic_microcap_catalyst"
+                            try:
+                                import yfinance as yf
+                                t_inst = yf.Ticker(sym_up)
+                                raw_mc = getattr(t_inst.fast_info, "market_cap", None)
+                                if raw_mc and float(raw_mc) > 0:
+                                    fx_eur = 1.0 if is_fi else (1.0 / 11.30)
+                                    mcap_eur = float(raw_mc) * fx_eur
+                            except Exception:
+                                pass
+
+                            if mcap_eur >= 150_000_000.0:
+                                sub_strat = "core_nordic_midcap_quality"
+                            elif mcap_eur > 0:
+                                sub_strat = "satellite_nordic_microcap_catalyst"
+                            else:
+                                # Fallback if live fetch unavailable
+                                sub_strat = "core_nordic_midcap_quality" if is_fi else "satellite_nordic_microcap_catalyst"
                     else:
                         sub_strat = "satellite_us_microcap_growth"
 

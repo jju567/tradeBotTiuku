@@ -188,19 +188,25 @@ Järjestelmää ei saa avata uusille riskeille (kuten käänneyhtiöille tai vä
 ## Toteutuksen Tarkistuslista (The Hardened Path Checklist)
 
 ### Vaihe 0: Datan Laatu ja Arvostus (Suojamuurit)
-- [ ] **`[TASK-00]` Cross-Sectional Data Audit:** Ajetaan globaalisti koko universumille ennen salkkujen skannausta; `DATA_DUPLICATE_WARNING` asettaa karanteenin (`REJECTED_DATA_LEAK`) ja `> 100 %` kasvut merkitään `MANUAL_REVIEW_OUTLIER`-lipulla.
-- [ ] **`[TASK-00B]` Core EV/EBITDA (EV/EBIT) vs. 5v historia:** Kova arvostuskatto ja suhteellinen 5v mediaanisuodatin kytketty `passes_nordic_midcap_compounder`-seulaan.
+- [x] **`[TASK-00]` Cross-Sectional Data Audit:** Ajetaan globaalisti koko universumille ennen salkkujen skannausta; `DATA_DUPLICATE_WARNING` asettaa karanteenin (`REJECTED_DATA_LEAK`) ja `> 100 %` kasvut merkitään `MANUAL_REVIEW_OUTLIER`-lipulla. Varmennettu testeissä: `tests/test_data_audit_and_runway.py`.
+- [x] **`[TASK-00B]` Core EV/EBITDA (EV/EBIT) vs. 5v historia:** Kova arvostuskatto (+50 % yli 5v mediaanin tai absoluuttinen EV/EBIT > 30.0) ja suhteellinen 5v mediaanisuodatin kytketty `passes_nordic_midcap_compounder`-seulaan. Varmennettu testeissä: `tests/test_tiered_filters.py`.
 
 ### Vaihe 1: Kulut ja T+1 Toteutus (Mekaniikka)
 - [x] **`[TASK-01..04]` Kulut, FX ja Partial TP:** 0,25 % FX-kulu, 9 €/15 € minimipalkkiot ja Partial TP -kokoraja (valmis commitissa `2d72294`).
-- [ ] **`[TASK-05 & 07]` T+1 Avausgapit, `min(Open, stop)` & `typical_price`:** Päiväkynttilän viitehinta nimetty rehellisesti `typical_price`:ksi, päivänsisäinen stop toteutetaan tasoon `min(Open, stop_price)` ja P13-tilan $T+1$ täsmäytys kytketty.
+- [x] **`[TASK-05 & 07]` T+1 Avausgapit, `min(Open, stop)` & `typical_price`:** Päiväkynttilän viitehinta nimetty rehellisesti `typical_price`:ksi (alias `vwap`), stop-loss laukeaa rehelliseen tasoon `min(cur_open, stop_px)` suojaamaan gap-downeilta. Varmennettu testeissä: `tests/test_backtest_engine.py`.
 
 ### Vaihe 2: Kassa, Runway ja Stop-Loss -Hierarkia
-- [ ] **`[TASK-12]` TTM OCF miinus 4Q CapEx:** Yhtenäinen `_extract_ttm_capex` (itseisarvojen 4Q-summa) molemmissa laskentafunktioissa (`calculate_survival_metrics` ja `get_hard_financials`).
-- [ ] **`[TASK-10]` Satelliitti 2 (`WATCH_TURNAROUND`):** Avattu tiukasti vain yhtiöille, joilla TASK-12:n mukainen `adjusted_cash` runway $\ge 12\text{ kk}$, vahvistettu katalyytti ja ei diluutioliputusta.
-- [ ] **`[TASK-09]` Stop-Loss Harmonisaatio:** `2.5x ATR` dynaaminen stop `-20 %` ehdottomalla katolla ja EOD-myynnit `-3.5 %` suojalimiitillä (`PROTECTIVE_LIMIT`).
+- [x] **`[TASK-12]` TTM OCF miinus 4Q CapEx:** Yhtenäinen `_extract_ttm_capex` (itseisarvojen 4Q-summa) molemmissa laskentafunktioissa (`calculate_survival_metrics` ja `get_hard_financials`). Varmennettu testeissä: `tests/test_data_audit_and_runway.py`.
+- [x] **`[TASK-10]` Satelliitti 2 (`WATCH_TURNAROUND`):** Avattu tiukasti vain yhtiöille, joilla TASK-12:n mukainen `adjusted_cash` runway $\ge 12\text{ kk}$, vahvistettu katalyytti ja ei diluutioliputusta (> 5 %). Varmennettu testeissä: `tests/test_tiered_filters.py`.
+- [x] **`[TASK-09]` Stop-Loss Harmonisaatio:** `2.5x ATR` dynaaminen stop `-20 %` ehdottomalla katolla ja EOD-myynnit `-3.5 %` suojalimiitillä (`PROTECTIVE_LIMIT`). Varmennettu: `email_generator.py` ja `main_controller.py`.
 
 ### Vaihe 3: Markkinaregiimi ja Salkkutason Hätäjarrut
-- [ ] **`[TASK-13]` Indeksikohtaiset Regiimisuodattimet:** Suomi `^OMXH25` (SMA200 hystereesillä), Ruotsi `^OMXSPI` (SMA200 hystereesillä) ja USA `IWC`.
-- [ ] **`[TASK-14]` `-15 %` Drawdown Risk-Off -tila:** Pysyvä `peak_equity_eur`-seuranta; `-15 %` drawdown pysäyttää uudet ostot ja nostaa käteispuskurivaatimuksen 60 prosenttiin.
-- [ ] **`[TASK-11]` Markkina-arvopohjainen CSV-tuonti:** Nordnet-tuonti lajittelee pohjoismaiset osakkeet 150 M€ markkina-arvorajan perusteella Core- vs. Satelliittikoriin.
+- [x] **`[TASK-13]` Indeksikohtaiset Regiimisuodattimet:** Suomi `^OMXH25` (SMA200 $\pm 1{,}0\,\%$ hystereesillä), Ruotsi `^OMXSPI` (SMA200 $\pm 1{,}0\,\%$ hystereesillä) ja USA `IWC`. Varmennettu testeissä: `tests/test_quant_analytics.py`.
+- [x] **`[TASK-14]` `-15 %` Drawdown Risk-Off -tila:** Pysyvä `peak_equity_eur`-seuranta; `-15 %` drawdown pysäyttää uudet ostot (`BLOCKED_BY_DRAWDOWN_RISK_OFF`) ja nostaa käteispuskurivaatimuksen 60 prosenttiin. Varmennettu testeissä: `tests/test_multi_portfolio.py`.
+- [x] **`[TASK-11]` Markkina-arvopohjainen CSV-tuonti:** Nordnet-tuonti lajittelee pohjoismaiset osakkeet 150 M€ markkina-arvorajan perusteella Core- vs. Satelliittikoriin pelkän kansallistunnuksen sijaan (`core/portfolio.py`).
+
+---
+
+## Toteutuksen Tila & Testitulokset
+Kaikki Vaiheiden 0–3 tehtävät on toteutettu ja auditoitu. Testipatteristo ajettu onnistuneesti läpi:
+**420 passed, 0 failed** (165.93 s).

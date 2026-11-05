@@ -1396,14 +1396,13 @@ def test_p13_staggered_entry_constraints(tmp_path):
         "CORE3.HE": {"market": "FI", "market_cap_eur": 500_000_000.0, "currency": "EUR", "adv_20d_local": 300_000.0, "current_price": 30.0},
     }
     daemon.market_engine.prices_cache = {"CORE1.HE": 20.0, "CORE2.HE": 25.0, "CORE3.HE": 30.0}
-    common_facts = {"roe": 0.22, "ebit_margin": 0.18, "free_cash_flow": 25_000_000.0, "net_debt_to_ebitda": 0.8}
     daemon.market_engine.hard_facts_cache = {
-        "CORE1.HE": common_facts,
-        "CORE2.HE": common_facts,
-        "CORE3.HE": common_facts,
+        "CORE1.HE": {"roe": 0.22, "ebit_margin": 0.18, "free_cash_flow": 25_000_000.0, "net_debt_to_ebitda": 0.8},
+        "CORE2.HE": {"roe": 0.24, "ebit_margin": 0.19, "free_cash_flow": 26_000_000.0, "net_debt_to_ebitda": 0.7},
+        "CORE3.HE": {"roe": 0.26, "ebit_margin": 0.20, "free_cash_flow": 27_000_000.0, "net_debt_to_ebitda": 0.6},
     }
     daemon.market_engine.get_ticker_nlp_status = lambda t: ("HOLD", "Clean")
-    daemon.market_engine.get_ticker_hard_facts = lambda t: common_facts
+    daemon.market_engine.get_ticker_hard_facts = lambda t: daemon.market_engine.hard_facts_cache.get(t, {})
 
     # Cycle 1 (Day 0): 3 candidates eligible, but max_new_buys_per_cycle=1 -> only 1 position opened
     opened_day0 = daemon.execute_phase2_screening(p)
@@ -1992,3 +1991,34 @@ def test_p13_core_relative_valuation_penalty_and_liquidity_gates(tmp_path):
 
 
 
+
+
+def test_portfolio_drawdown_enforces_risk_off_and_60pct_cash_buffer():
+    """TASK-14: -15% drawdown halts new buys, elevates cash buffer to 60%, and sets BLOCKED_BY_DRAWDOWN_RISK_OFF."""
+    from main_controller import MasterLiveTradingDaemon, PortfolioInstance, PortfolioConfig
+
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Multi_Strategy_Hybrid",
+        slots=5,
+        start_cash=10000.0,
+        slot_size=2000.0,
+        portfolio_max_drawdown_alert_pct=-15.0,
+    )
+    port = PortfolioInstance(config=cfg)
+    port.cash_balance = 3000.0
+    # Peak equity 10,000, current cash 3,000 + stock 5,200 = 8,200 (-18.0% drawdown)
+    port.peak_equity_eur = 10000.0
+    port.positions = [
+        {"Ticker": "STOCK1.HE", "buy_date": "2026-10-01", "buy_price": 52.0, "Shares": 100, "Currency": "EUR"}
+    ]
+
+    ctrl = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    ctrl.market_engine = type("Engine", (), {})()
+    ctrl.market_engine.market_regime = {}
+    ctrl.calculate_stock_value_eur = lambda p: 5200.0
+
+    opened = ctrl.execute_phase2_screening(port)
+    assert opened == 0
+    assert port.last_screening_block_reason == "BLOCKED_BY_DRAWDOWN_RISK_OFF"
+    assert getattr(port, "risk_off_mode", False) is True

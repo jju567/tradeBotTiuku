@@ -382,3 +382,43 @@ def test_p13_real_market_counterfactual_and_nlp_calibration(tmp_path):
 
 
 
+
+
+def test_regional_market_regimes(monkeypatch):
+    """TASK-13: Verifies regional market regimes with SMA200 and +/- 1% hysteresis."""
+    from unittest.mock import MagicMock
+    import pandas as pd
+    import yfinance as yf
+
+    class MockTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
+
+        def history(self, period="1y"):
+            # 200 closes
+            if self.ticker == "^OMXH25":
+                # Above SMA200 by +3% -> BULL / RISK_ON
+                base = [100.0] * 199 + [103.0]
+            elif self.ticker == "^OMXSPI":
+                # Below SMA200 by -3% -> BEAR / RISK_OFF
+                base = [100.0] * 199 + [97.0]
+            else:
+                # Within +/- 0.5% hysteresis -> NEUTRAL / CHOPPY
+                base = [100.0] * 199 + [100.2]
+            return pd.DataFrame({"Close": base})
+
+    monkeypatch.setattr(yf, "Ticker", MockTicker)
+
+    regimes = qa.get_regional_market_regimes()
+    assert "FI" in regimes
+    assert "SE" in regimes
+    assert "US" in regimes
+
+    assert regimes["FI"]["regime"] == "BULL / RISK_ON"
+    assert "🟢" in regimes["FI"]["badge"]
+
+    assert regimes["SE"]["regime"] == "BEAR / RISK_OFF"
+    assert "🔴" in regimes["SE"]["badge"]
+
+    assert regimes["US"]["regime"] == "NEUTRAL / CHOPPY"
+    assert "🟡" in regimes["US"]["badge"]

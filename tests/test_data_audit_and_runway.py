@@ -199,10 +199,15 @@ def test_audit_candidates_data_duplicates_and_outliers():
     assert "DATA_DUPLICATE_WARNING" in novo["audit_flags"]
     assert "DATA_DUPLICATE_WARNING" in trio["audit_flags"]
     assert "Data kopioitunut" in novo["audit_warning"]
+    assert novo.get("data_leak_quarantine") is True
+    assert novo.get("status") == "REJECTED_DATA_LEAK"
+    assert trio.get("data_leak_quarantine") is True
+    assert trio.get("status") == "REJECTED_DATA_LEAK"
 
     # HYPER must have MANUAL_REVIEW_OUTLIER
     assert "MANUAL_REVIEW_OUTLIER" in hyper["audit_flags"]
     assert "Ääriarvo havaittu" in hyper["audit_warning"]
+    assert hyper.get("requires_manual_review") is True
 
     # DILUTE must have DILUTION_WARNING_RECENT_ISSUE
     assert "DILUTION_WARNING_RECENT_ISSUE" in dilute["audit_flags"]
@@ -252,3 +257,23 @@ def test_email_generator_renders_audit_warning():
     html_email = format_eod_action_list_html(summary, buys, exits, tps)
     assert "⚠️ HUOM: Vaatii manuaalisen tarkistuksen" in html_email
     assert "BEAMMW-B.ST" in html_email
+
+
+def test_audit_candidates_data_roe_duplicate_quarantine():
+    """
+    Test 4b: Duplicate ROE across distinct tickers triggers DATA_DUPLICATE_WARNING
+    and REJECTED_DATA_LEAK quarantine.
+    """
+    candidates = [
+        {"ticker": "ROE1.HE", "roe": 0.245, "ebit_margin": 0.12, "revenue_growth": 0.15},
+        {"ticker": "ROE2.ST", "roe": 0.245, "ebit_margin": 0.08, "revenue_growth": 0.20},
+    ]
+    audited = audit_candidates_data(candidates)
+    c1 = next(c for c in audited if c["ticker"] == "ROE1.HE")
+    c2 = next(c for c in audited if c["ticker"] == "ROE2.ST")
+    assert "DATA_DUPLICATE_WARNING" in c1["audit_flags"]
+    assert c1.get("data_leak_quarantine") is True
+    assert c1.get("status") == "REJECTED_DATA_LEAK"
+    assert "DATA_DUPLICATE_WARNING" in c2["audit_flags"]
+    assert c2.get("data_leak_quarantine") is True
+    assert c2.get("status") == "REJECTED_DATA_LEAK"

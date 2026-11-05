@@ -1742,3 +1742,75 @@ def generate_p13_ai_post_mortem_and_devils_advocate(
     }
 
 
+
+
+def get_regional_market_regimes(
+    cache_path: Optional[Path] = None,
+    benchmarks: Optional[Dict[str, str]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    TASK-13: Calculates institutional market regimes per region with SMA200 and +/- 1% hysteresis:
+      - FI: ^OMXH25 (Finland benchmark)
+      - SE: ^OMXSPI (Sweden benchmark)
+      - US: IWC (US MicroCap benchmark)
+    """
+    benchmarks = benchmarks or {
+        "FI": "^OMXH25",
+        "SE": "^OMXSPI",
+        "US": "IWC",
+    }
+    regional_results: Dict[str, Dict[str, Any]] = {}
+
+    for region, b_ticker in benchmarks.items():
+        try:
+            import yfinance as yf
+            t = yf.Ticker(b_ticker)
+            hist = t.history(period="1y")
+            if not hist.empty and len(hist) >= 20:
+                closes = hist["Close"].dropna()
+                last_px = float(closes.iloc[-1])
+                sma_200 = float(closes.tail(200).mean()) if len(closes) >= 200 else float(closes.mean())
+                dist_pct = float(((last_px - sma_200) / sma_200) * 100.0)
+
+                # SMA200 with +/- 1.0% hysteresis
+                if last_px >= (sma_200 * 1.01):
+                    r_tag = "BULL / RISK_ON"
+                    color = "🟢"
+                elif last_px <= (sma_200 * 0.99):
+                    r_tag = "BEAR / RISK_OFF"
+                    color = "🔴"
+                else:
+                    r_tag = "NEUTRAL / CHOPPY"
+                    color = "🟡"
+
+                regional_results[region] = {
+                    "region": region,
+                    "benchmark": b_ticker,
+                    "regime": r_tag,
+                    "badge": f"{color} {r_tag}",
+                    "last_price": round(last_px, 2),
+                    "sma_200": round(sma_200, 2),
+                    "dist_sma200_pct": round(dist_pct, 1),
+                }
+            else:
+                regional_results[region] = {
+                    "region": region,
+                    "benchmark": b_ticker,
+                    "regime": "NEUTRAL / CHOPPY",
+                    "badge": "🟡 NEUTRAL",
+                    "last_price": 0.0,
+                    "sma_200": 0.0,
+                    "dist_sma200_pct": 0.0,
+                }
+        except Exception:
+            regional_results[region] = {
+                "region": region,
+                "benchmark": b_ticker,
+                "regime": "NEUTRAL / CHOPPY",
+                "badge": "🟡 NEUTRAL",
+                "last_price": 0.0,
+                "sma_200": 0.0,
+                "dist_sma200_pct": 0.0,
+            }
+
+    return regional_results

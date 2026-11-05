@@ -1227,6 +1227,7 @@ def audit_candidates_data(candidates: Any) -> Any:
 
     rev_map: Dict[float, list[Dict[str, Any]]] = {}
     ebit_map: Dict[float, list[Dict[str, Any]]] = {}
+    roe_map: Dict[float, list[Dict[str, Any]]] = {}
 
     for cand in cand_list:
         if not isinstance(cand, dict):
@@ -1297,6 +1298,15 @@ def audit_candidates_data(candidates: Any) -> Any:
         except (ValueError, TypeError):
             pass
 
+        try:
+            if roe_raw is not None:
+                roe_f = float(roe_raw)
+                roe_round = round(roe_f, 4)
+                if roe_round != 0.0:
+                    roe_map.setdefault(roe_round, []).append(cand)
+        except (ValueError, TypeError):
+            pass
+
         # 2. Outlier Guard
         is_outlier = False
         try:
@@ -1342,6 +1352,13 @@ def audit_candidates_data(candidates: Any) -> Any:
                 if "DATA_DUPLICATE_WARNING" not in c["audit_flags"]:
                     c["audit_flags"].append("DATA_DUPLICATE_WARNING")
 
+    for metric_val, matched_cands in roe_map.items():
+        distinct_tickers = {c.get("ticker") for c in matched_cands if c.get("ticker")}
+        if len(distinct_tickers) > 1:
+            for c in matched_cands:
+                if "DATA_DUPLICATE_WARNING" not in c["audit_flags"]:
+                    c["audit_flags"].append("DATA_DUPLICATE_WARNING")
+
     # Generate human-readable audit_warning and sync back to hard facts
     for cand in cand_list:
         if not isinstance(cand, dict):
@@ -1354,8 +1371,11 @@ def audit_candidates_data(candidates: Any) -> Any:
             reasons = []
             if "DATA_DUPLICATE_WARNING" in flags:
                 reasons.append("Data kopioitunut kahden osakkeen välillä")
+                cand["data_leak_quarantine"] = True
+                cand["status"] = "REJECTED_DATA_LEAK"
             if "MANUAL_REVIEW_OUTLIER" in flags:
                 reasons.append("Ääriarvo havaittu (Kasvu/ROE/EBIT > 100%)")
+                cand["requires_manual_review"] = True
             if "DILUTION_WARNING_RECENT_ISSUE" in flags:
                 reasons.append("Merkittävä osakediluutio/anti (> 5% kasvu)")
             for f in flags:
@@ -1370,5 +1390,61 @@ def audit_candidates_data(candidates: Any) -> Any:
                 cand[hf_key]["audit_flags"] = cand["audit_flags"]
                 cand[hf_key]["audit_flag"] = cand["audit_flag"]
                 cand[hf_key]["audit_warning"] = cand["audit_warning"]
+                if cand.get("data_leak_quarantine"):
+                    cand[hf_key]["data_leak_quarantine"] = True
+                    cand[hf_key]["status"] = "REJECTED_DATA_LEAK"
+                if cand.get("requires_manual_review"):
+                    cand[hf_key]["requires_manual_review"] = True
 
     return candidates
+
+
+def calculate_survival_metrics(
+    adjusted_cash: float,
+    ocf_val: Optional[float],
+    capex_val: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    TASK-12: Computes cash runway and survival viability from adjusted cash, TTM OCF, and CapEx.
+    """
+    res: Dict[str, Any] = {
+        "cash_runway_years": "Infinite",
+        "cash_runway_months": "Infinite",
+        "runway_status": "RUNWAY_OK",
+        "cash_burner": False,
+        "free_cash_flow": None,
+    }
+    fcf = None
+    if ocf_val is not None and capex_val is not None:
+        fcf = ocf_val - abs(capex_val)
+    elif ocf_val is not None:
+        fcf = ocf_val
+    res["free_cash_flow"] = fcf
+
+    if ocf_val is not None and ocf_val > 0.0 and (fcf is None or fcf > 0.0):
+        res["cash_runway_years"] = "Infinite"
+        res["cash_runway_months"] = "Infinite"
+        res["runway_status"] = "RUNWAY_OK"
+        res["cash_burner"] = False
+    elif ocf_val is not None and ocf_val < 0.0:
+        res["cash_burner"] = True
+        burn = abs(fcf) if (fcf is not None and fcf < 0.0) else abs(ocf_val)
+        runway_years = round(adjusted_cash / burn, 2) if burn > 0 else 0.0
+        runway_months = round(runway_years * 12.0, 1)
+        res["cash_runway_years"] = runway_years
+        res["cash_runway_months"] = runway_months
+        res["runway_status"] = "REJECTED_LOW_RUNWAY" if runway_years < 1.0 else "RUNWAY_OK"
+    elif fcf is not None and fcf < 0.0:
+        res["cash_burner"] = True
+        burn = abs(fcf)
+        runway_years = round(adjusted_cash / burn, 2) if burn > 0 else 0.0
+        runway_months = round(runway_years * 12.0, 1)
+        res["cash_runway_years"] = runway_years
+        res["cash_runway_months"] = runway_months
+        res["runway_status"] = "REJECTED_LOW_RUNWAY" if runway_years < 1.0 else "RUNWAY_OK"
+    else:
+        res["cash_burner"] = True
+        res["cash_runway_years"] = 0.0
+        res["cash_runway_months"] = 0.0
+        res["runway_status"] = "REJECTED_LOW_RUNWAY"
+    return res

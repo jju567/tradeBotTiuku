@@ -1068,6 +1068,7 @@ class MarketDataEngine:
                         "day_change_pct": chg_pct,
                         "runup_3d_pct": runup_3d_pct,
                         "rsi_14": rsi_14,
+                        "typical_price": vwap_val,
                         "vwap": vwap_val,
                         "last_candle_close": last_c_close,
                         "day_high": h_val,
@@ -2216,12 +2217,14 @@ class MasterLiveTradingDaemon:
                     and (cand_ocf is not None or cand_fcf is not None)
                 )
             )
-            # TASK-10: Allow turnaround candidates with verified news and cash runway >= 12m
+            # TASK-10: Allow turnaround candidates with verified news, cash runway >= 12m, and no share dilution
             is_turnaround_cand = (
                 sub_name == "satellite_nordic_microcap_catalyst"
                 and (news_verdict in ["WATCH_TURNAROUND", "STRONG BUY"] or meta.get("is_turnaround", False))
                 and hard_facts.get("runway_status") != "REJECTED_LOW_RUNWAY"
                 and hard_facts.get("status") != "REJECTED_LOW_RUNWAY"
+                and not hard_facts.get("has_share_dilution", False)
+                and hard_facts.get("dilution_flag") != "DILUTION_WARNING_RECENT_ISSUE"
             )
             runway_val = hard_facts.get("cash_runway_months")
             runway_ok = (str(runway_val).lower() == "infinite") or (isinstance(runway_val, (int, float)) and float(runway_val) >= 12.0)
@@ -2346,6 +2349,13 @@ class MasterLiveTradingDaemon:
             })
 
         valid_candidates = audit_candidates_data(valid_candidates)
+        # TASK-00: Filter out quarantined data leak candidates
+        valid_candidates = [
+            c for c in valid_candidates
+            if not c.get("data_leak_quarantine")
+            and c.get("status") != "REJECTED_DATA_LEAK"
+            and (c.get("hard_facts") or {}).get("status") != "REJECTED_DATA_LEAK"
+        ]
         valid_candidates.sort(key=lambda x: (x["score"], x["adv_eur"]), reverse=True)
         return valid_candidates
 
@@ -2644,16 +2654,43 @@ class MasterLiveTradingDaemon:
             buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
             min_required_cash = baseline_equity * buffer_pct
 
-        # Portfolio Max Drawdown alert
-        peak_eq = max(getattr(portfolio, "peak_equity_eur", cfg.start_cash) or cfg.start_cash, cur_total_equity)
+        # Portfolio Max Drawdown alert & TASK-14 Emergency Risk-Off Mode
+        peak_eq = getattr(portfolio, "peak_equity_eur", None)
+        if peak_eq is None:
+            peak_eq = cur_total_equity
+        else:
+            peak_eq = max(float(peak_eq), cur_total_equity)
         portfolio.peak_equity_eur = peak_eq
+        port_dd_pct = 0.0
         if peak_eq > 0:
             port_dd_pct = ((cur_total_equity - peak_eq) / peak_eq) * 100.0
             dd_alert = getattr(cfg, "portfolio_max_drawdown_alert_pct", -15.0) or -15.0
             if port_dd_pct <= dd_alert:
+                portfolio.risk_off_mode = True
                 logger.warning(
-                    f"⚠️ [{cfg.portfolio_id}] PORTFOLIO DRAWDOWN ALERT: Current equity {cur_total_equity:.2f}€ is {port_dd_pct:.1f}% below peak {peak_eq:.2f}€ (Alert threshold: {dd_alert:.1f}%)."
+                    f"🚨 [{cfg.portfolio_id}] PORTFOLIO DRAWDOWN ALERT: Current equity {cur_total_equity:.2f}€ is {port_dd_pct:.1f}% below peak {peak_eq:.2f}€ (Alert threshold: {dd_alert:.1f}%). "
+                    f"Enforcing EMERGENCY RISK-OFF: New buys halted and cash buffer elevated to 60%."
                 )
+
+        if getattr(portfolio, "risk_off_mode", False) or (peak_eq > 0 and port_dd_pct <= (getattr(cfg, "portfolio_max_drawdown_alert_pct", -15.0) or -15.0)):
+            buffer_pct = 0.60
+            min_required_cash = baseline_equity * buffer_pct
+            portfolio.last_screening_block_reason = "BLOCKED_BY_DRAWDOWN_RISK_OFF"
+            logger.info(
+                f"[{cfg.portfolio_id}] 🛑 Emergency Risk-Off active (Drawdown {port_dd_pct:.1f}% <= {getattr(cfg, 'portfolio_max_drawdown_alert_pct', -15.0):.1f}%). "
+                f"Halting all new buys and locking 60% cash buffer ({min_required_cash:,.2f} EUR)."
+            )
+            if cfg.sub_strategies:
+                self.execute_phase2_sub_strategies_screening(
+                    portfolio=portfolio,
+                    run_trades=run_trades,
+                    available_cash=0.0,
+                    held_tickers=held_tickers,
+                    cooldown_tickers=cooldown_tickers,
+                    today=today,
+                    max_buys_allowed=0,
+                )
+            return 0
 
         held_tickers = {p["Ticker"] for p in portfolio.positions}
         today = datetime.now(timezone.utc).date()
