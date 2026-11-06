@@ -246,3 +246,42 @@ def test_generate_and_send_p13_eod_action_email_suppresses_empty():
         )
         assert res_empty_allowed is True
         assert mock_send.called
+
+
+def test_email_generator_includes_stop_loss_instructions():
+    """Verify that format_eod_action_list_text and html include practical stop-loss guidance for buys."""
+    from email_generator import (
+        EODPortfolioSummary,
+        EODActionOrder,
+        format_eod_action_list_text,
+        format_eod_action_list_html,
+    )
+    summary = EODPortfolioSummary(
+        portfolio_id="P13_Live_Candidate",
+        regime_status="BULL",
+        available_cash_eur=5000.0,
+        total_equity_eur=7500.0,
+    )
+    buy_order = EODActionOrder(
+        category="BUY",
+        ticker="LIME.ST",
+        sub_strategy="core_nordic_midcap_quality",
+        order_type="LIMIT",
+        exact_limit_price=266.50,
+        currency="SEK",
+        share_count=92,
+        estimated_total_eur=2229.30,
+        initial_stop_loss_price="226.55 SEK (-15.0% Core Stop)",
+        thesis_catalyst="Nordic_MidCap_Compounder",
+    )
+
+    text_out = format_eod_action_list_text(summary, [buy_order], [], [])
+    assert "STOP-LOSS OHJE UUSILLE OSTOTOIMEKSIANNOILLE" in text_out
+    assert "Initial Stop -taso" in text_out
+    assert "Kurssihälytys" in text_out
+
+    html_out = format_eod_action_list_html(summary, [buy_order], [], [])
+    assert "STOP-LOSS OHJE UUSILLE OSTOTOIMEKSIANNOILLE" in html_out
+    assert "Kurssihälytys (Push/SMS)" in html_out
+    assert "Liipaisuhinta" in html_out
+    assert "stop-loss hunting" in html_out

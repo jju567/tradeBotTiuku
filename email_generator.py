@@ -382,6 +382,14 @@ def format_eod_action_list_text(
     if not buys:
         lines.append("  (Ei uusia ostotoimeksiantoja)")
     else:
+        lines.append("  💡 STOP-LOSS OHJE UUSILLE OSTOTOIMEKSIANNOILLE:")
+        lines.append("     • Suositus (Laatuosakkeet): Aseta Nordnetiin Kurssihälytys (Push/SMS) Initial Stop -tasolle tai seuraa EOD-päätöskursseja.")
+        lines.append("       Tämä estää aamuhuutokaupan tai pienen päivänsisäisen vaihdon harhalaukaukset (stop-loss hunting).")
+        lines.append("     • Jos asetat pörssiin Stop Loss -toimeksiannon:")
+        lines.append("       - Liipaisuhinta (Trigger): Initial Stop -taso")
+        lines.append("       - Myyntirajahinta (Limit): Aseta n. 2–3% alemmas (älä koskaan käytä markkinahintaa / 'paras')")
+        lines.append("       - Voimassaolo: GTC / Peruutukseen asti (30–90 pv)")
+        lines.append("")
         for idx, b in enumerate(buys, 1):
             lines.append(f"  {idx}. TICKER:                  {b.ticker}")
             lines.append(f"     SUB_STRATEGY:            {b.sub_strategy}")
@@ -548,6 +556,17 @@ def format_eod_action_list_html(
     <h3 style="margin-top:20px;margin-bottom:8px;color:#16a34a;font-size:1.15rem;display:flex;align-items:center;">
       🟢 BUYS ({len(buys)}) &mdash; Syötä LIMIT-ostotoimeksiannot ennen markkina-avausta
     </h3>
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-left:4px solid #16a34a;border-radius:6px;padding:12px 16px;margin:8px 0 14px 0;font-size:0.88rem;color:#166534;line-height:1.45;">
+      <strong>🛡️ STOP-LOSS OHJE UUSILLE OSTOTOIMEKSIANNOILLE:</strong>
+      <ul style="margin:6px 0 0 0;padding-left:18px;">
+        <li><strong>Suositus (Laatuosakkeet):</strong> Aseta Nordnetiin <strong>Kurssihälytys (Push/SMS)</strong> Initial Stop -tasolle tai luota botin EOD-päätöskurssiseurantaan. Tämä estää aamun avaushuutokaupan ja päivänsisäisten piikkien harhalaukaukset (<em>stop-loss hunting</em>).</li>
+        <li><strong>Jos asetat pörssiin Stop Loss -toimeksiannon:</strong>
+          <br>&bull; <em>Liipaisuhinta (Trigger):</em> Initial Stop -hinta
+          <br>&bull; <em>Myyntirajahinta (Limit):</em> Aseta aina rajahinnaksi n. 2&ndash;3 % liipaisua alempi hinta (esim. liipaisu 226,50 SEK &rarr; Limit 220,00 SEK). <strong>Älä koskaan käytä markkinahintaa ("paras")!</strong>
+          <br>&bull; <em>Voimassaolo:</em> GTC / Peruutukseen asti (30&ndash;90 pv).
+        </li>
+      </ul>
+    </div>
     {render_order_table(buys, "#16a34a", "Osto")}
 
     <!-- Category 2: FULL EXITS / SELL ACTIONS -->
