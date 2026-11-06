@@ -267,11 +267,27 @@ class PortfolioManager:
                 # Skip HODL positions (e.g. FARON) so they don't pollute P13 algorithmic trading portfolio
                 if h.get("hodl") or sym_up in ("FARON.HE", "FARON"):
                     continue
+
+                # Match exact ticker, or root symbol (e.g. LIME vs LIME.ST or LIME_TECHNOLOGIES)
+                matched_key = None
                 if sym_up in pos_by_ticker:
-                    pos = dict(pos_by_ticker[sym_up])
+                    matched_key = sym_up
+                else:
+                    for k in pos_by_ticker:
+                        if k.split(".")[0] == sym_up.split(".")[0] or (k.startswith("LIME") and sym_up.startswith("LIME")):
+                            matched_key = k
+                            break
+
+                if matched_key:
+                    pos = dict(pos_by_ticker[matched_key])
+                    pos["Ticker"] = sym_up
                     pos["Shares"] = float(h.get("quantity", 0))
                     pos["Buy Price"] = float(h.get("avg_price", 0.0))
+                    curr = h.get("currency") or pos.get("Currency") or ("SEK" if sym_up.endswith(".ST") else "EUR")
+                    pos["Currency"] = curr
                     pos["Capital Invested"] = round(pos["Shares"] * pos["Buy Price"], 2)
+                    if h.get("market_value_eur"):
+                        pos["Capital Invested EUR"] = round(float(h["market_value_eur"]), 2)
                     pos["last_evaluated_date"] = today_str
                     if h.get("hodl"):
                         pos["hodl"] = True
@@ -282,7 +298,7 @@ class PortfolioManager:
                     is_se = sym_up.endswith(".ST")
                     is_fi = sym_up.endswith(".HE")
                     mkt = "SE" if is_se else ("FI" if is_fi else "US")
-                    curr = "SEK" if is_se else ("EUR" if is_fi else "USD")
+                    curr = h.get("currency") or ("SEK" if is_se else ("EUR" if is_fi else "USD"))
                     # TASK-11: Market cap-based classification (>= 150M EUR -> Core Mid-Cap, < 150M EUR or missing -> Satellite Micro-Cap)
                     mcap_eur = float(h.get("market_cap_eur") or 0.0)
                     if mcap_eur <= 0:
@@ -347,6 +363,8 @@ class PortfolioManager:
                         "Execution_Verified": True,
                         "Note": "Imported from Nordnet CSV",
                     }
+                    if h.get("market_value_eur"):
+                        new_pos["Capital Invested EUR"] = round(float(h["market_value_eur"]), 2)
                     if h.get("hodl"):
                         new_pos["hodl"] = True
                     new_p13_positions.append(new_pos)

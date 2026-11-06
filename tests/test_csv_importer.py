@@ -261,3 +261,26 @@ class TestNordnetCSVImporter:
         assert preview["parsed_positions"][0]["is_new"] is True
         assert "SAMPO.HE" in preview["removed_symbols"]
         assert "FARON.HE" in preview["hodl_preserved_symbols"]
+
+    def test_import_nordnet_multicurrency_csv(self, tmp_path):
+        """Verifies parsing of real Nordnet multi-currency CSV with SEK and EUR positions."""
+        content = (
+            "Nimi\tValuutta\tMäärä\tKeskikurssi\t% tänään\tViimeisin\tLainoitusarvo, EUR\tArvo\tArvo EUR\tTuotto, %\tTuotto, EUR\tISIN\tMarket\n"
+            "Lime Technologies\tSEK\t92\t260,5\t-0,56\t264,5\t1324,47\t24334\t2207,45\t1,54\t33,50\tSE0011870195\tNasdaq Stockholm AB\n"
+            "Faron Pharmaceuticals\tEUR\t2700\t0,4041\t-0,42\t0,353\t95,31\t953,1\t953,1\t-12,65\t-138\tFI4000153309\tNasdaq Helsinki Ltd\n"
+        )
+        filepath = self._write_csv(tmp_path, content)
+        holdings, count = NordnetCSVImporter.import_csv(filepath, {})
+        assert count == 2
+        assert "LIME.ST" in holdings
+        assert holdings["LIME.ST"]["quantity"] == 92
+        assert holdings["LIME.ST"]["avg_price"] == pytest.approx(260.5)
+        assert holdings["LIME.ST"]["currency"] == "SEK"
+        assert holdings["LIME.ST"]["market_value_eur"] == pytest.approx(2207.45)
+        assert holdings["LIME.ST"]["market_value_native"] == pytest.approx(24334.0)
+
+        assert "FARON.HE" in holdings
+        assert holdings["FARON.HE"]["quantity"] == 2700
+        assert holdings["FARON.HE"]["avg_price"] == pytest.approx(0.4041)
+        assert holdings["FARON.HE"]["currency"] == "EUR"
+        assert holdings["FARON.HE"]["market_value_eur"] == pytest.approx(953.1)

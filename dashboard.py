@@ -1066,7 +1066,8 @@ with st.sidebar:
                 side_prev = pm_side.preview_csv_bytes(side_bytes, preserve_hodl=False)
                 st.markdown(f"**🔍 Esikatselu ({side_prev['total_rows']} kpl):**")
                 for pos in side_prev["parsed_positions"]:
-                    st.markdown(f"• **{pos['symbol']}**: `{pos['quantity']} kpl` @ `{pos['avg_price']:.4f} €`")
+                    c_lbl = pos.get("currency", "EUR")
+                    st.markdown(f"• **{pos['symbol']}**: `{pos['quantity']} kpl` @ `{pos['avg_price']:.2f} {c_lbl}`")
                 if side_prev["removed_symbols"]:
                     st.caption(f"🗑️ Poistuvat: {', '.join(side_prev['removed_symbols'])}")
             except Exception as e_prev:
@@ -1517,9 +1518,12 @@ def render_real_portfolio_view():
     equity_override = state.get("total_equity_override")
     currency = state.get("currency", "EUR")
 
-    # Fetch live quotes for holdings
+    # Fetch live quotes and FX rates for holdings
     tickers_tuple = tuple(holdings.keys())
     live_quotes = fetch_positions_live_data(tickers_tuple) if tickers_tuple else {}
+    fx_rates = get_live_fx_rates()
+    fx_eur_usd = fx_rates.get("EURUSD", 1.15)
+    fx_eur_sek = fx_rates.get("EURSEK", 11.30)
 
     # Build holdings details & valuations
     positions_data = []
@@ -1530,27 +1534,46 @@ def render_real_portfolio_view():
     for sym, h in holdings.items():
         qty = float(h.get("quantity", 0))
         avg_p = float(h.get("avg_price", 0.0))
-        invested = qty * avg_p
-        total_invested_val += invested
+        curr_curr = (h.get("currency") or ("SEK" if sym.endswith(".ST") else ("EUR" if sym.endswith(".HE") else "USD"))).upper()
+
+        if curr_curr == "EUR":
+            fx_to_eur = 1.0
+        elif curr_curr == "SEK":
+            fx_to_eur = 1.0 / fx_eur_sek
+        elif curr_curr == "USD":
+            fx_to_eur = 1.0 / fx_eur_usd
+        elif curr_curr == "NOK":
+            fx_to_eur = 1.0 / fx_rates.get("EURNOK", 11.50)
+        elif curr_curr == "DKK":
+            fx_to_eur = 1.0 / 7.46
+        else:
+            fx_to_eur = 1.0
+
+        invested_native = qty * avg_p
+        invested_eur = invested_native * fx_to_eur
+        total_invested_val += invested_eur
+
         is_hodl = bool(h.get("hodl", False))
         if is_hodl:
             hodl_count += 1
 
         quote = live_quotes.get(sym, {})
         curr_price = float(quote.get("current_price", avg_p)) if quote.get("status") == "SUCCESS" else avg_p
-        mkt_val = qty * curr_price
-        total_market_val += mkt_val
+        mkt_val_native = qty * curr_price
+        mkt_val_eur = mkt_val_native * fx_to_eur
+        total_market_val += mkt_val_eur
 
-        pnl_eur = mkt_val - invested
+        pnl_eur = mkt_val_eur - invested_eur
         pnl_pct = ((curr_price - avg_p) / avg_p * 100.0) if avg_p > 0 else 0.0
 
         positions_data.append({
             "Symboli": sym,
             "Nimi": h.get("name", sym),
             "Määrä": int(qty) if qty.is_integer() else qty,
-            "Keskikurssi": avg_p,
-            "Markkinahinta": curr_price,
-            "Markkina-arvo": mkt_val,
+            "Valuutta": curr_curr,
+            "Keskikurssi": f"{avg_p:,.2f} {curr_curr}",
+            "Markkinahinta": f"{curr_price:,.2f} {curr_curr}",
+            "Markkina-arvo": mkt_val_eur,
             "Tuotto (€)": pnl_eur,
             "Tuotto (%)": pnl_pct,
             "Tavoitepaino (%)": float(h.get("target_weight", 0.10)) * 100.0,
@@ -1658,7 +1681,9 @@ def render_real_portfolio_view():
                                 "symbol": "Ticker",
                                 "name": "Nordnet Nimi",
                                 "quantity": "Määrä",
-                                "avg_price": "Keskikurssi (€)",
+                                "avg_price": "Keskikurssi",
+                                "currency": "Valuutta",
+                                "market_value_eur": "Arvo (€)",
                                 "target_weight": "Tavoitepaino",
                                 "is_hodl": "HODL",
                                 "is_new": "Uusi Positio",
@@ -1716,7 +1741,9 @@ def render_real_portfolio_view():
                     "symbol": "Ticker",
                     "name": "Nordnet Nimi",
                     "quantity": "Määrä",
-                    "avg_price": "Keskikurssi (€)",
+                    "avg_price": "Keskikurssi",
+                    "currency": "Valuutta",
+                    "market_value_eur": "Arvo (€)",
                     "target_weight": "Tavoitepaino",
                     "is_hodl": "HODL",
                     "is_new": "Uusi Positio",
@@ -1834,15 +1861,13 @@ def render_real_portfolio_view():
         df_display = pd.DataFrame(positions_data)
         format_dict = {
             "Määrä": "{:,}",
-            "Keskikurssi": "{:.4f} €",
-            "Markkinahinta": "{:.4f} €",
             "Markkina-arvo": "{:,.2f} €",
             "Tuotto (€)": "{:+,.2f} €",
             "Tuotto (%)": "{:+.2f} %",
             "Paino (%)": "{:.1f} %",
             "Tavoitepaino (%)": "{:.1f} %",
         }
-        cols_to_show = ["Symboli", "Nimi", "Määrä", "Keskikurssi", "Markkinahinta", "Markkina-arvo", "Tuotto (€)", "Tuotto (%)", "Paino (%)", "HODL", "Muistiinpano"]
+        cols_to_show = ["Symboli", "Nimi", "Määrä", "Valuutta", "Keskikurssi", "Markkinahinta", "Markkina-arvo", "Tuotto (€)", "Tuotto (%)", "Paino (%)", "HODL", "Muistiinpano"]
         st.dataframe(
             df_display[cols_to_show].style.format(format_dict, na_rep="-"),
             use_container_width=True,
@@ -2277,8 +2302,9 @@ def render_dashboard_views(active_menu: str):
             if hodl_items:
                 with st.expander("🔒 Eristetyt HODL-omistukset (Reaalisalkku)", expanded=True):
                     for _sym, _h in hodl_items:
+                        _h_curr = _h.get("currency") or ("SEK" if _sym.endswith(".ST") else "EUR")
                         st.markdown(
-                            f"• **{_sym}** ({_h.get('name', _sym)}): **{_h.get('quantity', 0):,} kpl** @ {_h.get('avg_price', 0):.4f} € "
+                            f"• **{_sym}** ({_h.get('name', _sym)}): **{_h.get('quantity', 0):,} kpl** @ {_h.get('avg_price', 0):.2f} {_h_curr} "
                             f"— *{_h.get('note', 'HODL')}* &nbsp; "
                             f"(Turvassa reaalisalkussa, eristetty pois P13:n 7 900 € kaupankäyntipääomasta)."
                         )

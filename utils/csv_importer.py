@@ -1,7 +1,7 @@
 import csv
 import logging
 from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,35 @@ KNOWN_NORDNET_NAMES = {
     "betsson": "BETCO.ST",
     "bico group": "BICO.ST",
     "bioarctic": "BIOA-B.ST",
+    "lime technologies": "LIME.ST",
+    "lime": "LIME.ST",
+    "faron pharmaceuticals": "FARON.HE",
+    "faron": "FARON.HE",
     "apple": "AAPL",
     "microsoft": "MSFT",
 }
+
+_UNIVERSE_NAME_MAP: Optional[Dict[str, str]] = None
+
+
+def _get_universe_name_map() -> Dict[str, str]:
+    global _UNIVERSE_NAME_MAP
+    if _UNIVERSE_NAME_MAP is not None:
+        return _UNIVERSE_NAME_MAP
+    _UNIVERSE_NAME_MAP = {}
+    csv_path = Path(__file__).resolve().parent.parent / "data" / "nordnet_universe.csv"
+    if csv_path.exists():
+        try:
+            import csv
+            with open(csv_path, "r", encoding="utf-8") as f:
+                for r in csv.DictReader(f):
+                    yf = (r.get("Ticker_YF") or "").strip().upper()
+                    name = (r.get("Name") or "").strip().lower()
+                    if yf and name:
+                        _UNIVERSE_NAME_MAP[name] = yf
+        except Exception:
+            pass
+    return _UNIVERSE_NAME_MAP
 
 
 def parse_finnish_number(val_str: str) -> float:
@@ -72,7 +98,12 @@ def parse_finnish_number(val_str: str) -> float:
         return 0.0
 
 
-def map_name_to_symbol(name: str, existing_holdings: Dict[str, Any]) -> str:
+def map_name_to_symbol(
+    name: str,
+    existing_holdings: Dict[str, Any],
+    isin: Optional[str] = None,
+    currency: Optional[str] = None,
+) -> str:
     """Maps a Nordnet export name to a ticker symbol."""
     name_clean = name.strip()
     name_lower = name_clean.lower()
@@ -82,7 +113,7 @@ def map_name_to_symbol(name: str, existing_holdings: Dict[str, Any]) -> str:
         stored_name = h.get("name", "").lower()
         if stored_name and (stored_name in name_lower or name_lower in stored_name):
             return sym
-        if sym.lower() in name_lower:
+        if sym.lower() in name_lower or sym.split(".")[0].lower() == name_lower:
             return sym
 
     # 2. Check KNOWN_NORDNET_NAMES mapping
@@ -90,8 +121,19 @@ def map_name_to_symbol(name: str, existing_holdings: Dict[str, Any]) -> str:
         if key in name_lower:
             return sym
 
-    # 3. Fallback: sanitize name as symbol if no match found
-    fallback = name_clean.upper().replace(" ", "_")
+    # 3. Check nordnet_universe.csv dataset
+    univ_map = _get_universe_name_map()
+    for u_name, u_sym in univ_map.items():
+        if u_name == name_lower or name_lower in u_name or u_name in name_lower:
+            return u_sym
+
+    # 4. Fallback: sanitize name as symbol if no match found
+    if currency == "SEK":
+        fallback = f"{name_clean.upper().replace(' ', '_')}.ST"
+    elif currency == "EUR":
+        fallback = f"{name_clean.upper().replace(' ', '_')}.HE"
+    else:
+        fallback = name_clean.upper().replace(" ", "_")
     logger.warning(f"Could not map Nordnet name '{name}' to a known symbol. Using fallback '{fallback}'")
     return fallback
 
@@ -201,7 +243,7 @@ class NordnetCSVImporter:
             # Normalize field names (strip whitespace from header keys)
             row_keys = {k.strip(): k for k in row.keys() if k}
 
-            # Locate name, quantity and avg-price columns (Finnish / Swedish / English headers)
+            # Locate name, quantity, price, currency, value columns (Finnish / Swedish / English headers)
             name_key = next(
                 (row_keys[k] for k in row_keys if "Nimi" in k or "Instrument" in k or "Name" in k), None
             )
@@ -210,6 +252,18 @@ class NordnetCSVImporter:
             )
             price_key = next(
                 (row_keys[k] for k in row_keys if "Keskikurssi" in k or "GAK" in k or "Avg" in k), None
+            )
+            currency_key = next(
+                (row_keys[k] for k in row_keys if "Valuutta" in k or "Valuta" in k or "Currency" in k), None
+            )
+            val_eur_key = next(
+                (row_keys[k] for k in row_keys if "Arvo EUR" in k or "Marknadsvärde EUR" in k or "Value EUR" in k or "Arvo, EUR" in k), None
+            )
+            val_native_key = next(
+                (row_keys[k] for k in row_keys if k in ("Arvo", "Marknadsvärde", "Value") or (k.startswith("Arvo") and "EUR" not in k and "Lainoitus" not in k)), None
+            )
+            isin_key = next(
+                (row_keys[k] for k in row_keys if "ISIN" in k), None
             )
 
             if not (name_key and qty_key):
@@ -230,7 +284,30 @@ class NordnetCSVImporter:
                     "P&L calculations will be inaccurate until manually corrected."
                 )
 
-            symbol = map_name_to_symbol(raw_name, existing_holdings)
+            raw_curr = row.get(currency_key, "").strip().upper() if currency_key else ""
+            isin_val = row.get(isin_key, "").strip().upper() if isin_key else None
+            val_eur = parse_finnish_number(row[val_eur_key]) if val_eur_key and row.get(val_eur_key, "").strip() else 0.0
+            val_native = parse_finnish_number(row[val_native_key]) if val_native_key and row.get(val_native_key, "").strip() else 0.0
+
+            symbol = map_name_to_symbol(raw_name, existing_holdings, isin=isin_val, currency=raw_curr)
+
+            # Determine currency accurately
+            if raw_curr:
+                curr = raw_curr
+            elif symbol.endswith(".ST"):
+                curr = "SEK"
+            elif symbol.endswith(".HE"):
+                curr = "EUR"
+            elif symbol.endswith(".OL"):
+                curr = "NOK"
+            elif symbol.endswith(".CO"):
+                curr = "DKK"
+            elif isin_val and isin_val.startswith("SE"):
+                curr = "SEK"
+            elif isin_val and isin_val.startswith("FI"):
+                curr = "EUR"
+            else:
+                curr = "EUR"
 
             # Carry over user-configured fields from previous state if available
             existing_item = existing_holdings.get(symbol, {})
@@ -242,8 +319,15 @@ class NordnetCSVImporter:
                 "name": raw_name,
                 "quantity": int(qty) if qty.is_integer() else round(qty, 4),
                 "avg_price": round(avg_price, 4),
+                "currency": curr,
                 "target_weight": round(target_weight, 4),
             }
+            if val_eur > 0:
+                holding_data["market_value_eur"] = round(val_eur, 2)
+            if val_native > 0:
+                holding_data["market_value_native"] = round(val_native, 2)
+            if isin_val:
+                holding_data["isin"] = isin_val
 
             if hodl_flag:
                 holding_data["hodl"] = True
@@ -257,11 +341,14 @@ class NordnetCSVImporter:
                 "name": raw_name,
                 "quantity": holding_data["quantity"],
                 "avg_price": holding_data["avg_price"],
+                "currency": curr,
+                "market_value_eur": holding_data.get("market_value_eur"),
+                "market_value_native": holding_data.get("market_value_native"),
                 "target_weight": holding_data["target_weight"],
                 "is_hodl": hodl_flag,
                 "is_new": symbol not in existing_holdings,
             })
-            logger.info(f"Imported holding {symbol} ({raw_name}): {qty} pcs @ {avg_price:.2f} EUR")
+            logger.info(f"Imported holding {symbol} ({raw_name}): {qty} pcs @ {avg_price:.2f} {curr}")
 
         # Log positions that were removed because they were absent from the CSV
         removed = set(existing_holdings.keys()) - set(updated_holdings.keys())
