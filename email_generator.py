@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("email_generator")
 
-# Import credential loader from email_notifier
+# Import credential loader and company name utilities
 try:
     from email_notifier import load_env_credentials
 except ImportError:
@@ -39,6 +39,8 @@ except ImportError:
             "ALERT_EMAIL": os.environ.get("ALERT_EMAIL", ""),
         }
 
+from utils.company_names import get_company_name, format_company_title
+
 
 @dataclass
 class EODActionOrder:
@@ -46,6 +48,7 @@ class EODActionOrder:
     category: str  # 'BUY', 'FULL_EXIT', 'PARTIAL_TP'
     ticker: str
     sub_strategy: str
+    company_name: str = ""
     order_type: str = "LIMIT"
     exact_limit_price: float = 0.0
     currency: str = "EUR"
@@ -61,6 +64,11 @@ class EODActionOrder:
 
     def formatted_estimated_eur(self) -> str:
         return f"{self.estimated_total_eur:,.2f} €"
+
+    def formatted_title(self) -> str:
+        if self.company_name and self.company_name.strip().upper() != self.ticker.strip().upper():
+            return f"{self.company_name} ({self.ticker})"
+        return self.ticker
 
 
 @dataclass
@@ -106,6 +114,7 @@ def build_eod_action_orders(
         action = str(t.get("action", "")).upper()
         ticker = str(t.get("ticker", "")).strip().upper()
         details = t.get("details", {})
+        comp_name = details.get("name") or details.get("company_name") or get_company_name(ticker)
 
         # Extract native currency
         curr = details.get("currency") or ("USD" if ("." not in ticker) else ("SEK" if ticker.endswith(".ST") else "EUR"))
@@ -162,6 +171,7 @@ def build_eod_action_orders(
                     category="BUY",
                     ticker=ticker,
                     sub_strategy=sub_strategy,
+                    company_name=comp_name,
                     order_type="LIMIT",
                     exact_limit_price=exact_limit,
                     currency=curr,
@@ -210,6 +220,7 @@ def build_eod_action_orders(
                     category="PARTIAL_TP",
                     ticker=ticker,
                     sub_strategy=sub_strategy,
+                    company_name=comp_name,
                     order_type="LIMIT",
                     exact_limit_price=exact_limit,
                     currency=curr,
@@ -252,6 +263,7 @@ def build_eod_action_orders(
                     category="FULL_EXIT",
                     ticker=ticker,
                     sub_strategy=sub_strategy,
+                    company_name=comp_name,
                     order_type="LIMIT",
                     exact_limit_price=exact_limit,
                     currency=curr,
@@ -391,7 +403,7 @@ def format_eod_action_list_text(
         lines.append("       - Voimassaolo: GTC / Peruutukseen asti (30–90 pv)")
         lines.append("")
         for idx, b in enumerate(buys, 1):
-            lines.append(f"  {idx}. TICKER:                  {b.ticker}")
+            lines.append(f"  {idx}. YHTIÖ (TICKER):          {b.formatted_title()}")
             lines.append(f"     SUB_STRATEGY:            {b.sub_strategy}")
             lines.append(f"     ORDER_TYPE:              {b.order_type}")
             lines.append(f"     EXACT_LIMIT_PRICE:       {b.formatted_limit_price()}")
@@ -413,7 +425,7 @@ def format_eod_action_list_text(
         lines.append("  ⚠️ HUOM: Syötä myynti LIMIT-toimeksiantona klo 10:15 suositellulla Limit-hinnalla (Päivän Bid tai Close -1.5%). Älä myy markkinahintaan!")
         lines.append("")
         for idx, e in enumerate(full_exits, 1):
-            lines.append(f"  {idx}. TICKER:                  {e.ticker}")
+            lines.append(f"  {idx}. YHTIÖ (TICKER):          {e.formatted_title()}")
             lines.append(f"     SUB_STRATEGY:            {e.sub_strategy}")
             lines.append(f"     ORDER_TYPE:              LIMIT (Seuraavan aamun klo 10:15 toteutus, älä myy markkinahintaan!)")
             lines.append(f"     EXACT_LIMIT_PRICE:       {e.formatted_limit_price()} (Päätöspäivän Bid tai Close -1.5% joustovara)")
@@ -432,7 +444,7 @@ def format_eod_action_list_text(
         lines.append("  (Ei osittaisia voitonkotiutuksia)")
     else:
         for idx, p in enumerate(partial_tps, 1):
-            lines.append(f"  {idx}. TICKER:                  {p.ticker}")
+            lines.append(f"  {idx}. YHTIÖ (TICKER):          {p.formatted_title()}")
             lines.append(f"     SUB_STRATEGY:            {p.sub_strategy}")
             lines.append(f"     ORDER_TYPE:              {p.order_type}")
             lines.append(f"     EXACT_LIMIT_PRICE:       {p.formatted_limit_price()}")
@@ -470,9 +482,15 @@ def format_eod_action_list_html(
                   {warn_text}
                 </div>
                 """
+            comp_display = o.company_name if o.company_name and o.company_name != o.ticker else o.ticker
+            sub_ticker = f'<div style="font-size:0.8rem;color:#64748b;font-weight:600;">{o.ticker}</div>' if comp_display != o.ticker else ""
             rows += f"""
             <tr style="border-bottom:1px solid #e2e8f0;">
-              <td style="padding:10px 12px;font-weight:700;color:#0f172a;font-size:1.05rem;">{o.ticker}{warn_badge}</td>
+              <td style="padding:10px 12px;font-weight:700;color:#0f172a;font-size:1.0rem;">
+                {comp_display}
+                {sub_ticker}
+                {warn_badge}
+              </td>
               <td style="padding:10px 12px;font-size:0.85rem;color:#475569;"><code>{o.sub_strategy}</code></td>
               <td style="padding:10px 12px;font-size:0.85rem;"><span style="background:{badge_color};color:#ffffff;padding:2px 8px;border-radius:4px;font-weight:600;">{o.order_type}</span></td>
               <td style="padding:10px 12px;font-weight:700;color:#0f172a;text-align:right;">{o.formatted_limit_price()}</td>
@@ -487,7 +505,7 @@ def format_eod_action_list_html(
         <table style="width:100%;border-collapse:collapse;margin-bottom:24px;background:#ffffff;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;font-size:0.9rem;">
           <thead>
             <tr style="background:#f8fafc;color:#475569;text-align:left;font-size:0.8rem;text-transform:uppercase;border-bottom:1px solid #cbd5e1;">
-              <th style="padding:8px 12px;">Ticker</th>
+              <th style="padding:8px 12px;">Yhtiö (Ticker)</th>
               <th style="padding:8px 12px;">Sub-Strategy</th>
               <th style="padding:8px 12px;">Order Type</th>
               <th style="padding:8px 12px;text-align:right;">Limit Price</th>
@@ -506,7 +524,7 @@ def format_eod_action_list_html(
     hodl_line = ""
     if summary.hodl_positions:
         hodl_items = "".join(
-            f'<li style="margin-bottom:4px;"><strong>{p.get("Ticker")}</strong>: {p.get("Shares", 0):,} kpl @ {p.get("Buy Price", 0.0):.2f} € &mdash; <span style="color:#16a34a;font-weight:600;">Ignored by bot / HODL Protected</span></li>'
+            f'<li style="margin-bottom:4px;"><strong>{format_company_title(p.get("Ticker") or p.get("ticker", ""), p.get("name"))}</strong>: {p.get("Shares", 0):,} kpl @ {p.get("Buy Price", 0.0):.2f} € &mdash; <span style="color:#16a34a;font-weight:600;">Ignored by bot / HODL Protected</span></li>'
             for p in summary.hodl_positions
         )
         hodl_line = f"""
@@ -622,7 +640,20 @@ def generate_eod_action_list_email(
 
     now_date = datetime.now(timezone.utc).strftime("%d.%m.%Y")
     total_actions = len(buys) + len(full_exits) + len(partial_tps)
-    subject = f"🔔 [OST Action List] {summary.portfolio_id} ({now_date}): {total_actions} toimenpidettä ({len(buys)} ostoa, {len(full_exits)} exit, {len(partial_tps)} TP)"
+    if total_actions == 1:
+        if buys:
+            target_desc = f"OSTO: {buys[0].formatted_title()}"
+        elif full_exits:
+            target_desc = f"MYYNTI: {full_exits[0].formatted_title()}"
+        else:
+            target_desc = f"TP: {partial_tps[0].formatted_title()}"
+        subject = f"🔔 [OST Action List] {summary.portfolio_id} ({now_date}): {target_desc}"
+    elif total_actions > 1:
+        all_titles = [b.formatted_title() for b in buys] + [e.formatted_title() for e in full_exits] + [p.formatted_title() for p in partial_tps]
+        names_str = f" ({', '.join(all_titles[:2])})" if all_titles else ""
+        subject = f"🔔 [OST Action List] {summary.portfolio_id} ({now_date}): {total_actions} toimenpidettä{names_str} ({len(buys)} ostoa, {len(full_exits)} exit, {len(partial_tps)} TP)"
+    else:
+        subject = f"🔔 [OST Action List] {summary.portfolio_id} ({now_date}): 0 toimenpidettä (0 ostoa, 0 exit, 0 TP)"
 
     text_body = format_eod_action_list_text(summary, buys, full_exits, partial_tps)
     html_body = format_eod_action_list_html(summary, buys, full_exits, partial_tps)

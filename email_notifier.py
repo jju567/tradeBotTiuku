@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("email_notifier")
+from utils.company_names import get_company_name, format_company_title
 
 # Locate .env in workspace root
 _BASE_DIR = Path(__file__).resolve().parent
@@ -115,10 +116,12 @@ def send_portfolio_alert(
 
     clean_event = event_type.strip().upper()
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    comp_name = get_company_name(ticker)
+    title_str = format_company_title(ticker, comp_name)
 
     # Format Subject according to CRITICAL requirement
     if not subject:
-        subject = f"TRADE BOT [{portfolio_id}]: {clean_event} {ticker}"
+        subject = f"TRADE BOT [{portfolio_id}]: {clean_event} {title_str}"
 
     details = details or {}
 
@@ -128,6 +131,7 @@ def send_portfolio_alert(
         f"========================================",
         f"Portfolio:   {portfolio_id}",
         f"Action:      {clean_event}",
+        f"Company:     {comp_name}",
         f"Ticker:      {ticker}",
         f"Timestamp:   {now_str}",
         f"----------------------------------------",
@@ -155,12 +159,12 @@ def send_portfolio_alert(
 <head><meta charset="utf-8"></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1e293b;max-width:600px;margin:0 auto;padding:16px;">
   <div style="background:#0f172a;padding:16px 20px;border-radius:8px 8px 0 0;color:#f8fafc;">
-    <h2 style="margin:0;font-size:1.25rem;">🐱 tradeBotTiuku Alert</h2>
+    <h2 style="margin:0;font-size:1.25rem;">🐱 tradeBotTiuku Alert: {title_str}</h2>
     <p style="margin:4px 0 0 0;font-size:0.85rem;color:#94a3b8;">{now_str}</p>
   </div>
   <div style="border:1px solid #e2e8f0;border-top:none;padding:20px;border-radius:0 0 8px 8px;background:#ffffff;">
     <div style="display:inline-block;background:{event_color};color:#ffffff;padding:4px 10px;border-radius:4px;font-weight:700;font-size:0.9rem;margin-bottom:12px;">
-      {clean_event} &bull; {ticker}
+      {clean_event} &bull; {title_str}
     </div>
     <p style="margin:0 0 12px 0;font-size:1.05rem;"><strong>Portfolio:</strong> <code>{portfolio_id}</code></p>
     <table style="width:100%;border-collapse:collapse;margin-top:10px;border:1px solid #f1f5f9;background:#f8fafc;border-radius:6px;overflow:hidden;">
@@ -251,8 +255,10 @@ def send_run_summary_email(
         action = t.get("action", "")
         pid = t.get("portfolio_id", "")
         ticker = t.get("ticker", "")
+        comp_name = get_company_name(ticker)
+        title_str = format_company_title(ticker, comp_name)
         details_str = ", ".join(f"{k}: {v}" for k, v in t.get("details", {}).items())
-        text_lines.append(f"  • [{pid}] {action} {ticker} -> {details_str}")
+        text_lines.append(f"  • [{pid}] {action} {title_str} -> {details_str}")
 
     text_lines.append("-" * 70)
     text_lines.append("SALKKUJEN TILANNE AJON JÄLKEEN:")
@@ -283,7 +289,7 @@ def send_run_summary_email(
               {action}
             </span>
           </td>
-          <td style="padding: 8px 12px; font-weight: 700; color: #0f172a;">{ticker}</td>
+          <td style="padding: 8px 12px; font-weight: 700; color: #0f172a;">{get_company_name(ticker)} <span style="font-size:0.85em;color:#64748b;font-weight:600;">({ticker})</span></td>
           <td style="padding: 8px 12px; font-size: 0.88rem; color: #475569;">{det_snippet}</td>
         </tr>
         """
@@ -320,7 +326,7 @@ def send_run_summary_email(
         <tr style="background:#f1f5f9;text-align:left;color:#475569;font-size:0.85rem;text-transform:uppercase;">
           <th style="padding:8px 12px;">Salkku</th>
           <th style="padding:8px 12px;">Toiminto</th>
-          <th style="padding:8px 12px;">Tikkeri</th>
+          <th style="padding:8px 12px;">Yhtiö (Tikkeri)</th>
           <th style="padding:8px 12px;">Tiedot</th>
         </tr>
       </thead>

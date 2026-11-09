@@ -285,3 +285,63 @@ def test_email_generator_includes_stop_loss_instructions():
     assert "Kurssihälytys (Push/SMS)" in html_out
     assert "Liipaisuhinta" in html_out
     assert "stop-loss hunting" in html_out
+
+
+def test_email_generator_includes_full_company_name():
+    """Verify that email text, HTML, and subject include the full company name."""
+    from email_generator import (
+        EODPortfolioSummary,
+        EODActionOrder,
+        format_eod_action_list_text,
+        format_eod_action_list_html,
+        generate_eod_action_list_email,
+        build_eod_action_orders,
+    )
+    from utils.company_names import get_company_name, format_company_title
+
+    # 1. Company name lookup verification
+    assert get_company_name("MEKKO.HE") == "Marimekko Oyj"
+    assert get_company_name("LIME.ST") == "Lime Technologies AB"
+    assert format_company_title("MEKKO.HE") == "Marimekko Oyj (MEKKO.HE)"
+
+    # 2. build_eod_action_orders auto-resolves company_name
+    class DummyPort:
+        class config:
+            portfolio_id = "P13_Live_Candidate"
+
+    trades = [
+        {
+            "portfolio_id": "P13_Live_Candidate",
+            "action": "BUY",
+            "ticker": "MEKKO.HE",
+            "details": {
+                "sub_strategy": "core_nordic_midcap_quality",
+                "shares": 233,
+                "buy_price": 9.60,
+                "limit_price": 9.62,
+                "estimated_total_eur": 2245.80,
+            },
+        }
+    ]
+    buys, exits, tps = build_eod_action_orders(DummyPort(), trades)
+    assert len(buys) == 1
+    assert buys[0].company_name == "Marimekko Oyj"
+    assert buys[0].formatted_title() == "Marimekko Oyj (MEKKO.HE)"
+
+    # 3. Text and HTML email output
+    summary = EODPortfolioSummary(
+        portfolio_id="P13_Live_Candidate",
+        regime_status="BULL",
+        available_cash_eur=3465.20,
+        total_equity_eur=7913.24,
+    )
+    txt = format_eod_action_list_text(summary, buys, exits, tps)
+    assert "Marimekko Oyj (MEKKO.HE)" in txt
+
+    htm = format_eod_action_list_html(summary, buys, exits, tps)
+    assert "Marimekko Oyj" in htm
+    assert "MEKKO.HE" in htm
+
+    # 4. Subject line contains full company name
+    subj, _, _ = generate_eod_action_list_email(DummyPort(), trades)
+    assert "Marimekko Oyj (MEKKO.HE)" in subj
