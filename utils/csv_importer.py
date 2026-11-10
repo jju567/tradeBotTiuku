@@ -58,10 +58,29 @@ KNOWN_NORDNET_NAMES = {
     "bioarctic": "BIOA-B.ST",
     "lime technologies": "LIME.ST",
     "lime": "LIME.ST",
+    "marimekko": "MEKKO.HE",
+    "marimekko oyj": "MEKKO.HE",
+    "mekko": "MEKKO.HE",
     "faron pharmaceuticals": "FARON.HE",
     "faron": "FARON.HE",
     "apple": "AAPL",
     "microsoft": "MSFT",
+}
+
+# Explicit ISO ISIN to Yahoo Finance ticker mapping for guaranteed zero-ambiguity resolution
+KNOWN_ISIN_MAP: Dict[str, str] = {
+    "FI0009007660": "MEKKO.HE",   # Marimekko Oyj
+    "FI4000153309": "FARON.HE",   # Faron Pharmaceuticals Oy
+    "SE0011870195": "LIME.ST",    # Lime Technologies AB
+    "FI0009012413": "EQV1V.HE",   # eQ Oyj
+    "SE0000727142": "MSAB-B.ST",  # Micro Systemation AB
+    "FI4000300645": "VIAFIN.HE",  # Viafin Service Oyj
+    "SE0015962485": "RVRC.ST",    # RevolutionRace AB
+    "FI0009003727": "NOKIA.HE",   # Nokia Oyj
+    "FI0009013296": "NESTE.HE",   # Neste Oyj
+    "FI0009003305": "SAMPO.HE",   # Sampo Oyj
+    "FI0009005961": "FORTUM.HE",  # Fortum Oyj
+    "FI0009005987": "UPM.HE",     # UPM-Kymmene Oyj
 }
 
 _UNIVERSE_NAME_MAP: Optional[Dict[str, str]] = None
@@ -105,6 +124,12 @@ def map_name_to_symbol(
     currency: Optional[str] = None,
 ) -> str:
     """Maps a Nordnet export name to a ticker symbol."""
+    # 0. Check unambiguous ISO ISIN mapping if available
+    if isin:
+        clean_isin = str(isin).strip().upper()
+        if clean_isin in KNOWN_ISIN_MAP:
+            return KNOWN_ISIN_MAP[clean_isin]
+
     name_clean = name.strip()
     name_lower = name_clean.lower()
 

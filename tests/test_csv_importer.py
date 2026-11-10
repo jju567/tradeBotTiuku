@@ -86,6 +86,18 @@ class TestMapNameToSymbol:
         result = map_name_to_symbol("Apple Inc", existing_holdings={})
         assert result == "AAPL"
 
+    def test_marimekko_maps_to_mekko_he(self):
+        result = map_name_to_symbol("Marimekko", existing_holdings={})
+        assert result == "MEKKO.HE"
+        result_oyj = map_name_to_symbol("Marimekko Oyj", existing_holdings={})
+        assert result_oyj == "MEKKO.HE"
+
+    def test_isin_mapping_takes_precedence(self):
+        result = map_name_to_symbol("Marimekko", existing_holdings={}, isin="FI0009007660")
+        assert result == "MEKKO.HE"
+        result_faron = map_name_to_symbol("Faron Pharma", existing_holdings={}, isin="FI4000153309")
+        assert result_faron == "FARON.HE"
+
 
 # ---------------------------------------------------------------------------
 # NordnetCSVImporter

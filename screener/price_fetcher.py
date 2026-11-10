@@ -34,6 +34,18 @@ MARKET_SUFFIX_MAP = {
     "NYSE": "",
 }
 
+# Ticker alias dictionary mapping non-standard or legacy ticker names to official Yahoo Finance tickers
+TICKER_ALIASES = {
+    "MARIMEKKO.HE": "MEKKO.HE",
+    "MARIMEKKO": "MEKKO.HE",
+    "EQ.HE": "EQV1V.HE",
+    "EQ": "EQV1V.HE",
+    "LIME_TECHNOLOGIES.ST": "LIME.ST",
+    "LIME_TECHNOLOGIES": "LIME.ST",
+    "FARON_PHARMACEUTICALS.HE": "FARON.HE",
+    "FARON_PHARMACEUTICALS": "FARON.HE",
+}
+
 
 def normalize_ticker(ticker: str, market: Optional[str] = None) -> str:
     """
@@ -46,6 +58,13 @@ def normalize_ticker(ticker: str, market: Optional[str] = None) -> str:
       - normalize_ticker("NEL", "NO") -> "NEL.OL"
     """
     clean_ticker = ticker.strip().upper()
+    if clean_ticker in TICKER_ALIASES:
+        return TICKER_ALIASES[clean_ticker]
+
+    base_sym = clean_ticker.split(".")[0]
+    if base_sym in TICKER_ALIASES and "." in clean_ticker:
+        return TICKER_ALIASES[base_sym]
+
     market_clean = (market or "").strip().upper()
 
     # If the ticker already contains a recognized Nordic suffix, return as-is

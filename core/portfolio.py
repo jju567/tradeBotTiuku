@@ -253,17 +253,18 @@ class PortfolioManager:
             logger.warning(f"P13 state file not found at {p13_path}; skipping P13 sync.")
             return False
         try:
+            from screener.price_fetcher import normalize_ticker
             with open(p13_path, "r", encoding="utf-8") as f:
                 p13_data = json.load(f)
 
             existing_p13_positions = p13_data.get("positions", [])
-            pos_by_ticker = {p.get("Ticker", "").upper(): p for p in existing_p13_positions if p.get("Ticker")}
+            pos_by_ticker = {normalize_ticker(p.get("Ticker", "")): p for p in existing_p13_positions if p.get("Ticker")}
 
             new_p13_positions = []
             today_str = datetime.now().strftime("%Y-%m-%d")
 
             for sym, h in updated_holdings.items():
-                sym_up = sym.upper()
+                sym_up = normalize_ticker(sym)
                 # Skip HODL positions (e.g. FARON) so they don't pollute P13 algorithmic trading portfolio
                 if h.get("hodl") or sym_up in ("FARON.HE", "FARON"):
                     continue

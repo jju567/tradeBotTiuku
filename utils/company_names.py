@@ -26,6 +26,8 @@ STATIC_COMPANY_NAMES: Dict[str, str] = {
     # Helsinki (OMX Helsinki)
     "MEKKO.HE": "Marimekko Oyj",
     "MARIME.HE": "Marimekko Oyj",
+    "MARIMEKKO.HE": "Marimekko Oyj",
+    "MARIMEKKO": "Marimekko Oyj",
     "EQV1V.HE": "eQ Oyj",
     "FARON.HE": "Faron Pharmaceuticals Oy",
     "NOKIA.HE": "Nokia Oyj",

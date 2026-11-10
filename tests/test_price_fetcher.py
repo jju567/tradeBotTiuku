@@ -19,6 +19,11 @@ def test_normalize_ticker():
     assert normalize_ticker("ORSTED", "DK") == "ORSTED.CO"
     assert normalize_ticker("AAPL", "US") == "AAPL"
     assert normalize_ticker("SAMPO.HE") == "SAMPO.HE"
+    # Alias mapping for non-standard / historical ticker names
+    assert normalize_ticker("MARIMEKKO.HE") == "MEKKO.HE"
+    assert normalize_ticker("MARIMEKKO") == "MEKKO.HE"
+    assert normalize_ticker("EQ.HE") == "EQV1V.HE"
+    assert normalize_ticker("EQ") == "EQV1V.HE"
 
 
 def test_get_realtime_data_normal_float_price(monkeypatch):
