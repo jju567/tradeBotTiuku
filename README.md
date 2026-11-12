@@ -160,10 +160,13 @@
   - Joka kerta kun tilatiedosto tallennetaan (`save_state()`), siitä muodostetaan ensin kopio muotoon `<tiedostonimi>_<viikonpaiva>.bak` (esim. `portfolio_P13_Live_Candidate_state_maanantai.bak`).
   - `backups/`-kansio luodaan automaattisesti, ja viikonpäiväpohjainen kierto säilyttää tarkan tilannekuvan viikon jokaiselta päivältä ilman levytilan hallitsematonta paisumista.
 - **3. Osakesplit- ja Corporate Action -hälytin (`_sync_to_p13_state()`)**:
-  - Ennen kuin tilatiedosto ylikirjoitetaan uuden Nordnet CSV:n tiedoilla, olemassa olevan salkun osakemääriä ja hintoja verrataan uusiin lukuihin.
-  - **Osakesplit- ja Corporate Action -hälytin**: Jos tickerin kappalemäärä on kasvanut poikkeavasti ($\ge 50\,\%$) JA hinta on laskenut merkittävästi (indikoiden splitiä):
-    - Nostetaan kriittinen varoitus: `logging.warning("⚠️ SPLIT DETECTED (TICKER) - MANUAL STATE UPDATE REQUIRED")`.
-    - **Estetään position sokea ylikirjoittaminen** tilatiedostoon, jotta botin PnL- ja tuottolaskelmat eivät vääristy, vaan pakotetaan käyttäjä päivittämään uusi kappalemäärä ja ostohinta manuaalisesti.
+  - Ennen kuin tilatiedosto ylikirjoitetaan uuden Nordnet CSV:n tiedoilla, olemassa olevan salkun osakemääriä ja hintoja verrataan uusiin lukuihin:
+    - `old_qty` ja `old_price` haetaan `.json`-tilan avoimista positioista.
+    - `new_qty` ja `new_price` haetaan tuotavasta CSV-tiedostosta.
+  - **Osakesplit- ja Corporate Action -hälytin**: Jos kappalemäärä on kasvanut poikkeavasti (`new_qty >= old_qty * 1.5`) **JA** hinta on laskenut merkittävästi (`new_price <= old_price * 0.75`):
+    - Nostetaan kriittinen virheloki: `logging.error(f"⚠️ SPLIT DETECTED ({ticker}) - MANUAL STATE UPDATE REQUIRED. Kpl muuttui: {old_qty} -> {new_qty}.")`.
+    - **OHITETAAN position päivitys tilatiedostoon automaattisesti** (`continue`): osakkeen vanhaa ostohintaa, kpl-määrää tai PnL-historiaa ei muuteta ohjelmallisesti, jotta tuottolaskelmat eivät vääristy.
+    - Prosessi jatkaa muiden osakkeiden käsittelyä normaalisti, ja split vaatii käyttäjältä manuaalisen ostohinnan ja kappalemäärän päivityksen `portfolio_P13_Live_Candidate_state.json` -tiedostoon.
   - **Datan vääristymän hälytin**: Jos osakemäärä muuttuu merkittävästi ilman käänteistä hintamuutosta, asetetaan lippu `DATA_DISTORTION_WARNING` ja `manual_review_required = True`.
 
 

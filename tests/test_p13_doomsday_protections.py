@@ -167,15 +167,16 @@ def test_save_state_triggers_state_vault(tmp_path):
 
 def test_stock_split_alarm_and_prevent_blind_overwrite(tmp_path, caplog):
     """
-    Test 2:1 stock split on Alma Media (ALMA.HE):
-      - Initial: 100 shares @ 10.00 EUR (Capital Invested 1000.0)
-      - Imported: 200 shares @ 5.00 EUR
+    Test 2:1 stock split on Alma Media (ALMA.HE) and normal update on TIETO.HE:
+      - Initial ALMA: 100 shares @ 10.00 EUR (Capital Invested 1000.0)
+      - Imported ALMA: 200 shares @ 5.00 EUR (new_qty >= old_qty * 1.5 AND new_price <= old_price * 0.75)
+      - Initial TIETO: 50 shares @ 20.00 EUR
+      - Imported TIETO: 50 shares @ 21.00 EUR (normal update)
       - Result:
-        * Critical warning logged: "⚠️ SPLIT DETECTED (ALMA.HE) - MANUAL STATE UPDATE REQUIRED"
-        * Blind overwrite prevented: Shares remains 100.0, Buy Price remains 10.00 EUR
-        * split_detected is True, split_pending_manual_update is True
-        * unapplied_split_shares = 200.0, unapplied_split_price = 5.00
-        * SPLIT_DETECTED_MANUAL_REQUIRED audit flag added
+        * Critical error logged: "⚠️ SPLIT DETECTED (ALMA.HE) - MANUAL STATE UPDATE REQUIRED. Kpl muuttui: 100 -> 200."
+        * Blind overwrite prevented on ALMA: Shares remains 100.0, Buy Price remains 10.00 EUR
+        * ALMA update skipped via continue, keeping old values intact
+        * TIETO processed normally (Shares 50, Buy Price 21.00)
     """
     import logging
     pf_file = tmp_path / "tiuku_portfolio.json"
@@ -195,6 +196,12 @@ def test_stock_split_alarm_and_prevent_blind_overwrite(tmp_path, caplog):
                 "highest_price_seen": 12.00,
                 "stop_threshold": 8.50,
                 "Capital Invested": 1000.0,
+            },
+            {
+                "Ticker": "TIETO.HE",
+                "Shares": 50.0,
+                "Buy Price": 20.00,
+                "Capital Invested": 1000.0,
             }
         ],
     }
@@ -206,33 +213,43 @@ def test_stock_split_alarm_and_prevent_blind_overwrite(tmp_path, caplog):
             "quantity": 200,
             "avg_price": 5.00,
             "market_value_eur": 1000.0,
+        },
+        "TIETO.HE": {
+            "name": "Tietoevry",
+            "quantity": 50,
+            "avg_price": 21.00,
+            "market_value_eur": 1050.0,
         }
     }
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.ERROR):
         synced = mgr._sync_to_p13_state(p13_file, updated_holdings)
     assert synced is True
 
-    # 1. Tarkista kriittinen varoitusviesti
-    assert any("⚠️ SPLIT DETECTED (ALMA.HE) - MANUAL STATE UPDATE REQUIRED" in record.message for record in caplog.records)
+    # 1. Tarkista kriittinen varoitusloki täsmällisellä tekstillä
+    expected_error = "⚠️ SPLIT DETECTED (ALMA.HE) - MANUAL STATE UPDATE REQUIRED. Kpl muuttui: 100 -> 200."
+    assert any(expected_error in record.message for record in caplog.records)
 
     updated_data = json.loads(p13_file.read_text(encoding="utf-8"))
-    pos = updated_data["positions"][0]
+    positions = {p["Ticker"]: p for p in updated_data["positions"]}
 
-    # 2. Estetty sokea ylikirjoittaminen: säilyttää vanhan varmistetun tilan
-    assert pos["Ticker"] == "ALMA.HE"
-    assert pos["Shares"] == 100.0
-    assert pos["Buy Price"] == 10.00
-    assert pos["Capital Invested"] == 1000.0
+    # 2. Estetty sokea ylikirjoittaminen: ALMA säilyttää vanhan varmistetun tilan (continue ohitti päivityksen)
+    alma = positions["ALMA.HE"]
+    assert alma["Shares"] == 100.0
+    assert alma["Buy Price"] == 10.00
+    assert alma["Capital Invested"] == 1000.0
+    assert alma.get("split_detected") is True
+    assert alma.get("split_pending_manual_update") is True
+    assert alma.get("manual_review_required") is True
+    assert alma.get("unapplied_split_shares") == 200.0
+    assert alma.get("unapplied_split_price") == 5.00
+    assert "SPLIT_DETECTED_MANUAL_REQUIRED" in alma.get("Audit_Flags", [])
 
-    # 3. Merkitty manuaaliseen päivitykseen split-tiedoin
-    assert pos.get("split_detected") is True
-    assert pos.get("split_pending_manual_update") is True
-    assert pos.get("manual_review_required") is True
-    assert pos.get("unapplied_split_shares") == 200.0
-    assert pos.get("unapplied_split_price") == 5.00
-    assert "SPLIT_DETECTED_MANUAL_REQUIRED" in pos.get("Audit_Flags", [])
-    assert "SPLIT DETECTED" in pos.get("Audit_Warning", "")
+    # 3. Prosessi jatkoi muiden osakkeiden käsittelyä normaalisti
+    tieto = positions["TIETO.HE"]
+    assert tieto["Shares"] == 50.0
+    assert tieto["Buy Price"] == 21.00
+    assert round(tieto["Capital Invested"], 2) == 1050.0
 
 
 def test_data_distortion_alarm(tmp_path):

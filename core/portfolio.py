@@ -290,25 +290,25 @@ class PortfolioManager:
         # Osakesplit- ja Corporate Action -hälytin
         for sym, h in list(updated_holdings.items()):
             if sym in existing:
-                old_q = float(existing[sym].get("quantity", 0) or 0)
-                new_q = float(h.get("quantity", 0) or 0)
-                old_p = float(existing[sym].get("avg_price", 0.0) or 0.0)
-                new_p = float(h.get("avg_price", 0.0) or 0.0)
-                if old_q > 0 and new_q > 0:
-                    share_growth_pct = (new_q - old_q) / old_q
-                    price_drop_pct = (old_p - new_p) / old_p if old_p > 0 else 0.0
-                    if share_growth_pct >= 0.50 and price_drop_pct >= 0.25:
-                        logger.warning(f"⚠️ SPLIT DETECTED ({sym}) - MANUAL STATE UPDATE REQUIRED")
-                        # Estä kyseisen position sokea ylikirjoittaminen tilatiedostoon
-                        h["quantity"] = int(old_q)
-                        h["avg_price"] = old_p
-                        h["split_detected"] = True
-                        h["split_pending_manual_update"] = True
-                        h["manual_review_required"] = True
-                        h["requires_manual_review"] = True
-                        h["unapplied_split_shares"] = new_q
-                        h["unapplied_split_price"] = new_p
-                        h["audit_warning"] = f"⚠️ SPLIT DETECTED ({sym}) - MANUAL STATE UPDATE REQUIRED"
+                old_qty = float(existing[sym].get("quantity", 0) or 0)
+                new_qty = float(h.get("quantity", 0) or 0)
+                old_price = float(existing[sym].get("avg_price", 0.0) or 0.0)
+                new_price = float(h.get("avg_price", 0.0) or 0.0)
+                # Split-ehto: new_qty >= old_qty * 1.5 JA new_price <= old_price * 0.75
+                if old_qty > 0 and new_qty >= (old_qty * 1.5) and (old_price > 0 and new_price <= (old_price * 0.75)):
+                    old_disp = int(old_qty) if old_qty.is_integer() else old_qty
+                    new_disp = int(new_qty) if new_qty.is_integer() else new_qty
+                    logger.error(f"⚠️ SPLIT DETECTED ({sym}) - MANUAL STATE UPDATE REQUIRED. Kpl muuttui: {old_disp} -> {new_disp}.")
+                    # Estä kyseisen position sokea ylikirjoittaminen tilatiedostoon
+                    h["quantity"] = int(old_qty) if old_qty.is_integer() else old_qty
+                    h["avg_price"] = old_price
+                    h["split_detected"] = True
+                    h["split_pending_manual_update"] = True
+                    h["manual_review_required"] = True
+                    h["requires_manual_review"] = True
+                    h["unapplied_split_shares"] = new_qty
+                    h["unapplied_split_price"] = new_price
+                    h["audit_warning"] = f"⚠️ SPLIT DETECTED ({sym}) - MANUAL STATE UPDATE REQUIRED. Kpl muuttui: {old_disp} -> {new_disp}."
 
         self.portfolio_state["holdings"] = updated_holdings
         if cash_balance is not None:
@@ -382,64 +382,61 @@ class PortfolioManager:
 
                 if matched_key:
                     pos = dict(pos_by_ticker[matched_key])
-                    old_shares = float(pos.get("Shares", 0) or 0.0)
-                    new_shares = float(h.get("quantity", 0) or 0.0)
+                    old_qty_raw = pos.get("Shares", 0)
+                    old_qty = float(old_qty_raw or 0.0)
+                    new_qty_raw = h.get("quantity", 0)
+                    new_qty = float(new_qty_raw or 0.0)
                     old_price = float(pos.get("Buy Price", 0.0) or 0.0)
                     new_price = float(h.get("avg_price", 0.0) or 0.0)
 
-                    # Osakesplit- ja Corporate Action -hälytin
-                    is_split = False
-                    if old_shares > 0 and new_shares > 0:
-                        share_growth_pct = (new_shares - old_shares) / old_shares
-                        price_drop_pct = (old_price - new_price) / old_price if old_price > 0 else 0.0
+                    # 1. Split-tunnistin ja Ylikirjoituksen Esto
+                    # Split-ehto: new_qty >= old_qty * 1.5 JA new_price <= old_price * 0.75
+                    if old_qty > 0 and new_qty >= (old_qty * 1.5) and (old_price > 0 and new_price <= (old_price * 0.75)):
+                        old_disp = int(old_qty) if old_qty.is_integer() else old_qty
+                        new_disp = int(new_qty) if new_qty.is_integer() else new_qty
+                        logger.error(f"⚠️ SPLIT DETECTED ({sym_up}) - MANUAL STATE UPDATE REQUIRED. Kpl muuttui: {old_disp} -> {new_disp}.")
+                        # OHITA kyseisen osakkeen päivitys tilatiedostoon automaattisesti.
+                        # Älä muuta sen vanhaa ostohintaa, kpl-määrää tai PnL-historiaa ohjelmallisesti.
+                        pos["split_detected"] = True
+                        pos["split_pending_manual_update"] = True
+                        pos["manual_review_required"] = True
+                        pos["requires_manual_review"] = True
+                        pos["unapplied_split_shares"] = float(new_qty)
+                        pos["unapplied_split_price"] = float(new_price)
+                        a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
+                        if "SPLIT_DETECTED_MANUAL_REQUIRED" not in a_flags:
+                            a_flags.append("SPLIT_DETECTED_MANUAL_REQUIRED")
+                        if "STOCK_SPLIT_DETECTED" not in a_flags:
+                            a_flags.append("STOCK_SPLIT_DETECTED")
+                        pos["Audit_Flags"] = a_flags
+                        pos["audit_flags"] = a_flags
+                        pos["Audit_Warning"] = f"⚠️ SPLIT DETECTED ({sym_up}) - MANUAL STATE UPDATE REQUIRED. Kpl muuttui: {old_disp} -> {new_disp}."
+                        pos["audit_warning"] = pos["Audit_Warning"]
+                        new_p13_positions.append(pos)
+                        continue
 
-                        # Jos osakemäärä kasvanut poikkeavasti (> 50%) JA hinta laskenut merkittävästi (indikoiden splitiä)
-                        if share_growth_pct >= 0.50 and price_drop_pct >= 0.25:
-                            is_split = True
-                            logger.warning(f"⚠️ SPLIT DETECTED ({sym_up}) - MANUAL STATE UPDATE REQUIRED")
-                            pos["split_detected"] = True
-                            pos["split_pending_manual_update"] = True
-                            pos["manual_review_required"] = True
-                            pos["requires_manual_review"] = True
-                            pos["unapplied_split_shares"] = float(new_shares)
-                            pos["unapplied_split_price"] = float(new_price)
-                            a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
-                            if "SPLIT_DETECTED_MANUAL_REQUIRED" not in a_flags:
-                                a_flags.append("SPLIT_DETECTED_MANUAL_REQUIRED")
-                            if "STOCK_SPLIT_DETECTED" not in a_flags:
-                                a_flags.append("STOCK_SPLIT_DETECTED")
-                            pos["Audit_Flags"] = a_flags
-                            pos["audit_flags"] = a_flags
-                            pos["Audit_Warning"] = f"⚠️ SPLIT DETECTED ({sym_up}) - MANUAL STATE UPDATE REQUIRED: CSV {new_shares} kpl @ {new_price:.2f} vs vanha {old_shares} kpl @ {old_price:.2f}"
-                            pos["audit_warning"] = pos["Audit_Warning"]
-                        elif (old_price > 0 and new_price > 0 and (abs(new_price - old_price) / old_price >= 0.50)) or (old_shares > 0 and new_shares > 0 and abs(new_shares - old_shares) / old_shares >= 0.50):
-                            logger.warning(
-                                f"🚨 [DATA DISTORTION DETECTED] {sym_up}: Significant quantity discrepancy "
-                                f"({old_shares} -> {new_shares}) without proportional price adjustment "
-                                f"({old_price:.2f} vs {new_price:.2f}). Flagged for manual review."
-                            )
-                            pos["data_distortion_detected"] = True
-                            pos["manual_review_required"] = True
-                            pos["requires_manual_review"] = True
-                            a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
-                            if "DATA_DISTORTION_WARNING" not in a_flags:
-                                a_flags.append("DATA_DISTORTION_WARNING")
-                            pos["Audit_Flags"] = a_flags
-                            pos["audit_flags"] = a_flags
-                            pos["Audit_Warning"] = f"⚠️ DATAN VÄÄRISTYMÄ: Osakemäärä poikkeaa merkittävästi ({old_shares} -> {new_shares}) ilman käänteistä hintamuutosta. Vaatii manuaalisen tarkistuksen!"
-                            pos["audit_warning"] = pos["Audit_Warning"]
+                    # Datan vääristymän hälytin (jos kpl tai hinta muuttuu rajusti ilman split-suhdetta)
+                    if (old_price > 0 and new_price > 0 and (abs(new_price - old_price) / old_price >= 0.50)) or (old_qty > 0 and new_qty > 0 and abs(new_qty - old_qty) / old_qty >= 0.50):
+                        logger.warning(
+                            f"🚨 [DATA DISTORTION DETECTED] {sym_up}: Significant quantity discrepancy "
+                            f"({old_qty} -> {new_qty}) without proportional price adjustment "
+                            f"({old_price:.2f} vs {new_price:.2f}). Flagged for manual review."
+                        )
+                        pos["data_distortion_detected"] = True
+                        pos["manual_review_required"] = True
+                        pos["requires_manual_review"] = True
+                        a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
+                        if "DATA_DISTORTION_WARNING" not in a_flags:
+                            a_flags.append("DATA_DISTORTION_WARNING")
+                        pos["Audit_Flags"] = a_flags
+                        pos["audit_flags"] = a_flags
+                        pos["Audit_Warning"] = f"⚠️ DATAN VÄÄRISTYMÄ: Osakemäärä poikkeaa merkittävästi ({old_qty} -> {new_qty}) ilman käänteistä hintamuutosta. Vaatii manuaalisen tarkistuksen!"
+                        pos["audit_warning"] = pos["Audit_Warning"]
 
                     pos["Ticker"] = sym_up
-                    if is_split:
-                        # Estä kyseisen position sokea ylikirjoittaminen tilatiedostoon, jotta botin PnL- ja tuottolaskelmat
-                        # eivät vääristy, vaan pakota käyttäjä päivittämään uusi kappalemäärä ja ostohinta manuaalisesti.
-                        pos["Shares"] = float(old_shares)
-                        pos["Buy Price"] = float(old_price)
-                        pos["Capital Invested"] = round(old_shares * old_price, 2)
-                    else:
-                        pos["Shares"] = float(new_shares)
-                        pos["Buy Price"] = float(new_price)
-                        pos["Capital Invested"] = round(new_shares * new_price, 2)
+                    pos["Shares"] = float(new_qty)
+                    pos["Buy Price"] = float(new_price)
+                    pos["Capital Invested"] = round(new_qty * new_price, 2)
                     curr = h.get("currency") or pos.get("Currency") or ("SEK" if sym_up.endswith(".ST") else "EUR")
                     pos["Currency"] = curr
                     pos["Capital Invested"] = round(pos["Shares"] * pos["Buy Price"], 2)
