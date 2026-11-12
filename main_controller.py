@@ -719,7 +719,12 @@ class PortfolioInstance:
                 logger.warning(f"Failed to sync cash balance to tiuku_portfolio.json: {e}")
 
     def save_state(self) -> None:
-        """Saves current state to JSON file atomically."""
+        """Saves current state to JSON file atomically, backing up rolling state first via StateVault."""
+        try:
+            from core.portfolio import StateVault
+            StateVault().backup_state(self.state_file)
+        except Exception as e:
+            logger.warning(f"[{self.config.portfolio_id}] StateVault backup notice: {e}")
         self.updated_at = datetime.now(timezone.utc).isoformat()
         payload: Dict[str, Any] = {
             "portfolio_id": self.config.portfolio_id,
@@ -1188,6 +1193,20 @@ class MarketDataEngine:
                 # Requirement 2: Check global cache -> if new, call LLM -> log ONCE -> store in cache
                 if cache_key in self.evaluated_news_cache:
                     item_decision, item_reason = self.evaluated_news_cache[cache_key]
+                    if "API_DOWN" in str(item_reason):
+                        hf_entry = self.hard_facts_cache.setdefault(ticker, {})
+                        hf_entry["catalyst_source"] = "API_DOWN"
+                        hf_entry["manual_review_required"] = True
+                        hf_entry["requires_manual_review"] = True
+                        if "audit_flags" not in hf_entry or not isinstance(hf_entry["audit_flags"], list):
+                            hf_entry["audit_flags"] = []
+                        if "MANUAL_REVIEW_API_DOWN" not in hf_entry["audit_flags"]:
+                            hf_entry["audit_flags"].append("MANUAL_REVIEW_API_DOWN")
+                        hf_entry["audit_warning"] = "⚠️ HUOM: LLM API alhaalla - Vaatii manuaalisen tarkistuksen"
+                        if hasattr(self, "universe_metadata") and ticker in self.universe_metadata:
+                            self.universe_metadata[ticker]["catalyst_source"] = "API_DOWN"
+                            self.universe_metadata[ticker]["manual_review_required"] = True
+                            self.universe_metadata[ticker]["requires_manual_review"] = True
                 else:
                     item_decision = "HOLD"
                     item_reason = "No fatal red flags detected"
@@ -1213,6 +1232,7 @@ class MarketDataEngine:
                         self.operational_metrics["nlp_evaluations_total"] = self.operational_metrics.get("nlp_evaluations_total", 0) + 1
                         self.operational_metrics["llm_calls_attempted"] = self.operational_metrics.get("llm_calls_attempted", 0) + 1
                         nlp_res = None
+                        llm_api_failed = False
 
                         # Check if LLM API is configured and attempt LLM evaluation
                         if os.getenv("OPENROUTER_API_KEY"):
@@ -1224,13 +1244,35 @@ class MarketDataEngine:
                                     ticker=ticker,
                                     hard_financials=hf_context,
                                 )
+                                if not nlp_res or not isinstance(nlp_res, dict) or "financial_safety" not in nlp_res:
+                                    llm_api_failed = True
                             except Exception as e:
                                 logger.warning(f"⚠️ [OPERATIONAL HEALTH] LLM API call error for {ticker}: {e}")
                                 nlp_res = None
+                                llm_api_failed = True
+
+                        if llm_api_failed:
+                            self.operational_metrics["llm_fallbacks"] = self.operational_metrics.get("llm_fallbacks", 0) + 1
+                            logger.info(f"⚡ [OPERATIONAL HEALTH] LLM check failed/timeout for {ticker}. Seamlessly fallen back to rule-based engine.")
+                            # Graceful Degradation: Set catalyst_source = 'API_DOWN' & manual_review_required = True
+                            hf_entry = self.hard_facts_cache.setdefault(ticker, {})
+                            hf_entry["catalyst_source"] = "API_DOWN"
+                            hf_entry["manual_review_required"] = True
+                            hf_entry["requires_manual_review"] = True
+                            if "audit_flags" not in hf_entry or not isinstance(hf_entry["audit_flags"], list):
+                                hf_entry["audit_flags"] = []
+                            if "MANUAL_REVIEW_API_DOWN" not in hf_entry["audit_flags"]:
+                                hf_entry["audit_flags"].append("MANUAL_REVIEW_API_DOWN")
+                            hf_entry["audit_warning"] = "⚠️ HUOM: LLM API alhaalla - Vaatii manuaalisen tarkistuksen"
+
+                            if hasattr(self, "universe_metadata") and ticker in self.universe_metadata:
+                                self.universe_metadata[ticker]["catalyst_source"] = "API_DOWN"
+                                self.universe_metadata[ticker]["manual_review_required"] = True
+                                self.universe_metadata[ticker]["requires_manual_review"] = True
 
                         # If LLM failed, timed out, or unconfigured, execute rule-based fallback
                         if not nlp_res or not isinstance(nlp_res, dict) or "financial_safety" not in nlp_res:
-                            if os.getenv("OPENROUTER_API_KEY"):
+                            if os.getenv("OPENROUTER_API_KEY") and not llm_api_failed:
                                 self.operational_metrics["llm_fallbacks"] = self.operational_metrics.get("llm_fallbacks", 0) + 1
                                 logger.info(f"⚡ [OPERATIONAL HEALTH] LLM check failed/timeout for {ticker}. Seamlessly fallen back to rule-based engine.")
                             nlp_res = rule_based_analyze_core_fundamentals(full_text)
@@ -1265,25 +1307,29 @@ class MarketDataEngine:
                                 item_decision = "WARN"
                                 item_reason = f"NLP Warning: {nlp_res.get('verdict_details', {}).get('reasoning')}"
                         elif item_decision not in ("REJECT", "WARN"):
-                            # Check positive catalysts (STRONG BUY / WATCH_TURNAROUND)
-                            v_details = nlp_res.get("verdict_details", {}) if isinstance(nlp_res, dict) else {}
-                            verdict = (
-                                (nlp_res.get("verdict") if isinstance(nlp_res, dict) else None)
-                                or v_details.get("verdict")
-                            )
-                            v_reason = v_details.get("reasoning", "")
-                            if verdict in ("STRONG BUY", "BUY_PROFILE_A"):
-                                item_decision = "STRONG BUY"
-                                item_reason = f"Strong NLP Catalyst: {v_reason or title or clean_headline}"
-                            elif verdict == "WATCH_TURNAROUND":
-                                item_decision = "WATCH_TURNAROUND"
-                                item_reason = f"Turnaround Catalyst: {v_reason or title or clean_headline}"
+                            if llm_api_failed:
+                                item_decision = "HOLD"
+                                item_reason = "LLM API alhaalla (API_DOWN) - Manuaalinen tarkistus vaaditaan"
                             else:
-                                for pat in TURNAROUND_CATALYST_PATTERNS:
-                                    if pat.lower() in full_text.lower():
-                                        item_decision = "WATCH_TURNAROUND"
-                                        item_reason = f"Turnaround catalyst '{pat}' detected in headline: {title or clean_headline}"
-                                        break
+                                # Check positive catalysts (STRONG BUY / WATCH_TURNAROUND)
+                                v_details = nlp_res.get("verdict_details", {}) if isinstance(nlp_res, dict) else {}
+                                verdict = (
+                                    (nlp_res.get("verdict") if isinstance(nlp_res, dict) else None)
+                                    or v_details.get("verdict")
+                                )
+                                v_reason = v_details.get("reasoning", "")
+                                if verdict in ("STRONG BUY", "BUY_PROFILE_A"):
+                                    item_decision = "STRONG BUY"
+                                    item_reason = f"Strong NLP Catalyst: {v_reason or title or clean_headline}"
+                                elif verdict == "WATCH_TURNAROUND":
+                                    item_decision = "WATCH_TURNAROUND"
+                                    item_reason = f"Turnaround Catalyst: {v_reason or title or clean_headline}"
+                                else:
+                                    for pat in TURNAROUND_CATALYST_PATTERNS:
+                                        if pat.lower() in full_text.lower():
+                                            item_decision = "WATCH_TURNAROUND"
+                                            item_reason = f"Turnaround catalyst '{pat}' detected in headline: {title or clean_headline}"
+                                            break
 
                     # Log ONCE to CSV
                     append_nlp_decision(ticker, clean_headline, item_decision, item_reason)
@@ -1319,8 +1365,21 @@ class MarketDataEngine:
             return "HOLD", f"Scanned {valid_headline_count} recent news items with no fatal red flags"
 
         except Exception as e:
-            logger.debug(f"Error checking news for {ticker}: {e}")
-            return "HOLD", "News scan error"
+            logger.warning(f"⚠️ [OPERATIONAL HEALTH] News evaluation exception for {ticker}: {e}")
+            hf_entry = getattr(self, "hard_facts_cache", {}).setdefault(ticker, {})
+            hf_entry["catalyst_source"] = "API_DOWN"
+            hf_entry["manual_review_required"] = True
+            hf_entry["requires_manual_review"] = True
+            if "audit_flags" not in hf_entry or not isinstance(hf_entry["audit_flags"], list):
+                hf_entry["audit_flags"] = []
+            if "MANUAL_REVIEW_API_DOWN" not in hf_entry["audit_flags"]:
+                hf_entry["audit_flags"].append("MANUAL_REVIEW_API_DOWN")
+            hf_entry["audit_warning"] = "⚠️ HUOM: LLM API alhaalla - Vaatii manuaalisen tarkistuksen"
+            if hasattr(self, "universe_metadata") and ticker in self.universe_metadata:
+                self.universe_metadata[ticker]["catalyst_source"] = "API_DOWN"
+                self.universe_metadata[ticker]["manual_review_required"] = True
+                self.universe_metadata[ticker]["requires_manual_review"] = True
+            return "HOLD", f"News scan exception: {e} (catalyst_source=API_DOWN)"
 
     def get_ticker_nlp_status(self, ticker: str) -> Tuple[str, str]:
         """
@@ -2405,6 +2464,15 @@ class MasterLiveTradingDaemon:
                 entry_hard_facts["audit_flags"] = hard_facts.get("audit_flags")
             if hard_facts.get("audit_warning"):
                 entry_hard_facts["audit_warning"] = hard_facts.get("audit_warning")
+            if hard_facts.get("catalyst_source"):
+                entry_hard_facts["catalyst_source"] = hard_facts.get("catalyst_source")
+            if hard_facts.get("manual_review_required"):
+                entry_hard_facts["manual_review_required"] = True
+            if hard_facts.get("requires_manual_review"):
+                entry_hard_facts["requires_manual_review"] = True
+
+            cand_audit_flags = list(hard_facts.get("audit_flags", []))
+            cand_manual_rev = bool(hard_facts.get("manual_review_required") or hard_facts.get("requires_manual_review"))
 
             valid_candidates.append({
                 "ticker": ticker,
@@ -2421,8 +2489,10 @@ class MasterLiveTradingDaemon:
                 "fx_acc_to_local": fx_acc_to_local,
                 "adv_local": adv_local,
                 "max_adv_allowed": max_adv_allowed,
-                "audit_flags": list(hard_facts.get("audit_flags", [])),
+                "audit_flags": cand_audit_flags,
                 "audit_warning": hard_facts.get("audit_warning"),
+                "manual_review_required": cand_manual_rev,
+                "catalyst_source": hard_facts.get("catalyst_source"),
             })
 
         valid_candidates = audit_candidates_data(valid_candidates)
@@ -2650,6 +2720,20 @@ class MasterLiveTradingDaemon:
                     portfolio.cash_balance -= total_cost_acc
                     available_cash -= total_cost_acc
 
+                    pos_audit_flags = list(cand.get("audit_flags") or [])
+                    pos_audit_warning = cand.get("audit_warning")
+                    if "satellite" in sub_name.lower():
+                        if (
+                            cand.get("manual_review_required")
+                            or (cand.get("entry_hard_facts") or {}).get("manual_review_required")
+                            or (cand.get("entry_hard_facts") or {}).get("catalyst_source") == "API_DOWN"
+                            or (cand.get("hard_facts") or {}).get("catalyst_source") == "API_DOWN"
+                        ):
+                            if "MANUAL_REVIEW_API_DOWN" not in pos_audit_flags:
+                                pos_audit_flags.append("MANUAL_REVIEW_API_DOWN")
+                            if not pos_audit_warning or "LLM API" in pos_audit_warning:
+                                pos_audit_warning = "⚠️ HUOM: Vaatii manuaalisen tarkistuksen - LLM API alhaalla (Satelliittiehdokas siirretty manuaaliseen tarkistukseen)"
+
                     new_pos = {
                         "Ticker": ticker,
                         "Buy Date": today.strftime("%Y-%m-%d"),
@@ -2674,8 +2758,8 @@ class MasterLiveTradingDaemon:
                         "Broker_Fee_EUR": broker_fee_eur,
                         "Total_Cost_EUR": round(total_cost_acc, 4),
                         "Execution_Verified": False,
-                        "Audit_Flags": cand.get("audit_flags", []),
-                        "Audit_Warning": cand.get("audit_warning"),
+                        "Audit_Flags": pos_audit_flags,
+                        "Audit_Warning": pos_audit_warning,
                     }
                     portfolio.positions.append(new_pos)
                     positions_by_sub[sub_name].append(new_pos)
@@ -2704,8 +2788,8 @@ class MasterLiveTradingDaemon:
                                 "buy_price": f"{cand_price:.2f} {ticker_curr}",
                                 "total_cost": f"{total_cost_local:,.2f} {ticker_curr} ({total_cost_acc:,.2f} {portfolio.currency})",
                                 "remaining_cash": f"{portfolio.cash_balance:,.2f} {portfolio.currency}",
-                                "audit_flags": cand.get("audit_flags", []),
-                                "audit_warning": cand.get("audit_warning"),
+                                "audit_flags": pos_audit_flags,
+                                "audit_warning": pos_audit_warning,
                             },
                         })
 
@@ -2731,6 +2815,16 @@ class MasterLiveTradingDaemon:
                     "hard_facts": c_item["entry_hard_facts"],
                     "selected": is_sel,
                     "selection_status": sel_status,
+                    "manual_review_required": bool(
+                        c_item.get("manual_review_required")
+                        or (c_item.get("entry_hard_facts") or {}).get("manual_review_required")
+                        or (c_item.get("hard_facts") or {}).get("manual_review_required")
+                    ),
+                    "catalyst_source": (
+                        (c_item.get("entry_hard_facts") or {}).get("catalyst_source")
+                        or (c_item.get("hard_facts") or {}).get("catalyst_source")
+                        or c_item.get("catalyst_source")
+                    ),
                 })
 
             portfolio.last_candidates_ranking[sub_name] = {

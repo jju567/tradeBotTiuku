@@ -452,7 +452,7 @@ def matches_us_microcap_growth(
     # 4. Catalyst: Strong revenue growth (>15%) or Profile A or high NLP score with viability
     rev_yoy = hard_facts.get("revenue_growth_yoy_pct") or hard_facts.get("revenue_yoy")
     is_prof_a = hard_facts.get("is_profile_a", False)
-    nlp_strong = nlp_verdict in ["STRONG BUY", "BUY_PROFILE_A"]
+    nlp_strong = (nlp_verdict in ["STRONG BUY", "BUY_PROFILE_A"]) and (str(hard_facts.get("catalyst_source", "")).upper() not in ("UNVERIFIED_AI", "API_DOWN"))
     growth_ok = (rev_yoy is not None and float(rev_yoy) > 15.0)
 
     if growth_ok or is_prof_a:
@@ -578,7 +578,7 @@ def matches_nordic_microcap_catalyst(
             )
 
     if is_turnaround and not (is_prof_a or is_prof_b):
-        if hard_facts.get("unverified_ai_catalyst") is True or str(hard_facts.get("catalyst_source", "")).upper() == "UNVERIFIED_AI":
+        if hard_facts.get("unverified_ai_catalyst") is True or str(hard_facts.get("catalyst_source", "")).upper() in ("UNVERIFIED_AI", "API_DOWN"):
             reasons.append("REJECTED_UNVERIFIED_CATALYST: Turnaround requires documented press release, insider buying, or financial inflection")
 
     if hard_facts.get("runway_status") == "REJECTED_LOW_RUNWAY" or hard_facts.get("status") == "REJECTED_LOW_RUNWAY":

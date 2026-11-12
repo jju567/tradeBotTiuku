@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -45,6 +46,80 @@ def _atomic_write_json(target_path: Path, payload: Any, ensure_ascii: bool = Fal
                     pass
 
 
+class StateVault:
+    """Manages rolling 7-day backups of portfolio state JSON files.
+
+    Creates weekday-based backups (e.g. portfolio_P13_Live_Candidate_state_maanantai.bak)
+    in a designated 'backups/' directory before any write operation.
+    """
+
+    WEEKDAYS_FI = {
+        0: "maanantai",
+        1: "tiistai",
+        2: "keskiviikko",
+        3: "torstai",
+        4: "perjantai",
+        5: "lauantai",
+        6: "sunnuntai",
+    }
+
+    def __init__(self, backup_dir: Optional[Path] = None):
+        self.backup_dir = Path(backup_dir) if backup_dir else None
+
+    def get_backup_dir(self, state_file: Path) -> Path:
+        """Resolves target backup directory for a given state file."""
+        if self.backup_dir:
+            b_dir = self.backup_dir
+        else:
+            b_dir = Path(state_file).parent / "backups"
+        b_dir.mkdir(parents=True, exist_ok=True)
+        return b_dir
+
+    def get_weekday_name(self, dt: Optional[datetime] = None) -> str:
+        """Returns lowercase Finnish weekday name (maanantai..sunnuntai)."""
+        target_dt = dt or datetime.now()
+        return self.WEEKDAYS_FI.get(target_dt.weekday(), "maanantai")
+
+    def backup_state(self, state_file: Path, dt: Optional[datetime] = None) -> Optional[Path]:
+        """Creates a rolling weekday backup of state_file if the file exists on disk.
+
+        Example filename: portfolio_P13_Live_Candidate_state_maanantai.bak
+        """
+        try:
+            state_path = Path(state_file)
+            if not state_path.exists():
+                return None
+            b_dir = self.get_backup_dir(state_path)
+            weekday_str = self.get_weekday_name(dt)
+            backup_filename = f"{state_path.stem}_{weekday_str}.bak"
+            backup_path = b_dir / backup_filename
+
+            shutil.copy2(state_path, backup_path)
+            logger.info(f"StateVault: Created rolling backup {backup_path.name} in {b_dir}")
+            return backup_path
+        except Exception as e:
+            logger.error(f"StateVault backup failed for {state_file}: {e}")
+            return None
+
+    def backup_payload(self, state_file: Path, payload: Any, dt: Optional[datetime] = None) -> Optional[Path]:
+        """Writes current payload directly to a weekday backup file."""
+        try:
+            state_path = Path(state_file)
+            b_dir = self.get_backup_dir(state_path)
+            weekday_str = self.get_weekday_name(dt)
+            backup_filename = f"{state_path.stem}_{weekday_str}.bak"
+            backup_path = b_dir / backup_filename
+            _atomic_write_json(backup_path, payload, ensure_ascii=False)
+            logger.info(f"StateVault: Wrote payload backup {backup_path.name} in {b_dir}")
+            return backup_path
+        except Exception as e:
+            logger.error(f"StateVault payload backup failed for {state_file}: {e}")
+            return None
+
+    backup = backup_state
+    create_backup = backup_state
+
+
 class PortfolioManager:
     """Manages Tiuku's local portfolio tracking file (tiuku_portfolio.json) and history snapshots."""
 
@@ -83,8 +158,10 @@ class PortfolioManager:
         self.save_state()
 
     def save_state(self):
-        """Saves current state to local tiuku_portfolio.json atomically."""
+        """Saves current state to local tiuku_portfolio.json atomically, creating StateVault backup first."""
         try:
+            vault = StateVault()
+            vault.backup_state(self.portfolio_file)
             _atomic_write_json(self.portfolio_file, self.portfolio_state, ensure_ascii=False)
             logger.info(f"Saved Tiuku portfolio state to {self.portfolio_file}")
         except Exception as e:
@@ -99,6 +176,7 @@ class PortfolioManager:
             p13_file = config.DATA_DIR / "portfolios" / "portfolio_P13_Live_Candidate_state.json"
             if p13_file.exists():
                 try:
+                    StateVault().backup_state(p13_file)
                     with open(p13_file, "r", encoding="utf-8") as f:
                         p13_data = json.load(f)
                     p13_data["cash_balance"] = round(cash_amount, 2)
@@ -281,9 +359,64 @@ class PortfolioManager:
 
                 if matched_key:
                     pos = dict(pos_by_ticker[matched_key])
+                    old_shares = float(pos.get("Shares", 0) or 0.0)
+                    new_shares = float(h.get("quantity", 0) or 0.0)
+                    old_price = float(pos.get("Buy Price", 0.0) or 0.0)
+                    new_price = float(h.get("avg_price", 0.0) or 0.0)
+
+                    # Osakesplit- ja Datan Vääristymän Hälytin
+                    if old_shares > 0 and new_shares > 0:
+                        share_diff_pct = abs(new_shares - old_shares) / old_shares
+                        if share_diff_pct >= 0.50:
+                            share_ratio = new_shares / old_shares
+                            expected_price = old_price / share_ratio if share_ratio > 0 else old_price
+                            price_adjusted_inversely = (
+                                old_price > 0
+                                and new_price > 0
+                                and (abs(new_price - expected_price) / expected_price <= 0.35)
+                            )
+                            if price_adjusted_inversely:
+                                logger.warning(
+                                    f"🚨 [STOCK SPLIT DETECTED] {sym_up}: Shares changed {old_shares} -> {new_shares} "
+                                    f"({share_ratio:.2f}x), price adjusted {old_price:.2f} -> {new_price:.2f}. "
+                                    f"Adjusting historical reference levels to prevent false stop loss."
+                                )
+                                pos["split_detected"] = True
+                                pos["split_ratio"] = round(share_ratio, 4)
+                                pos["split_date"] = today_str
+                                for p_key in ("Peak Price", "Highest Close", "highest_price_seen", "stop_threshold", "eod_stop_threshold"):
+                                    if p_key in pos and pos[p_key] is not None:
+                                        try:
+                                            pos[p_key] = round(float(pos[p_key]) / share_ratio, 4)
+                                        except Exception:
+                                            pass
+                                a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
+                                if "STOCK_SPLIT_DETECTED" not in a_flags:
+                                    a_flags.append("STOCK_SPLIT_DETECTED")
+                                pos["Audit_Flags"] = a_flags
+                                pos["audit_flags"] = a_flags
+                                pos["Audit_Warning"] = f"⚠️ OSAKESPLIT HAVAITTU: {old_shares} -> {new_shares} kpl (kerroin {share_ratio:.2f}x). Hintatasot mukautettu."
+                                pos["audit_warning"] = pos["Audit_Warning"]
+                            elif (old_price > 0 and new_price > 0 and (abs(new_price - old_price) / old_price >= 0.50)) or (old_shares > 0 and new_shares > 0 and share_diff_pct >= 0.50):
+                                logger.warning(
+                                    f"🚨 [DATA DISTORTION DETECTED] {sym_up}: Significant quantity discrepancy "
+                                    f"({old_shares} -> {new_shares}) without proportional price adjustment "
+                                    f"({old_price:.2f} vs {new_price:.2f}). Flagged for manual review."
+                                )
+                                pos["data_distortion_detected"] = True
+                                pos["manual_review_required"] = True
+                                pos["requires_manual_review"] = True
+                                a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
+                                if "DATA_DISTORTION_WARNING" not in a_flags:
+                                    a_flags.append("DATA_DISTORTION_WARNING")
+                                pos["Audit_Flags"] = a_flags
+                                pos["audit_flags"] = a_flags
+                                pos["Audit_Warning"] = f"⚠️ DATAN VÄÄRISTYMÄ: Osakemäärä poikkeaa merkittävästi ({old_shares} -> {new_shares}) ilman käänteistä hintamuutosta. Vaatii manuaalisen tarkistuksen!"
+                                pos["audit_warning"] = pos["Audit_Warning"]
+
                     pos["Ticker"] = sym_up
-                    pos["Shares"] = float(h.get("quantity", 0))
-                    pos["Buy Price"] = float(h.get("avg_price", 0.0))
+                    pos["Shares"] = float(new_shares)
+                    pos["Buy Price"] = float(new_price)
                     curr = h.get("currency") or pos.get("Currency") or ("SEK" if sym_up.endswith(".ST") else "EUR")
                     pos["Currency"] = curr
                     pos["Capital Invested"] = round(pos["Shares"] * pos["Buy Price"], 2)
@@ -374,6 +507,7 @@ class PortfolioManager:
             if "cash_balance" in self.portfolio_state:
                 p13_data["cash_balance"] = float(self.portfolio_state["cash_balance"])
             p13_data["updated_at"] = datetime.now().isoformat()
+            StateVault().backup_state(p13_path)
             _atomic_write_json(p13_path, p13_data)
             logger.info(f"Successfully synced {len(new_p13_positions)} positions into P13 state file {p13_path}")
             return True

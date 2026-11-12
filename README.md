@@ -142,6 +142,23 @@
 - **🔇 Sähköpostihälytysten Älykäs Esto & 24h Cooldown (`sent_alerts`)**: Tallentaa lähetetyt hälytykset SQLite-tietokantaan (`data/processed_news.db`). Estää saman yhtiön (`FARON.HE` / `FARON`) toistuvat spämmisähköpostit 24 tunnin jäähdytysajalla.
 - **⏳ Anti-Whipsaw & Uudelleenoston 30 pv Cooldown (`REENTRY_COOLDOWN_DAYS = 30`)**: Estää myydyn osakkeen välittömän takaisinoston (churn/wash-trade) 30 päivän kuluessa myynnistä, säästäen kaupankäyntikulut. Lisäksi seulonnassa suoritetaan **Pre-Entry Exit Validation**, joka hylkää kandidaatin heti, jos sen fundamentit laukaisisivat exit-säännön (esim. YoY supistuva liikevaihto).
 
+---
+
+### 5. 🛡️ P13 Doomsday -suojat (Vikasietoisuus ja Resilienssi)
+- **1. LLM API:n Katkossuoja (Graceful Degradation, `_evaluate_news_radar()`)**:
+  - LLM-analyysikutsut (OpenRouter / Gemini API) on suojattu kattavalla `try...except`-vikasuojauksella.
+  - Jos LLM API on alhaalla, verkkoyhteys katkeaa tai rajapinta palauttaa virheen (HTTP 429 rate limit, 502, timeout), järjestelmä **ei kaadu**.
+  - Poikkeustilanteessa asetetaan `catalyst_source = "API_DOWN"` ja `manual_review_required = True`.
+  - Core-kandidaatit (`core_nordic_midcap_quality`) pääsevät normaalisti läpi EOD-toimenpidelistaan (koska laatusijoitus ei vaadi uutiskatalyyttiä vaan perustuu koviin kvartaalifundamentteihin). Satelliittiehdokkaat (`satellite_us_microcap_growth`, `satellite_nordic_microcap_catalyst`) siirtyvät manuaalisen tarkistuksen tilaan varoituslipulla `MANUAL_REVIEW_API_DOWN`.
+- **2. 7 Päivän Rullaava Varmuuskopio (State Vault, `core/portfolio.py`)**:
+  - `StateVault`-luokka vastaa salkkujen `.json`-tilatiedostojen (esim. `portfolio_P13_Live_Candidate_state.json`) automaattisesta viikonpäiväkohtaisesta varmuuskopioinnista alikansioon `backups/`.
+  - Joka kerta kun tilatiedosto tallennetaan (`save_state()`), siitä muodostetaan ensin kopio muotoon `<tiedostonimi>_<viikonpaiva>.bak` (esim. `portfolio_P13_Live_Candidate_state_maanantai.bak`).
+  - `backups/`-kansio luodaan automaattisesti, ja viikonpäiväpohjainen kierto säilyttää tarkan tilannekuvan viikon jokaiselta päivältä ilman levytilan hallitsematonta paisumista.
+- **3. Osakesplit- ja Datan Vääristymän Hälytin (`_sync_to_p13_state()`)**:
+  - Valvoo Nordnet CSV -synkronoinnissa osakemäärän ja hinnan suhdetta suhteessa salkun sisäiseen tilaan.
+  - **Osakesplit-tunnistus**: Jos tuodun tiedoston osakemäärä poikkeaa merkittävästi ($\ge 50\,\%$) ja hinta on muuttunut vastaavasti käänteisesti (esim. 2:1 splitissä osakemäärä tuplaantuu ja hinta puolittuu), järjestelmä tunnistaa osakesplitin (`STOCK_SPLIT_DETECTED`). Salkun historialliset hintatasot (`Peak Price`, `Highest Close`, `stop_threshold`) mukautetaan automaattisesti uudelle splittitasolle, mikä estää virheelliset stop-loss-myynnit.
+  - **Datan vääristymän hälytin**: Jos osakemäärä muuttuu merkittävästi ilman käänteistä hintakorjausta, järjestelmä asettaa hälytyslipun `DATA_DISTORTION_WARNING` ja `manual_review_required = True`, jolloin virheellinen data ei pääse korruptoimaan salkkua automaattisesti.
+
 
 ---
 
