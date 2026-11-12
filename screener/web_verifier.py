@@ -295,49 +295,65 @@ class WebSearchVerifier:
         """
         detected_mkt = detect_market(ticker, market)
         clean_ticker = ticker.split(".")[0] if "." in ticker else ticker
-        search_name = company_name.strip() or clean_ticker
+        if not company_name.strip():
+            try:
+                from utils.company_names import get_company_name
+                resolved_name = get_company_name(ticker, default="")
+                if resolved_name and resolved_name.strip().upper() != ticker.strip().upper():
+                    company_name = resolved_name.strip()
+            except Exception:
+                pass
+
+        raw_search_name = company_name.strip() or clean_ticker
+        core_name = re.sub(r"\(.*?\)", "", raw_search_name)
+        core_name = re.sub(
+            r"\b(Oyj|Oy|Abp|AB|ASA|A/S|Inc\.?|Corp\.?|Ltd\.?|Plc)\b",
+            "",
+            core_name,
+            flags=re.IGNORECASE,
+        )
+        core_name = " ".join(core_name.split()).strip(" ,.-") or clean_ticker
+        search_name = core_name
 
         snippets: List[str] = []
 
         if detected_mkt == "FI":
-            # 1. Local Finnish Google News query
-            q_fi = f"{search_name} osake uutiset pörssi".strip()
+            # 1. Local Finnish Google News query (boolean OR so headlines don't need every keyword simultaneously)
+            q_fi = f'"{core_name}" (osake OR pörssi OR tulos OR tiedote OR Oyj)'.strip()
             snippets = self.fetch_google_news_rss(q_fi, max_results=6, market="FI", max_age_days=max_age_days)
             
             # 2. Finnish PR channels / regulatory / risk queries (Cision, Kauppalehti, GlobeNewswire)
             if len(snippets) < 3:
-                q_fi_pr = f"{search_name} osakeanti tulosvaroitus tilinpäätös tiedote".strip()
+                q_fi_pr = f'"{core_name}" (osakeanti OR tulosvaroitus OR tilinpäätös OR yrityskauppa)'.strip()
                 more = self.fetch_google_news_rss(q_fi_pr, max_results=4, market="FI", max_age_days=max_age_days)
                 for m in more:
                     if m not in snippets:
                         snippets.append(m)
 
-            # 3. Fallback to English query ONLY within FI locale and with explicit company name
-            if len(snippets) < 2 and company_name.strip():
-                q_en = f'"{company_name.strip()}" stock news'.strip()
-                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="FI", max_age_days=max_age_days)
-                for m in en_snippets:
+            # 3. Broad company name query within FI locale if specific financial keywords yielded < 2 hits
+            if len(snippets) < 2 and len(core_name) >= 4:
+                broad_fi = self.fetch_google_news_rss(f'"{core_name}"', max_results=4, market="FI", max_age_days=max_age_days)
+                for m in broad_fi:
                     if m not in snippets:
                         snippets.append(m)
 
         elif detected_mkt == "SE":
-            # 1. Local Swedish Google News query
-            q_se = f"{search_name} aktie nyheter börs".strip()
+            # 1. Local Swedish Google News query (boolean OR so headlines don't need every keyword simultaneously)
+            q_se = f'"{core_name}" (aktie OR börs OR rapport OR pressmeddelande OR AB)'.strip()
             snippets = self.fetch_google_news_rss(q_se, max_results=6, market="SE", max_age_days=max_age_days)
             
             # 2. Swedish PR channels / regulatory / risk queries (Cision SE, MFN, Placera)
             if len(snippets) < 3:
-                q_se_pr = f"{search_name} nyemission rapport pressmeddelande".strip()
+                q_se_pr = f'"{core_name}" (nyemission OR förvärv OR rapport OR vinstvarning)'.strip()
                 more = self.fetch_google_news_rss(q_se_pr, max_results=4, market="SE", max_age_days=max_age_days)
                 for m in more:
                     if m not in snippets:
                         snippets.append(m)
 
-            # 3. Fallback to English query ONLY within SE locale and with explicit company name (prevents matching English words like "humble", "dust", "rug" or US SPACs)
-            if len(snippets) < 2 and company_name.strip():
-                q_en = f'"{company_name.strip()}" stock news'.strip()
-                en_snippets = self.fetch_google_news_rss(q_en, max_results=4, market="SE", max_age_days=max_age_days)
-                for m in en_snippets:
+            # 3. Broad company name query within SE locale if specific financial keywords yielded < 2 hits
+            if len(snippets) < 2 and len(core_name) >= 4:
+                broad_se = self.fetch_google_news_rss(f'"{core_name}"', max_results=4, market="SE", max_age_days=max_age_days)
+                for m in broad_se:
                     if m not in snippets:
                         snippets.append(m)
 

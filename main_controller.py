@@ -1131,16 +1131,26 @@ class MarketDataEngine:
           4. Aggregate decisions: FATAL REJECT overrides WARN overrides HOLD.
         """
         try:
-            t = yf.Ticker(ticker)
-            raw_news = getattr(t, "news", []) or []
+            raw_news = []
+            try:
+                t = yf.Ticker(ticker)
+                raw_news = getattr(t, "news", []) or []
+            except Exception as yf_news_err:
+                logger.debug(f"yfinance news endpoint unavailable for {ticker} ({yf_news_err}); falling back to WebSearchVerifier.")
+                raw_news = []
+
             if not raw_news:
-                # Yahoo Finance does not index Nordic micro/midcap news.
+                # Yahoo Finance does not index Nordic micro/midcap news (or endpoint is down).
                 # Fall back to localized Google News RSS & regulatory PR channels (Cision, MFN, Kauppalehti).
                 if not hasattr(self, "_web_verifier") or self._web_verifier is None:
                     from screener.web_verifier import WebSearchVerifier
                     self._web_verifier = WebSearchVerifier()
                 try:
-                    snippets = self._web_verifier.fetch_snippets(ticker)
+                    from utils.company_names import get_company_name
+                    comp_name = get_company_name(ticker, default="")
+                    if comp_name.strip().upper() == ticker.strip().upper():
+                        comp_name = ""
+                    snippets = self._web_verifier.fetch_snippets(ticker, company_name=comp_name)
                     raw_news = [{"title": s, "summary": ""} for s in snippets]
                 except Exception as snip_err:
                     logger.debug(f"WebSearchVerifier fetch failed for {ticker}: {snip_err}")

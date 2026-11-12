@@ -159,14 +159,17 @@ class TestWebSearchVerifier(unittest.TestCase):
 
     @patch("screener.web_verifier.requests.get")
     def test_fetch_google_news_rss_date_filtering(self, mock_get):
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+        fresh_pubdate = format_datetime(datetime.now(timezone.utc), usegmt=True)
         # Sample RSS XML with one fresh item and one stale item (from 6 months ago)
-        sample_rss = """<?xml version="1.0" encoding="UTF-8"?>
+        sample_rss = f"""<?xml version="1.0" encoding="UTF-8"?>
         <rss version="2.0">
             <channel>
                 <item>
                     <title>Fresh News Today</title>
                     <description>Breaking update just today.</description>
-                    <pubDate>Wed, 04 Nov 2026 08:00:00 GMT</pubDate>
+                    <pubDate>{fresh_pubdate}</pubDate>
                 </item>
                 <item>
                     <title>Old News Months Ago</title>
