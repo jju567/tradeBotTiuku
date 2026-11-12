@@ -287,6 +287,29 @@ class PortfolioManager:
         updated_holdings = preview["updated_holdings"]
         count = preview["total_rows"]
 
+        # Osakesplit- ja Corporate Action -hälytin
+        for sym, h in list(updated_holdings.items()):
+            if sym in existing:
+                old_q = float(existing[sym].get("quantity", 0) or 0)
+                new_q = float(h.get("quantity", 0) or 0)
+                old_p = float(existing[sym].get("avg_price", 0.0) or 0.0)
+                new_p = float(h.get("avg_price", 0.0) or 0.0)
+                if old_q > 0 and new_q > 0:
+                    share_growth_pct = (new_q - old_q) / old_q
+                    price_drop_pct = (old_p - new_p) / old_p if old_p > 0 else 0.0
+                    if share_growth_pct >= 0.50 and price_drop_pct >= 0.25:
+                        logger.warning(f"⚠️ SPLIT DETECTED ({sym}) - MANUAL STATE UPDATE REQUIRED")
+                        # Estä kyseisen position sokea ylikirjoittaminen tilatiedostoon
+                        h["quantity"] = int(old_q)
+                        h["avg_price"] = old_p
+                        h["split_detected"] = True
+                        h["split_pending_manual_update"] = True
+                        h["manual_review_required"] = True
+                        h["requires_manual_review"] = True
+                        h["unapplied_split_shares"] = new_q
+                        h["unapplied_split_price"] = new_p
+                        h["audit_warning"] = f"⚠️ SPLIT DETECTED ({sym}) - MANUAL STATE UPDATE REQUIRED"
+
         self.portfolio_state["holdings"] = updated_holdings
         if cash_balance is not None:
             self.portfolio_state["cash_balance"] = round(float(cash_balance), 2)
@@ -364,59 +387,59 @@ class PortfolioManager:
                     old_price = float(pos.get("Buy Price", 0.0) or 0.0)
                     new_price = float(h.get("avg_price", 0.0) or 0.0)
 
-                    # Osakesplit- ja Datan Vääristymän Hälytin
+                    # Osakesplit- ja Corporate Action -hälytin
+                    is_split = False
                     if old_shares > 0 and new_shares > 0:
-                        share_diff_pct = abs(new_shares - old_shares) / old_shares
-                        if share_diff_pct >= 0.50:
-                            share_ratio = new_shares / old_shares
-                            expected_price = old_price / share_ratio if share_ratio > 0 else old_price
-                            price_adjusted_inversely = (
-                                old_price > 0
-                                and new_price > 0
-                                and (abs(new_price - expected_price) / expected_price <= 0.35)
+                        share_growth_pct = (new_shares - old_shares) / old_shares
+                        price_drop_pct = (old_price - new_price) / old_price if old_price > 0 else 0.0
+
+                        # Jos osakemäärä kasvanut poikkeavasti (> 50%) JA hinta laskenut merkittävästi (indikoiden splitiä)
+                        if share_growth_pct >= 0.50 and price_drop_pct >= 0.25:
+                            is_split = True
+                            logger.warning(f"⚠️ SPLIT DETECTED ({sym_up}) - MANUAL STATE UPDATE REQUIRED")
+                            pos["split_detected"] = True
+                            pos["split_pending_manual_update"] = True
+                            pos["manual_review_required"] = True
+                            pos["requires_manual_review"] = True
+                            pos["unapplied_split_shares"] = float(new_shares)
+                            pos["unapplied_split_price"] = float(new_price)
+                            a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
+                            if "SPLIT_DETECTED_MANUAL_REQUIRED" not in a_flags:
+                                a_flags.append("SPLIT_DETECTED_MANUAL_REQUIRED")
+                            if "STOCK_SPLIT_DETECTED" not in a_flags:
+                                a_flags.append("STOCK_SPLIT_DETECTED")
+                            pos["Audit_Flags"] = a_flags
+                            pos["audit_flags"] = a_flags
+                            pos["Audit_Warning"] = f"⚠️ SPLIT DETECTED ({sym_up}) - MANUAL STATE UPDATE REQUIRED: CSV {new_shares} kpl @ {new_price:.2f} vs vanha {old_shares} kpl @ {old_price:.2f}"
+                            pos["audit_warning"] = pos["Audit_Warning"]
+                        elif (old_price > 0 and new_price > 0 and (abs(new_price - old_price) / old_price >= 0.50)) or (old_shares > 0 and new_shares > 0 and abs(new_shares - old_shares) / old_shares >= 0.50):
+                            logger.warning(
+                                f"🚨 [DATA DISTORTION DETECTED] {sym_up}: Significant quantity discrepancy "
+                                f"({old_shares} -> {new_shares}) without proportional price adjustment "
+                                f"({old_price:.2f} vs {new_price:.2f}). Flagged for manual review."
                             )
-                            if price_adjusted_inversely:
-                                logger.warning(
-                                    f"🚨 [STOCK SPLIT DETECTED] {sym_up}: Shares changed {old_shares} -> {new_shares} "
-                                    f"({share_ratio:.2f}x), price adjusted {old_price:.2f} -> {new_price:.2f}. "
-                                    f"Adjusting historical reference levels to prevent false stop loss."
-                                )
-                                pos["split_detected"] = True
-                                pos["split_ratio"] = round(share_ratio, 4)
-                                pos["split_date"] = today_str
-                                for p_key in ("Peak Price", "Highest Close", "highest_price_seen", "stop_threshold", "eod_stop_threshold"):
-                                    if p_key in pos and pos[p_key] is not None:
-                                        try:
-                                            pos[p_key] = round(float(pos[p_key]) / share_ratio, 4)
-                                        except Exception:
-                                            pass
-                                a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
-                                if "STOCK_SPLIT_DETECTED" not in a_flags:
-                                    a_flags.append("STOCK_SPLIT_DETECTED")
-                                pos["Audit_Flags"] = a_flags
-                                pos["audit_flags"] = a_flags
-                                pos["Audit_Warning"] = f"⚠️ OSAKESPLIT HAVAITTU: {old_shares} -> {new_shares} kpl (kerroin {share_ratio:.2f}x). Hintatasot mukautettu."
-                                pos["audit_warning"] = pos["Audit_Warning"]
-                            elif (old_price > 0 and new_price > 0 and (abs(new_price - old_price) / old_price >= 0.50)) or (old_shares > 0 and new_shares > 0 and share_diff_pct >= 0.50):
-                                logger.warning(
-                                    f"🚨 [DATA DISTORTION DETECTED] {sym_up}: Significant quantity discrepancy "
-                                    f"({old_shares} -> {new_shares}) without proportional price adjustment "
-                                    f"({old_price:.2f} vs {new_price:.2f}). Flagged for manual review."
-                                )
-                                pos["data_distortion_detected"] = True
-                                pos["manual_review_required"] = True
-                                pos["requires_manual_review"] = True
-                                a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
-                                if "DATA_DISTORTION_WARNING" not in a_flags:
-                                    a_flags.append("DATA_DISTORTION_WARNING")
-                                pos["Audit_Flags"] = a_flags
-                                pos["audit_flags"] = a_flags
-                                pos["Audit_Warning"] = f"⚠️ DATAN VÄÄRISTYMÄ: Osakemäärä poikkeaa merkittävästi ({old_shares} -> {new_shares}) ilman käänteistä hintamuutosta. Vaatii manuaalisen tarkistuksen!"
-                                pos["audit_warning"] = pos["Audit_Warning"]
+                            pos["data_distortion_detected"] = True
+                            pos["manual_review_required"] = True
+                            pos["requires_manual_review"] = True
+                            a_flags = list(pos.get("Audit_Flags") or pos.get("audit_flags") or [])
+                            if "DATA_DISTORTION_WARNING" not in a_flags:
+                                a_flags.append("DATA_DISTORTION_WARNING")
+                            pos["Audit_Flags"] = a_flags
+                            pos["audit_flags"] = a_flags
+                            pos["Audit_Warning"] = f"⚠️ DATAN VÄÄRISTYMÄ: Osakemäärä poikkeaa merkittävästi ({old_shares} -> {new_shares}) ilman käänteistä hintamuutosta. Vaatii manuaalisen tarkistuksen!"
+                            pos["audit_warning"] = pos["Audit_Warning"]
 
                     pos["Ticker"] = sym_up
-                    pos["Shares"] = float(new_shares)
-                    pos["Buy Price"] = float(new_price)
+                    if is_split:
+                        # Estä kyseisen position sokea ylikirjoittaminen tilatiedostoon, jotta botin PnL- ja tuottolaskelmat
+                        # eivät vääristy, vaan pakota käyttäjä päivittämään uusi kappalemäärä ja ostohinta manuaalisesti.
+                        pos["Shares"] = float(old_shares)
+                        pos["Buy Price"] = float(old_price)
+                        pos["Capital Invested"] = round(old_shares * old_price, 2)
+                    else:
+                        pos["Shares"] = float(new_shares)
+                        pos["Buy Price"] = float(new_price)
+                        pos["Capital Invested"] = round(new_shares * new_price, 2)
                     curr = h.get("currency") or pos.get("Currency") or ("SEK" if sym_up.endswith(".ST") else "EUR")
                     pos["Currency"] = curr
                     pos["Capital Invested"] = round(pos["Shares"] * pos["Buy Price"], 2)

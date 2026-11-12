@@ -147,17 +147,24 @@
 ### 5. 🛡️ P13 Doomsday -suojat (Vikasietoisuus ja Resilienssi)
 - **1. LLM API:n Katkossuoja (Graceful Degradation, `_evaluate_news_radar()`)**:
   - LLM-analyysikutsut (OpenRouter / Gemini API) on suojattu kattavalla `try...except`-vikasuojauksella.
-  - Jos LLM API on alhaalla, verkkoyhteys katkeaa tai rajapinta palauttaa virheen (HTTP 429 rate limit, 502, timeout), järjestelmä **ei kaadu**.
-  - Poikkeustilanteessa asetetaan `catalyst_source = "API_DOWN"` ja `manual_review_required = True`.
-  - Core-kandidaatit (`core_nordic_midcap_quality`) pääsevät normaalisti läpi EOD-toimenpidelistaan (koska laatusijoitus ei vaadi uutiskatalyyttiä vaan perustuu koviin kvartaalifundamentteihin). Satelliittiehdokkaat (`satellite_us_microcap_growth`, `satellite_nordic_microcap_catalyst`) siirtyvät manuaalisen tarkistuksen tilaan varoituslipulla `MANUAL_REVIEW_API_DOWN`.
+  - Jos LLM API on alhaalla, verkkoyhteys katkeaa, tilaus on vanhentunut tai rajapinta palauttaa virheen (HTTP 429 rate limit, 502, timeout), järjestelmä ja EOD-ajo **eivät kaadu**.
+  - Poikkeustilanteessa asetetaan neutraali vikasietoinen tulos:
+    - `catalyst_source = "API_DOWN_MANUAL_CHECK"`
+    - `score_impact = 0.0`
+    - `reject = False`
+    - `manual_review = True`
+    - `reason = "Gemini API kaatui tai ei vastannut. Tarkista katalyytti käsin."`
+  - Core-kandidaatit (`core_nordic_midcap_quality`) pääsevät normaalisti läpi EOD-toimenpidelistaan (koska laatusijoitus ei vaadi uutiskatalyyttiä vaan perustuu koviin kvartaalifundamentteihin). Satelliittiehdokkaat (`satellite_us_microcap_growth`, `satellite_nordic_microcap_catalyst`) siirtyvät ihmisen tarkistettavaksi EOD-raporttiin.
 - **2. 7 Päivän Rullaava Varmuuskopio (State Vault, `core/portfolio.py`)**:
   - `StateVault`-luokka vastaa salkkujen `.json`-tilatiedostojen (esim. `portfolio_P13_Live_Candidate_state.json`) automaattisesta viikonpäiväkohtaisesta varmuuskopioinnista alikansioon `backups/`.
   - Joka kerta kun tilatiedosto tallennetaan (`save_state()`), siitä muodostetaan ensin kopio muotoon `<tiedostonimi>_<viikonpaiva>.bak` (esim. `portfolio_P13_Live_Candidate_state_maanantai.bak`).
   - `backups/`-kansio luodaan automaattisesti, ja viikonpäiväpohjainen kierto säilyttää tarkan tilannekuvan viikon jokaiselta päivältä ilman levytilan hallitsematonta paisumista.
-- **3. Osakesplit- ja Datan Vääristymän Hälytin (`_sync_to_p13_state()`)**:
-  - Valvoo Nordnet CSV -synkronoinnissa osakemäärän ja hinnan suhdetta suhteessa salkun sisäiseen tilaan.
-  - **Osakesplit-tunnistus**: Jos tuodun tiedoston osakemäärä poikkeaa merkittävästi ($\ge 50\,\%$) ja hinta on muuttunut vastaavasti käänteisesti (esim. 2:1 splitissä osakemäärä tuplaantuu ja hinta puolittuu), järjestelmä tunnistaa osakesplitin (`STOCK_SPLIT_DETECTED`). Salkun historialliset hintatasot (`Peak Price`, `Highest Close`, `stop_threshold`) mukautetaan automaattisesti uudelle splittitasolle, mikä estää virheelliset stop-loss-myynnit.
-  - **Datan vääristymän hälytin**: Jos osakemäärä muuttuu merkittävästi ilman käänteistä hintakorjausta, järjestelmä asettaa hälytyslipun `DATA_DISTORTION_WARNING` ja `manual_review_required = True`, jolloin virheellinen data ei pääse korruptoimaan salkkua automaattisesti.
+- **3. Osakesplit- ja Corporate Action -hälytin (`_sync_to_p13_state()`)**:
+  - Ennen kuin tilatiedosto ylikirjoitetaan uuden Nordnet CSV:n tiedoilla, olemassa olevan salkun osakemääriä ja hintoja verrataan uusiin lukuihin.
+  - **Osakesplit- ja Corporate Action -hälytin**: Jos tickerin kappalemäärä on kasvanut poikkeavasti ($\ge 50\,\%$) JA hinta on laskenut merkittävästi (indikoiden splitiä):
+    - Nostetaan kriittinen varoitus: `logging.warning("⚠️ SPLIT DETECTED (TICKER) - MANUAL STATE UPDATE REQUIRED")`.
+    - **Estetään position sokea ylikirjoittaminen** tilatiedostoon, jotta botin PnL- ja tuottolaskelmat eivät vääristy, vaan pakotetaan käyttäjä päivittämään uusi kappalemäärä ja ostohinta manuaalisesti.
+  - **Datan vääristymän hälytin**: Jos osakemäärä muuttuu merkittävästi ilman käänteistä hintamuutosta, asetetaan lippu `DATA_DISTORTION_WARNING` ja `manual_review_required = True`.
 
 
 ---

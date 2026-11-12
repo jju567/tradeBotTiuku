@@ -52,11 +52,15 @@ def test_evaluate_news_radar_graceful_degradation_on_llm_exception(tmp_path):
         # Järjestelmä ei kaadu
         assert verdict in ("HOLD", "WARN")
         hf = engine.hard_facts_cache["TEST.HE"]
-        assert hf.get("catalyst_source") == "API_DOWN"
+        assert hf.get("catalyst_source") == "API_DOWN_MANUAL_CHECK"
+        assert hf.get("score_impact") == 0.0
+        assert hf.get("reject") is False
+        assert hf.get("manual_review") is True
         assert hf.get("manual_review_required") is True
         assert hf.get("requires_manual_review") is True
+        assert hf.get("reason") == "Gemini API kaatui tai ei vastannut. Tarkista katalyytti käsin."
         assert "MANUAL_REVIEW_API_DOWN" in hf.get("audit_flags", [])
-        assert "LLM API alhaalla" in hf.get("audit_warning", "")
+        assert "Gemini API kaatui tai ei vastannut" in hf.get("audit_warning", "")
 
 
 def test_core_candidate_passes_normally_without_news_catalyst():
@@ -161,17 +165,19 @@ def test_save_state_triggers_state_vault(tmp_path):
 # 3. Osakesplit- ja Datan Vääristymän Hälytin (_sync_to_p13_state)
 # =====================================================================
 
-def test_stock_split_alarm_and_level_adjustment(tmp_path):
+def test_stock_split_alarm_and_prevent_blind_overwrite(tmp_path, caplog):
     """
     Test 2:1 stock split on Alma Media (ALMA.HE):
-      - Initial: 100 shares @ 10.00 EUR (Peak Price 12.00, stop_threshold 8.50)
+      - Initial: 100 shares @ 10.00 EUR (Capital Invested 1000.0)
       - Imported: 200 shares @ 5.00 EUR
       - Result:
-        * split_detected is True with split_ratio 2.0
-        * Peak Price adjusted from 12.00 -> 6.00
-        * stop_threshold adjusted from 8.50 -> 4.25
-        * STOCK_SPLIT_DETECTED audit flag added
+        * Critical warning logged: "⚠️ SPLIT DETECTED (ALMA.HE) - MANUAL STATE UPDATE REQUIRED"
+        * Blind overwrite prevented: Shares remains 100.0, Buy Price remains 10.00 EUR
+        * split_detected is True, split_pending_manual_update is True
+        * unapplied_split_shares = 200.0, unapplied_split_price = 5.00
+        * SPLIT_DETECTED_MANUAL_REQUIRED audit flag added
     """
+    import logging
     pf_file = tmp_path / "tiuku_portfolio.json"
     hf_file = tmp_path / "history.json"
     mgr = PortfolioManager(portfolio_file=pf_file, history_file=hf_file)
@@ -203,22 +209,30 @@ def test_stock_split_alarm_and_level_adjustment(tmp_path):
         }
     }
 
-    synced = mgr._sync_to_p13_state(p13_file, updated_holdings)
+    with caplog.at_level(logging.WARNING):
+        synced = mgr._sync_to_p13_state(p13_file, updated_holdings)
     assert synced is True
+
+    # 1. Tarkista kriittinen varoitusviesti
+    assert any("⚠️ SPLIT DETECTED (ALMA.HE) - MANUAL STATE UPDATE REQUIRED" in record.message for record in caplog.records)
 
     updated_data = json.loads(p13_file.read_text(encoding="utf-8"))
     pos = updated_data["positions"][0]
 
+    # 2. Estetty sokea ylikirjoittaminen: säilyttää vanhan varmistetun tilan
     assert pos["Ticker"] == "ALMA.HE"
-    assert pos["Shares"] == 200.0
-    assert pos["Buy Price"] == 5.00
+    assert pos["Shares"] == 100.0
+    assert pos["Buy Price"] == 10.00
+    assert pos["Capital Invested"] == 1000.0
+
+    # 3. Merkitty manuaaliseen päivitykseen split-tiedoin
     assert pos.get("split_detected") is True
-    assert pos.get("split_ratio") == pytest.approx(2.0)
-    assert pos["Peak Price"] == pytest.approx(6.00)
-    assert pos["Highest Close"] == pytest.approx(6.00)
-    assert pos["stop_threshold"] == pytest.approx(4.25)
-    assert "STOCK_SPLIT_DETECTED" in pos.get("Audit_Flags", [])
-    assert "OSAKESPLIT HAVAITTU" in pos.get("Audit_Warning", "")
+    assert pos.get("split_pending_manual_update") is True
+    assert pos.get("manual_review_required") is True
+    assert pos.get("unapplied_split_shares") == 200.0
+    assert pos.get("unapplied_split_price") == 5.00
+    assert "SPLIT_DETECTED_MANUAL_REQUIRED" in pos.get("Audit_Flags", [])
+    assert "SPLIT DETECTED" in pos.get("Audit_Warning", "")
 
 
 def test_data_distortion_alarm(tmp_path):

@@ -1254,21 +1254,30 @@ class MarketDataEngine:
                         if llm_api_failed:
                             self.operational_metrics["llm_fallbacks"] = self.operational_metrics.get("llm_fallbacks", 0) + 1
                             logger.info(f"⚡ [OPERATIONAL HEALTH] LLM check failed/timeout for {ticker}. Seamlessly fallen back to rule-based engine.")
-                            # Graceful Degradation: Set catalyst_source = 'API_DOWN' & manual_review_required = True
+                            # Graceful Degradation: Set catalyst_source = 'API_DOWN_MANUAL_CHECK' & manual_review = True
+                            fallback_reason = "Gemini API kaatui tai ei vastannut. Tarkista katalyytti käsin."
                             hf_entry = self.hard_facts_cache.setdefault(ticker, {})
-                            hf_entry["catalyst_source"] = "API_DOWN"
+                            hf_entry["catalyst_source"] = "API_DOWN_MANUAL_CHECK"
+                            hf_entry["score_impact"] = 0.0
+                            hf_entry["reject"] = False
+                            hf_entry["manual_review"] = True
                             hf_entry["manual_review_required"] = True
                             hf_entry["requires_manual_review"] = True
+                            hf_entry["reason"] = fallback_reason
                             if "audit_flags" not in hf_entry or not isinstance(hf_entry["audit_flags"], list):
                                 hf_entry["audit_flags"] = []
                             if "MANUAL_REVIEW_API_DOWN" not in hf_entry["audit_flags"]:
                                 hf_entry["audit_flags"].append("MANUAL_REVIEW_API_DOWN")
-                            hf_entry["audit_warning"] = "⚠️ HUOM: LLM API alhaalla - Vaatii manuaalisen tarkistuksen"
+                            hf_entry["audit_warning"] = f"⚠️ HUOM: {fallback_reason}"
 
                             if hasattr(self, "universe_metadata") and ticker in self.universe_metadata:
-                                self.universe_metadata[ticker]["catalyst_source"] = "API_DOWN"
+                                self.universe_metadata[ticker]["catalyst_source"] = "API_DOWN_MANUAL_CHECK"
+                                self.universe_metadata[ticker]["score_impact"] = 0.0
+                                self.universe_metadata[ticker]["reject"] = False
+                                self.universe_metadata[ticker]["manual_review"] = True
                                 self.universe_metadata[ticker]["manual_review_required"] = True
                                 self.universe_metadata[ticker]["requires_manual_review"] = True
+                                self.universe_metadata[ticker]["reason"] = fallback_reason
 
                         # If LLM failed, timed out, or unconfigured, execute rule-based fallback
                         if not nlp_res or not isinstance(nlp_res, dict) or "financial_safety" not in nlp_res:
@@ -1309,7 +1318,7 @@ class MarketDataEngine:
                         elif item_decision not in ("REJECT", "WARN"):
                             if llm_api_failed:
                                 item_decision = "HOLD"
-                                item_reason = "LLM API alhaalla (API_DOWN) - Manuaalinen tarkistus vaaditaan"
+                                item_reason = "Gemini API kaatui tai ei vastannut. Tarkista katalyytti käsin."
                             else:
                                 # Check positive catalysts (STRONG BUY / WATCH_TURNAROUND)
                                 v_details = nlp_res.get("verdict_details", {}) if isinstance(nlp_res, dict) else {}
@@ -1366,20 +1375,29 @@ class MarketDataEngine:
 
         except Exception as e:
             logger.warning(f"⚠️ [OPERATIONAL HEALTH] News evaluation exception for {ticker}: {e}")
+            fallback_reason = "Gemini API kaatui tai ei vastannut. Tarkista katalyytti käsin."
             hf_entry = getattr(self, "hard_facts_cache", {}).setdefault(ticker, {})
-            hf_entry["catalyst_source"] = "API_DOWN"
+            hf_entry["catalyst_source"] = "API_DOWN_MANUAL_CHECK"
+            hf_entry["score_impact"] = 0.0
+            hf_entry["reject"] = False
+            hf_entry["manual_review"] = True
             hf_entry["manual_review_required"] = True
             hf_entry["requires_manual_review"] = True
+            hf_entry["reason"] = fallback_reason
             if "audit_flags" not in hf_entry or not isinstance(hf_entry["audit_flags"], list):
                 hf_entry["audit_flags"] = []
             if "MANUAL_REVIEW_API_DOWN" not in hf_entry["audit_flags"]:
                 hf_entry["audit_flags"].append("MANUAL_REVIEW_API_DOWN")
-            hf_entry["audit_warning"] = "⚠️ HUOM: LLM API alhaalla - Vaatii manuaalisen tarkistuksen"
+            hf_entry["audit_warning"] = f"⚠️ HUOM: {fallback_reason}"
             if hasattr(self, "universe_metadata") and ticker in self.universe_metadata:
-                self.universe_metadata[ticker]["catalyst_source"] = "API_DOWN"
+                self.universe_metadata[ticker]["catalyst_source"] = "API_DOWN_MANUAL_CHECK"
+                self.universe_metadata[ticker]["score_impact"] = 0.0
+                self.universe_metadata[ticker]["reject"] = False
+                self.universe_metadata[ticker]["manual_review"] = True
                 self.universe_metadata[ticker]["manual_review_required"] = True
                 self.universe_metadata[ticker]["requires_manual_review"] = True
-            return "HOLD", f"News scan exception: {e} (catalyst_source=API_DOWN)"
+                self.universe_metadata[ticker]["reason"] = fallback_reason
+            return "HOLD", fallback_reason
 
     def get_ticker_nlp_status(self, ticker: str) -> Tuple[str, str]:
         """
