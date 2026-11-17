@@ -27,6 +27,7 @@ class NordnetClient:
 
         symbols = list(tiuku_holdings.get("holdings", {}).keys())
         market_list = self.market_client.get_market_data_for_symbols(symbols)
+        market_by_sym = {item["symbol"]: item for item in market_list}
         price_dict = {item["symbol"]: item["current_price"] for item in market_list}
 
         holdings_data = {}
@@ -34,7 +35,24 @@ class NordnetClient:
 
         for symbol, data in tiuku_holdings.get("holdings", {}).items():
             qty = data.get("quantity", 0)
-            avg_price = data.get("avg_price", 0.0)
+            raw_avg_price = float(data.get("avg_price", 0.0) or 0.0)
+            holding_curr = (data.get("currency") or "").upper()
+            m_item = market_by_sym.get(symbol, {})
+            fx_to_eur = float(m_item.get("fx_to_eur", 1.0) or 1.0)
+            native_curr = (m_item.get("native_currency") or holding_curr or ("SEK" if symbol.endswith(".ST") else "EUR")).upper()
+
+            if (holding_curr and holding_curr != "EUR") or (not holding_curr and native_curr != "EUR"):
+                if fx_to_eur == 1.0:
+                    mv_eur = float(data.get("market_value_eur") or 0.0)
+                    mv_nat = float(data.get("market_value_native") or 0.0)
+                    if mv_eur > 0 and mv_nat > 0:
+                        fx_to_eur = mv_eur / mv_nat
+                    elif native_curr == "SEK" or symbol.endswith(".ST"):
+                        fx_to_eur = 1.0 / 11.45
+                avg_price = round(raw_avg_price * fx_to_eur, 4)
+            else:
+                avg_price = raw_avg_price
+
             current_price = price_dict.get(symbol, avg_price)
 
             market_val = round(qty * current_price, 2)

@@ -207,16 +207,44 @@ class MarketDataClient:
                 except Exception:
                     info = {}
 
-                # Currency conversion for USD assets
-                asset_currency = (info.get("currency") or "EUR").upper()
+                # Currency conversion for non-EUR assets (USD, SEK, NOK, DKK)
+                asset_currency = (info.get("currency") or "").upper()
+                if not asset_currency:
+                    if symbol.endswith(".ST"):
+                        asset_currency = "SEK"
+                    elif symbol.endswith(".OL"):
+                        asset_currency = "NOK"
+                    elif symbol.endswith(".CO"):
+                        asset_currency = "DKK"
+                    else:
+                        asset_currency = "EUR"
+
+                native_price = current_price
+                fx_to_eur = 1.0
                 if asset_currency == "USD" or symbol == "NVDA":
                     try:
                         eur_usd_rate = yf.Ticker("EURUSD=X").history(period="1d")["Close"].iloc[-1]
-                        usd_to_eur = 1.0 / float(eur_usd_rate) if eur_usd_rate > 0 else 0.867
+                        fx_to_eur = 1.0 / float(eur_usd_rate) if eur_usd_rate > 0 else 0.867
                     except Exception:
-                        usd_to_eur = 0.867
-                    closes = [x * usd_to_eur for x in closes]
-                    current_price = current_price * usd_to_eur
+                        fx_to_eur = 0.867
+                elif asset_currency == "SEK" or symbol.endswith(".ST"):
+                    try:
+                        eur_sek_rate = yf.Ticker("EURSEK=X").history(period="1d")["Close"].iloc[-1]
+                        fx_to_eur = 1.0 / float(eur_sek_rate) if eur_sek_rate > 0 else (1.0 / 11.45)
+                    except Exception:
+                        fx_to_eur = 1.0 / 11.45
+                elif asset_currency == "NOK" or symbol.endswith(".OL"):
+                    try:
+                        eur_nok_rate = yf.Ticker("EURNOK=X").history(period="1d")["Close"].iloc[-1]
+                        fx_to_eur = 1.0 / float(eur_nok_rate) if eur_nok_rate > 0 else (1.0 / 11.70)
+                    except Exception:
+                        fx_to_eur = 1.0 / 11.70
+                elif asset_currency == "DKK" or symbol.endswith(".CO"):
+                    fx_to_eur = 1.0 / 7.46
+
+                if fx_to_eur != 1.0:
+                    closes = [x * fx_to_eur for x in closes]
+                    current_price = current_price * fx_to_eur
 
                 # Technical Indicators (calculated after currency conversion so SMA, EMA, Bollinger and current_price share the same EUR unit)
                 rsi_14 = calculate_rsi(closes, period=14)
@@ -245,6 +273,9 @@ class MarketDataClient:
                     "name": stock_name,
                     "sector": sector,
                     "current_price": round(current_price, 2),
+                    "native_price": round(native_price, 2),
+                    "native_currency": asset_currency,
+                    "fx_to_eur": fx_to_eur,
                     "change_24h_pct": change_24h_pct,
                     "rsi_14": round(rsi_14, 1),
                     "sma_50": round(sma_50, 2),

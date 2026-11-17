@@ -289,3 +289,57 @@ class TestPortfolioManagerCSVBytes:
         assert "VIAFIN.HE" in tickers
         assert tickers["VIAFIN.HE"]["Shares"] == 50
         assert p13_updated["cash_balance"] == pytest.approx(mgr.portfolio_state.get("cash_balance", 0.0))
+
+    def test_nordnet_client_converts_sek_holding_to_eur(self, monkeypatch):
+        from clients.nordnet_client import NordnetClient
+
+        client = NordnetClient()
+        monkeypatch.setattr(
+            client.market_client,
+            "get_market_data_for_symbols",
+            lambda symbols: [
+                {
+                    "symbol": "LIME.ST",
+                    "name": "Lime Technologies",
+                    "current_price": 23.94,
+                    "native_price": 265.50,
+                    "native_currency": "SEK",
+                    "fx_to_eur": 23.94 / 265.50,
+                },
+                {
+                    "symbol": "MEKKO.HE",
+                    "name": "Marimekko",
+                    "current_price": 9.51,
+                    "native_price": 9.51,
+                    "native_currency": "EUR",
+                    "fx_to_eur": 1.0,
+                },
+            ],
+        )
+
+        tiuku_state = {
+            "currency": "EUR",
+            "cash_balance": 3519.0,
+            "holdings": {
+                "LIME.ST": {
+                    "name": "Lime Technologies",
+                    "quantity": 92,
+                    "avg_price": 261.6957,
+                    "currency": "SEK",
+                    "target_weight": 0.10,
+                },
+                "MEKKO.HE": {
+                    "name": "Marimekko",
+                    "quantity": 233,
+                    "avg_price": 9.60,
+                    "currency": "EUR",
+                    "target_weight": 0.10,
+                },
+            },
+        }
+
+        res = client.get_portfolio_holdings(tiuku_state)
+        lime = res["holdings"]["LIME.ST"]
+        assert lime["market_value"] == pytest.approx(92 * 23.94, rel=1e-3)
+        assert lime["avg_price"] == pytest.approx(261.6957 * (23.94 / 265.50), rel=1e-3)
+        assert res["total_equity"] < 9000.0
