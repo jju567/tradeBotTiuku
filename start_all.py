@@ -99,6 +99,10 @@ def main() -> None:
                 str(BASE_DIR / "dashboard.py"),
                 "--server.port",
                 str(args.port),
+                "--server.enableCORS",
+                "false",
+                "--server.enableXsrfProtection",
+                "false",
             ]
             p_ui = subprocess.Popen(ui_cmd, cwd=str(BASE_DIR))
 

@@ -8,7 +8,7 @@ User=ubuntu
 WorkingDirectory=/home/ubuntu/tradeBotTiuku
 Environment="PATH=/home/ubuntu/tradeBotTiuku/venv/bin:/usr/local/bin:/usr/bin"
 EnvironmentFile=-/home/ubuntu/tradeBotTiuku/.env
-ExecStart=/home/ubuntu/tradeBotTiuku/venv/bin/streamlit run dashboard.py --server.port 8502 --server.headless true
+ExecStart=/home/ubuntu/tradeBotTiuku/venv/bin/streamlit run dashboard.py --server.port 8502 --server.headless true --server.enableCORS false --server.enableXsrfProtection false
 Restart=always
 RestartSec=10
 StandardOutput=journal

@@ -1055,13 +1055,23 @@ with st.sidebar:
             "Valitse CSV/TXT",
             type=["csv", "txt", "tsv"],
             key="sidebar_csv_file",
-            help="Tuo Nordnetin salkkuraportti (.csv tai .txt)",
+            help="Tuo Nordnetin salkkuraportti (.csv tai .txt). Jos selaimen lataus näyttää (!), päivitä sivu (F5) tai liitä teksti alle.",
+        )
+        side_csv_paste = st.text_area(
+            "📋 Tai liitä CSV-sisältö tekstinä:",
+            height=68,
+            key="sidebar_csv_paste",
+            placeholder="Avaa CSV Muistiossa -> Ctrl+A, Ctrl+C ja liitä (Ctrl+V) tähän...",
         )
         side_sync_p13 = st.checkbox("Synkronoi myös P13 Live", value=True, key="side_sync_p13")
+        side_bytes = None
         if side_csv_file is not None:
+            side_bytes = side_csv_file.getvalue()
+        elif side_csv_paste and side_csv_paste.strip():
+            side_bytes = side_csv_paste.strip().encode("utf-8")
+        if side_bytes:
             from core.portfolio import PortfolioManager
             pm_side = PortfolioManager()
-            side_bytes = side_csv_file.getvalue()
             try:
                 side_prev = pm_side.preview_csv_bytes(side_bytes, preserve_hodl=False)
                 st.markdown(f"**🔍 Esikatselu ({side_prev['total_rows']} kpl):**")
@@ -1707,11 +1717,22 @@ def render_real_portfolio_view():
         "Valitse tai raahaa Nordnetin CSV/TXT-tiedosto:",
         type=["csv", "txt", "tsv"],
         key="main_real_csv_uploader",
-        help="Nordnetin salkkuraportti (.csv tai .txt)",
+        help="Nordnetin salkkuraportti (.csv tai .txt). Jos tiedoston kohdalle tulee punainen (!), päivitä sivu (F5) tai liitä CSV-teksti suoraan alla olevaan kenttään.",
+    )
+    pasted_csv_text = st.text_area(
+        "📋 Vaihtoehto B: Liitä CSV-tiedoston sisältö suoraan tekstinä (toimii aina ilman tiedostolatausta):",
+        height=90,
+        key="main_real_csv_pasted_text",
+        placeholder="Jos selaimen tiedostolataus näyttää (!), avaa ladattu CSV Muistiossa (Notepad) -> Ctrl+A, Ctrl+C -> liitä (Ctrl+V) tähän!",
     )
 
+    file_bytes = None
     if uploaded_csv is not None:
         file_bytes = uploaded_csv.getvalue()
+    elif pasted_csv_text and pasted_csv_text.strip():
+        file_bytes = pasted_csv_text.strip().encode("utf-8")
+
+    if file_bytes is not None:
         try:
             preview = pm.preview_csv_bytes(file_bytes, preserve_hodl=False)
             parsed_rows = preview["parsed_positions"]
