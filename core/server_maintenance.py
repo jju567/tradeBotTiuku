@@ -471,3 +471,32 @@ def restart_daemon(daily_at: str = "23:05") -> Tuple[bool, str]:
 
     except Exception as e:
         return False, f"Daemonin käynnistys epäonnistui: {e}"
+
+
+def restart_ui_service() -> Tuple[bool, str]:
+    """
+    Restarts the Streamlit UI service so it reloads `.streamlit/config.toml`
+    (e.g. `enableXsrfProtection = false`).
+    Tries systemd (`tradebot-tiuku-ui`) first, or schedules a self-SIGTERM in a background thread
+    so systemd (`Restart=always`) or `start_all.py` respawns the Streamlit server cleanly.
+    """
+    if os.name != "nt":
+        for svc in ["tradebot-tiuku-ui"]:
+            rc, out, _ = _run_cmd(["systemctl", "status", svc])
+            if rc == 0 or "Loaded: loaded" in out:
+                rc_rst, _, _ = _run_cmd(["sudo", "-n", "systemctl", "restart", svc])
+                if rc_rst == 0:
+                    return True, f"✅ Streamlit UI -palvelu ({svc}) käynnistetään uudelleen..."
+
+    import threading
+
+    def _delayed_exit():
+        time.sleep(1.2)
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception:
+            os._exit(0)
+
+    threading.Thread(target=_delayed_exit, daemon=True).start()
+    return True, "🔄 Streamlit Web-UI käynnistyy uudelleen (systemd käynnistää sen 5–10 sekunnissa). Päivitä sivu (F5) hetken kuluttua!"
+

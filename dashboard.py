@@ -1426,7 +1426,7 @@ with st.sidebar:
     # SERVER REMOTE OPS & GIT PULL (Etäylläpito puhelimesta)
     # ------------------------------------------------------------------
     try:
-        from core.server_maintenance import get_git_info, get_daemon_status, git_pull, restart_daemon, git_hard_reset_to_origin
+        from core.server_maintenance import get_git_info, get_daemon_status, git_pull, restart_daemon, git_hard_reset_to_origin, restart_ui_service
         git_info = get_git_info()
         daemon_info = get_daemon_status()
 
@@ -1482,6 +1482,10 @@ with st.sidebar:
             with col_d2:
                 if st.button("📡 Tarkista tila", width="stretch"):
                     st.rerun()
+
+            if st.button("🔄 Restart Web-UI (Korjaa 403 Upload / Lataa config.toml)", width="stretch", help="Käynnistää itse Streamlit-web-palvelimen uudelleen, jolloin .streamlit/config.toml (XSRF-esto pois) astuu voimaan. Odota 10s ja päivitä sivu (F5)."):
+                ok_ui, msg_ui = restart_ui_service()
+                st.info(msg_ui)
 
             # Emergency Conflict Resolver (Hard Reset)
             with st.expander("⚠️ Konfliktin hätäkorjaus (Hard Reset)", expanded=False):
