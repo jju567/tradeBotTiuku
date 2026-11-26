@@ -462,12 +462,21 @@ def get_market_regime(
         if not hist.empty and len(hist) >= 20:
             closes = hist["Close"].dropna()
             last_px = float(closes.iloc[-1])
+            sma_10 = float(closes.tail(10).mean()) if len(closes) >= 10 else float(closes.mean())
+            sma_20 = float(closes.tail(20).mean()) if len(closes) >= 20 else float(closes.mean())
             sma_50 = float(closes.tail(50).mean()) if len(closes) >= 50 else float(closes.mean())
             returns = closes.pct_change().dropna()
             vol_20d = float(returns.tail(20).std() * math.sqrt(TRADING_DAYS_PER_YEAR) * 100.0)
             dist_sma50_pct = float(((last_px - sma_50) / sma_50) * 100.0)
             peak_3m = float(closes.max())
             dd_pct = float(((last_px - peak_3m) / peak_3m) * 100.0)
+            low_20d = float(closes.tail(20).min()) if len(closes) >= 5 else last_px
+            ret_5d_pct = float(((last_px / float(closes.iloc[-6])) - 1.0) * 100.0) if len(closes) >= 6 else 0.0
+            bounce_from_20d_low_pct = float(((last_px - low_20d) / low_20d) * 100.0) if low_20d > 0 else 0.0
+            is_early_rebound = bool(
+                (last_px >= sma_10 and ret_5d_pct >= 1.5 and bounce_from_20d_low_pct >= 3.0)
+                or (last_px >= sma_20 and ret_5d_pct >= 1.0)
+            )
 
             # Microcap-calibrated regime classification
             if last_px >= sma_50 and vol_20d < vol_low_threshold:
@@ -515,9 +524,14 @@ def get_market_regime(
                 "status_color": status_color,
                 "volatility_20d_pct": round(vol_20d, 1),
                 "last_price": round(last_px, 2),
+                "sma_10": round(sma_10, 2),
+                "sma_20": round(sma_20, 2),
                 "sma_50": round(sma_50, 2),
                 "dist_sma50_pct": round(dist_sma50_pct, 1),
                 "drawdown_3m_pct": round(dd_pct, 1),
+                "ret_5d_pct": round(ret_5d_pct, 2),
+                "bounce_from_20d_low_pct": round(bounce_from_20d_low_pct, 2),
+                "is_early_rebound": is_early_rebound,
                 "universe_median_vol_pct": u_vol,
                 "divergence_warning": divergence_warning,
                 "vol_low_threshold": vol_low_threshold,
@@ -1769,8 +1783,18 @@ def get_regional_market_regimes(
             if not hist.empty and len(hist) >= 20:
                 closes = hist["Close"].dropna()
                 last_px = float(closes.iloc[-1])
+                sma_10 = float(closes.tail(10).mean()) if len(closes) >= 10 else float(closes.mean())
+                sma_20 = float(closes.tail(20).mean()) if len(closes) >= 20 else float(closes.mean())
+                sma_50 = float(closes.tail(50).mean()) if len(closes) >= 50 else float(closes.mean())
                 sma_200 = float(closes.tail(200).mean()) if len(closes) >= 200 else float(closes.mean())
                 dist_pct = float(((last_px - sma_200) / sma_200) * 100.0)
+                low_20d = float(closes.tail(20).min()) if len(closes) >= 5 else last_px
+                ret_5d_pct = float(((last_px / float(closes.iloc[-6])) - 1.0) * 100.0) if len(closes) >= 6 else 0.0
+                bounce_from_20d_low_pct = float(((last_px - low_20d) / low_20d) * 100.0) if low_20d > 0 else 0.0
+                is_early_rebound = bool(
+                    (last_px >= sma_10 and ret_5d_pct >= 1.5 and bounce_from_20d_low_pct >= 3.0)
+                    or (last_px >= sma_20 and ret_5d_pct >= 1.0)
+                )
 
                 # SMA200 with +/- 1.0% hysteresis
                 if last_px >= (sma_200 * 1.01):
@@ -1789,8 +1813,14 @@ def get_regional_market_regimes(
                     "regime": r_tag,
                     "badge": f"{color} {r_tag}",
                     "last_price": round(last_px, 2),
+                    "sma_10": round(sma_10, 2),
+                    "sma_20": round(sma_20, 2),
+                    "sma_50": round(sma_50, 2),
                     "sma_200": round(sma_200, 2),
                     "dist_sma200_pct": round(dist_pct, 1),
+                    "ret_5d_pct": round(ret_5d_pct, 2),
+                    "bounce_from_20d_low_pct": round(bounce_from_20d_low_pct, 2),
+                    "is_early_rebound": is_early_rebound,
                 }
             else:
                 regional_results[region] = {

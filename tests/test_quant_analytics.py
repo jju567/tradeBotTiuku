@@ -422,3 +422,7 @@ def test_regional_market_regimes(monkeypatch):
 
     assert regimes["US"]["regime"] == "NEUTRAL / CHOPPY"
     assert "🟡" in regimes["US"]["badge"]
+    assert "is_early_rebound" in regimes["FI"]
+    assert "sma_10" in regimes["FI"]
+    assert "sma_20" in regimes["FI"]
+

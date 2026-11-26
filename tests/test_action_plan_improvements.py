@@ -404,3 +404,81 @@ def test_general_screening_respects_regime_buffer_across_multiple_buys(temp_work
     assert buys == 1
     assert len(p.positions) == 1
     assert p.cash_balance >= 5000.0
+
+
+def test_early_rebound_steps_down_regime_cash_buffer_for_bottom_entry(temp_workspace):
+    """Verifies that Early Rebound (is_early_rebound or Nordic regional rebound) steps down
+    the 40% cash buffer to 15%, allowing P13/Nordic portfolios to buy near the bottom."""
+    cfg = PortfolioConfig(
+        portfolio_id="P13_Live_Candidate",
+        strategy="Profile B",
+        start_cash=7900.0,
+        slots=4,
+        slot_size=2215.0,
+        market_regime_cash_buffer_pct=0.40,
+        regions=["FI", "SE"],
+    )
+    p = PortfolioInstance(cfg, base_dir=temp_workspace)
+    p.cash_balance = 3519.0  # In 40% buffer (3160 EUR), only 359 EUR free -> blocked. In 15% buffer (1185 EUR), 2334 EUR free -> buys!
+    p.positions = []
+
+    daemon = MasterLiveTradingDaemon.__new__(MasterLiveTradingDaemon)
+    daemon.market_engine = type("Engine", (), {})()
+    daemon.market_engine.operational_metrics = {}
+    daemon.market_engine.fx_rates = {"EURUSD": 1.08, "EURSEK": 10.0}
+    daemon.market_engine.universe_metadata = {
+        "MSAB-B.ST": {
+            "market": "SE",
+            "adv_20d_local": 2000000.0,
+            "currency": "SEK",
+            "current_price": 100.0,
+        }
+    }
+    daemon.market_engine.prices_cache = {"MSAB-B.ST": 100.0}
+    daemon.market_engine.eval_profiles_cache = {"MSAB-B.ST": {"is_profile_b": True, "conviction_score": 10}}
+    daemon.market_engine.news_radar_cache = {"MSAB-B.ST": ("HOLD", "Clear")}
+    daemon.market_engine.hard_facts_cache = {
+        "MSAB-B.ST": {"revenue_growth_yoy_pct": 15.0, "cash_runway_months": "Infinite", "operating_cash_flow_ttm": 5000.0}
+    }
+
+    # 1. Deep BEAR without early rebound -> 40% buffer (3,160 EUR) leaves only 359 EUR (insufficient for full slot)
+    daemon.market_engine.market_regime = {
+        "regime": "HIGH VOL / BEARISH (Risk-Off)",
+        "last_price": 165.0,
+        "sma_50": 180.0,
+        "is_early_rebound": False,
+    }
+    is_bear, buf_pct, req_cash, reason = daemon._resolve_effective_regime_buffer(p, 7900.0)
+    assert is_bear is True
+    assert buf_pct == 0.40
+    assert req_cash == 3160.0
+    assert reason is None
+
+    # 2. Early rebound in Nordic benchmark (^OMXSPI) while IWC is still < SMA50 -> steps buffer down to 15% (1,185 EUR)
+    daemon.market_engine.market_regime = {
+        "regime": "HIGH VOL / BEARISH (Risk-Off)",
+        "last_price": 165.0,
+        "sma_50": 180.0,
+        "is_early_rebound": False,
+        "regional_regimes": {
+            "SE": {
+                "region": "SE",
+                "benchmark": "^OMXSPI",
+                "regime": "BEAR / RISK_OFF",
+                "is_early_rebound": True,
+                "ret_5d_pct": 2.4,
+            }
+        },
+    }
+    is_bear2, buf_pct2, req_cash2, reason2 = daemon._resolve_effective_regime_buffer(p, 7900.0)
+    assert is_bear2 is True
+    assert buf_pct2 == 0.15
+    assert req_cash2 == 1185.0
+    assert reason2 == "NORDIC_EARLY_REBOUND_SE"
+
+    buys = daemon.execute_phase2_screening(p)
+    assert buys == 1
+    assert len(p.positions) == 1
+    assert p.positions[0]["Ticker"] == "MSAB-B.ST"
+    assert p.cash_balance >= 1185.0
+

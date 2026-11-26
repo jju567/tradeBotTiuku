@@ -962,25 +962,37 @@ class MarketDataEngine:
         self.fx_rates = get_live_fx_rates()
         logger.info(f"📡 [MARKET ENGINE] Live FX Rates: EURUSD={self.fx_rates.get('EURUSD', 1.08):.4f}, EURSEK={self.fx_rates.get('EURSEK', 11.30):.4f}")
 
-        # Load or compute institutional market regime (IWC / Russell Microcap benchmark)
+        # Compute fresh live institutional market regime on every cycle (falling back to cached file only if offline)
         self.market_regime = {}
         regime_file = BASE_DIR / "data" / "market_regime.json"
-        if regime_file.exists():
+        try:
+            from quant_analytics import get_market_regime, get_regional_market_regimes
+            self.market_regime = get_market_regime(benchmark_ticker="IWC", cache_path=regime_file)
             try:
-                self.market_regime = json.loads(regime_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        if not self.market_regime:
-            try:
-                from quant_analytics import get_market_regime
-                self.market_regime = get_market_regime(benchmark_ticker="IWC")
-            except Exception as e:
-                logger.debug(f"Could not calculate market regime: {e}")
+                reg_map = get_regional_market_regimes()
+                if reg_map:
+                    self.market_regime["regional_regimes"] = reg_map
+                    try:
+                        _atomic_write_json(regime_file, self.market_regime, ensure_ascii=False)
+                    except Exception:
+                        pass
+            except Exception as reg_err:
+                logger.debug(f"Could not calculate regional market regimes: {reg_err}")
+        except Exception as e:
+            logger.debug(f"Could not calculate live market regime: {e}")
+            if regime_file.exists():
+                try:
+                    self.market_regime = json.loads(regime_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
         if self.market_regime:
             reg_name = self.market_regime.get("regime", "UNKNOWN")
             sma_50 = self.market_regime.get("sma_50", 0.0)
             last_p = self.market_regime.get("last_price", 0.0)
-            logger.info(f"📊 [MARKET ENGINE] Market Regime: {reg_name} (IWC: {last_p:.2f}, SMA50: {sma_50:.2f})")
+            rebound_flag = self.market_regime.get("is_early_rebound", False)
+            logger.info(
+                f"📊 [MARKET ENGINE] Market Regime: {reg_name} (IWC: {last_p:.2f}, SMA50: {sma_50:.2f}, EarlyRebound: {rebound_flag})"
+            )
 
         if self.clean_universe_path.exists():
             try:
@@ -2859,6 +2871,74 @@ class MasterLiveTradingDaemon:
 
         return new_buys
 
+    def _resolve_effective_regime_buffer(
+        self,
+        portfolio: PortfolioInstance,
+        baseline_equity: float,
+    ) -> Tuple[bool, float, float, Optional[str]]:
+        """
+        Determines whether market regime cash buffer is active and computes the effective
+        buffer percentage and required cash reserve in EUR.
+
+        Includes Early Bottom / Rebound Detection so the bot does not wait 3-5 weeks for
+        lagging SMA50 + Vol<20% after a market bottom:
+          1. Global Benchmark Early Rebound (`is_early_rebound`: Price >= SMA10, 5d return >= +1.5%, bounce from 20d low >= +3.0%, or Price >= SMA20 & 5d >= +1.0%).
+          2. Nordic Regional Turn (`^OMXSPI` / `^OMXH25` in `is_early_rebound` or `BULL / RISK_ON` with positive 5d momentum) for Nordic/P13 portfolios.
+        When an early rebound is detected during a CHOPPY/BEAR regime, the required cash buffer
+        steps down from 40% (3,160 EUR) to 15% (1,185 EUR), immediately unlocking P13's 3rd Core
+        compounder slot (2,215 EUR) near the bottom while retaining a 15% safety reserve until full Bull regime.
+        """
+        cfg = portfolio.config
+        regime_data = getattr(self.market_engine, "market_regime", {}) or {}
+        regime_str = str(regime_data.get("regime", "")).upper()
+        last_px = float(regime_data.get("last_price", 0.0) or 0.0)
+        sma_50 = float(regime_data.get("sma_50", 0.0) or 0.0)
+        is_below_sma50 = (last_px > 0 and sma_50 > 0 and last_px < sma_50)
+        is_choppy_or_bear = ("CHOPPY" in regime_str or "BEAR" in regime_str or is_below_sma50)
+
+        if not is_choppy_or_bear:
+            return False, 0.0, 0.0, None
+
+        base_buffer_pct = float(getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40)
+        rebound_reason: Optional[str] = None
+
+        if bool(regime_data.get("is_early_rebound", False)):
+            rebound_reason = "GLOBAL_BENCHMARK_EARLY_REBOUND"
+        else:
+            regional_regimes = regime_data.get("regional_regimes") or {}
+            is_nordic_portfolio = (
+                cfg.portfolio_id in ("P13_Live_Candidate", "P5_Nordic_Only")
+                or bool(cfg.sub_strategies)
+                or (getattr(cfg, "regions", None) and set(cfg.regions) <= {"FI", "SE"})
+            )
+            if is_nordic_portfolio and isinstance(regional_regimes, dict):
+                for reg_key in ("SE", "FI"):
+                    r_info = regional_regimes.get(reg_key)
+                    if not isinstance(r_info, dict):
+                        continue
+                    r_rebound = bool(r_info.get("is_early_rebound", False))
+                    r_bull = "BULL" in str(r_info.get("regime", "")).upper()
+                    r_ret5 = r_info.get("ret_5d_pct")
+                    if r_rebound:
+                        rebound_reason = f"NORDIC_EARLY_REBOUND_{reg_key}"
+                        break
+                    if r_bull and r_ret5 is not None and float(r_ret5) >= 0.0:
+                        rebound_reason = f"NORDIC_BULL_UPTREND_{reg_key}"
+                        break
+
+        if rebound_reason:
+            eff_buffer_pct = min(base_buffer_pct, 0.15)
+            logger.info(
+                f"[{cfg.portfolio_id}] 🚀 Early Rebound / Bottom Turn detected ({rebound_reason})! "
+                f"Stepping regime cash buffer down from {base_buffer_pct*100:.0f}% to {eff_buffer_pct*100:.0f}% "
+                f"({baseline_equity * eff_buffer_pct:,.2f} EUR) to allow bottom-turn entry."
+            )
+        else:
+            eff_buffer_pct = base_buffer_pct
+
+        min_required_cash = baseline_equity * eff_buffer_pct
+        return True, eff_buffer_pct, min_required_cash, rebound_reason
+
     def execute_phase2_screening(self, portfolio: PortfolioInstance, run_trades: Optional[List[Dict[str, Any]]] = None) -> int:
         """
         Phase 2: Screening & Sizing for a specific portfolio based on its parameters.
@@ -2868,22 +2948,21 @@ class MasterLiveTradingDaemon:
         portfolio.last_screening_block_reason = None
         portfolio.last_candidates_ranking = {}
 
-        # Market Regime Cash Buffer (Task 3: Enforce max 60% investment / min 40% cash in CHOPPY/BEAR market)
+        # Market Regime Cash Buffer (Task 3: Enforce max 60% investment / min 40% cash in CHOPPY/BEAR market,
+        # stepped down to 15% when Early Rebound / Bottom Turn is detected)
         regime_data = getattr(self.market_engine, "market_regime", {}) or {}
         regime_str = str(regime_data.get("regime", "")).upper()
         last_px = float(regime_data.get("last_price", 0.0) or 0.0)
         sma_50 = float(regime_data.get("sma_50", 0.0) or 0.0)
         is_below_sma50 = (last_px > 0 and sma_50 > 0 and last_px < sma_50)
-        is_choppy_or_bear = ("CHOPPY" in regime_str or "BEAR" in regime_str or is_below_sma50)
 
-        min_required_cash = 0.0
         # TASK-14: Compute dynamic cash buffer from current total equity (with start_cash floor)
         cur_stock_val = self.calculate_stock_value_eur(portfolio)
         cur_total_equity = portfolio.cash_balance + cur_stock_val
         baseline_equity = max(float(cfg.start_cash), cur_total_equity)
-        if is_choppy_or_bear:
-            buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
-            min_required_cash = baseline_equity * buffer_pct
+        is_choppy_or_bear, buffer_pct, min_required_cash, rebound_reason = self._resolve_effective_regime_buffer(
+            portfolio, baseline_equity
+        )
 
         # Portfolio Max Drawdown alert & TASK-14 Emergency Risk-Off Mode with Hysteresis (-15% trigger, -8% recovery)
         peak_eq = getattr(portfolio, "peak_equity_eur", None)
@@ -3880,16 +3959,15 @@ class MasterLiveTradingDaemon:
         if cfg.sub_strategies:
             self._ensure_sub_strategy_tags(portfolio)
         regime_data = getattr(self.market_engine, "market_regime", {}) or {}
-        regime_str = str(regime_data.get("regime", "")).upper()
         last_px = float(regime_data.get("last_price", 0.0) or 0.0)
         sma_50 = float(regime_data.get("sma_50", 0.0) or 0.0)
-        is_below_sma50 = (last_px > 0 and sma_50 > 0 and last_px < sma_50)
-        is_choppy_or_bear = ("CHOPPY" in regime_str or "BEAR" in regime_str or is_below_sma50)
-        buffer_pct = getattr(cfg, "market_regime_cash_buffer_pct", 0.40) or 0.40
-        required_cash_buffer_eur = (cfg.start_cash * buffer_pct) if is_choppy_or_bear else 0.0
 
         stock_val_eur = self.calculate_stock_value_eur(portfolio)
         total_p13_equity_eur = portfolio.cash_balance + stock_val_eur
+        baseline_equity = max(float(cfg.start_cash), total_p13_equity_eur)
+        is_choppy_or_bear, buffer_pct, required_cash_buffer_eur, rebound_reason = self._resolve_effective_regime_buffer(
+            portfolio, baseline_equity
+        )
 
         # Ensure candidates_ranking is populated for all 3 sub-strategies
         if not portfolio.last_candidates_ranking and cfg.sub_strategies:
@@ -3972,6 +4050,9 @@ class MasterLiveTradingDaemon:
                 "iwc_price": round(last_px, 4),
                 "sma_50": round(sma_50, 4),
                 "is_choppy_or_bear": bool(is_choppy_or_bear),
+                "is_early_rebound": bool(rebound_reason is not None),
+                "rebound_unlock_reason": rebound_reason,
+                "effective_buffer_pct": round(buffer_pct * 100.0, 1) if is_choppy_or_bear else 0.0,
                 "required_cash_buffer_eur": round(required_cash_buffer_eur, 2),
             },
             "portfolio_snapshot": {
